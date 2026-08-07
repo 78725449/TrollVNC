@@ -83,8 +83,7 @@
     self.emptyLabel.textAlignment = NSTextAlignmentCenter;
     self.emptyLabel.font = [UIFont systemFontOfSize:14];
     self.emptyLabel.textColor = [UIColor secondaryLabelColor];
-    self.emptyLabel.text = @"暂无已连接设备
-（控制端观看/控制能力在后续版本提供）";
+    self.emptyLabel.text = @"暂无已连接设备\n（控制端观看/控制能力在后续版本提供）";
     [self.view addSubview:self.emptyLabel];
 
     [NSLayoutConstraint activateConstraints:@[
