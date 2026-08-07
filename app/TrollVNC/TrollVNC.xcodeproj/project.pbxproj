@@ -51,6 +51,8 @@
 		CC91EF902E6C2208002F5B2A /* TVNCClientListController.m in Sources */ = {isa = PBXBuildFile; fileRef = CC91EF8F2E6C2208002F5B2A /* TVNCClientListController.m */; };
 		3F51D099F730BA38987C1300 /* TVNCConnectViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = D848AFF7B581F040AA4D4DDE /* TVNCConnectViewController.m */; };
 		A8688B8057413A0EA6A00EC6 /* TVNCControllerViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = D657AD36CE988F4250151BD2 /* TVNCControllerViewController.m */; };
+		00342A5D6EC8F5E00BAD63A9 /* TVNCSettingFormController.m in Sources */ = {isa = PBXBuildFile; fileRef = 74F2A8E3A494173C94F687E3 /* TVNCSettingFormController.m */; };
+		CC483147D1560AF441749858 /* TVNCSettingsViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = DD91E4A482BBB29670FDBC43 /* TVNCSettingsViewController.m */; };
 		CC91EF932E6CA6C5002F5B2A /* TVNCClientCell.m in Sources */ = {isa = PBXBuildFile; fileRef = CC91EF922E6CA6C5002F5B2A /* TVNCClientCell.m */; };
 		CC91EF972E6EF165002F5B2A /* TVNCListItemsController.m in Sources */ = {isa = PBXBuildFile; fileRef = CC91EF962E6EF165002F5B2A /* TVNCListItemsController.m */; };
 /* End PBXBuildFile section */
@@ -102,6 +104,10 @@
 		D848AFF7B581F040AA4D4DDE /* TVNCConnectViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCConnectViewController.m; sourceTree = "<group>"; };
 		B3E2E095A3361275E03B4580 /* TVNCControllerViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCControllerViewController.h; sourceTree = "<group>"; };
 		D657AD36CE988F4250151BD2 /* TVNCControllerViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCControllerViewController.m; sourceTree = "<group>"; };
+		BC3BE7A3EF98EE26C2106D02 /* TVNCSettingFormController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCSettingFormController.h; sourceTree = "<group>"; };
+		74F2A8E3A494173C94F687E3 /* TVNCSettingFormController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCSettingFormController.m; sourceTree = "<group>"; };
+		4194A93C0D7290F4743A243E /* TVNCSettingsViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCSettingsViewController.h; sourceTree = "<group>"; };
+		DD91E4A482BBB29670FDBC43 /* TVNCSettingsViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCSettingsViewController.m; sourceTree = "<group>"; };
 		CC91EF912E6CA6C5002F5B2A /* TVNCClientCell.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCClientCell.h; sourceTree = "<group>"; };
 		CC91EF922E6CA6C5002F5B2A /* TVNCClientCell.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCClientCell.m; sourceTree = "<group>"; };
 		CC91EF942E6E03BD002F5B2A /* Control.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Control.h; sourceTree = "<group>"; };
@@ -208,6 +214,10 @@
 				D848AFF7B581F040AA4D4DDE /* TVNCConnectViewController.m */,
 				B3E2E095A3361275E03B4580 /* TVNCControllerViewController.h */,
 				D657AD36CE988F4250151BD2 /* TVNCControllerViewController.m */,
+				BC3BE7A3EF98EE26C2106D02 /* TVNCSettingFormController.h */,
+				74F2A8E3A494173C94F687E3 /* TVNCSettingFormController.m */,
+				4194A93C0D7290F4743A243E /* TVNCSettingsViewController.h */,
+				DD91E4A482BBB29670FDBC43 /* TVNCSettingsViewController.m */,
 				61C756AF2E65BDAC00B2B371 /* TVNCHotspotManager.h */,
 				61C756B02E65BDAC00B2B371 /* TVNCHotspotManager.m */,
 				CC91EF952E6EF165002F5B2A /* TVNCListItemsController.h */,
@@ -387,6 +397,8 @@
 				CC91EF902E6C2208002F5B2A /* TVNCClientListController.m in Sources */,
 				3F51D099F730BA38987C1300 /* TVNCConnectViewController.m in Sources */,
 				A8688B8057413A0EA6A00EC6 /* TVNCControllerViewController.m in Sources */,
+				00342A5D6EC8F5E00BAD63A9 /* TVNCSettingFormController.m in Sources */,
+				CC483147D1560AF441749858 /* TVNCSettingsViewController.m in Sources */,
 				61B0DD092EB13BEF004CC42B /* TVNCSliderCell.m in Sources */,
 				CC91EF972E6EF165002F5B2A /* TVNCListItemsController.m in Sources */,
 				61C756C62E65BDAC00B2B371 /* TVNCServiceCoordinator.m in Sources */,

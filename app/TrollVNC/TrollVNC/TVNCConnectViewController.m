@@ -275,6 +275,27 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
         ]];
     }
 
+    UIStackView *actions = [[UIStackView alloc] init];
+    actions.translatesAutoresizingMaskIntoConstraints = NO;
+    actions.axis = UILayoutConstraintAxisHorizontal;
+    actions.spacing = 12;
+    actions.distribution = UIStackViewDistributionFillEqually;
+    UIButton *copyBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    [copyBtn setTitle:@"复制地址" forState:UIControlStateNormal];
+    copyBtn.layer.cornerRadius = 12;
+    copyBtn.layer.borderWidth = 1;
+    copyBtn.layer.borderColor = [UIColor systemBlueColor].CGColor;
+    [copyBtn addTarget:self action:@selector(copyDirectURL) forControlEvents:UIControlEventTouchUpInside];
+    UIButton *openBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    [openBtn setTitle:@"打开网页" forState:UIControlStateNormal];
+    openBtn.layer.cornerRadius = 12;
+    openBtn.layer.borderWidth = 1;
+    openBtn.layer.borderColor = [UIColor systemBlueColor].CGColor;
+    [openBtn addTarget:self action:@selector(openDirectURL) forControlEvents:UIControlEventTouchUpInside];
+    [actions addArrangedSubview:copyBtn];
+    [actions addArrangedSubview:openBtn];
+    if (httpPort <= 0 || !ip.length) actions.hidden = YES;
+
     UILabel *hint = [[UILabel alloc] init];
     hint.translatesAutoresizingMaskIntoConstraints = NO;
     hint.font = [UIFont systemFontOfSize:12];
@@ -283,6 +304,7 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
     hint.text = @"内网设备扫码即可连接";
 
     [card addSubview:addr];
+    [card addSubview:actions];
     [card addSubview:hint];
 
     [NSLayoutConstraint activateConstraints:@[
@@ -291,7 +313,11 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
         [title.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16],
         [addr.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
         [addr.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16],
-        [hint.topAnchor constraintEqualToAnchor:addr.bottomAnchor constant:8],
+        [actions.topAnchor constraintEqualToAnchor:addr.bottomAnchor constant:12],
+        [actions.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:40],
+        [actions.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-40],
+        [actions.heightAnchor constraintEqualToConstant:36],
+        [hint.topAnchor constraintEqualToAnchor:actions.bottomAnchor constant:10],
         [hint.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
         [hint.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16],
         [hint.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-14],
@@ -383,6 +409,42 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
 
 - (void)openClients {
     self.tabBarController.selectedIndex = 1;
+}
+
+#pragma mark - U3 扫码直连操作
+
+- (NSString *)directURL {
+    NSInteger httpPort = [self.defaults integerForKey:@"HttpPort"];
+    NSString *ip = TVNCEn0IPv4();
+    if (httpPort <= 0 || !ip.length) return nil;
+    return [NSString stringWithFormat:@"http://%@:%ld", ip, (long)httpPort];
+}
+
+- (void)copyDirectURL {
+    NSString *url = [self directURL];
+    if (!url) return;
+    UIPasteboard *pb = [UIPasteboard generalPasteboard];
+    pb.string = url;
+    [self toast:[NSString stringWithFormat:@"已复制 %@", url]];
+}
+
+- (void)openDirectURL {
+    NSString *url = [self directURL];
+    if (!url) return;
+    NSURL *u = [NSURL URLWithString:url];
+    if (u && [[UIApplication sharedApplication] canOpenURL:u]) {
+        [[UIApplication sharedApplication] openURL:u options:@{} completionHandler:nil];
+    }
+}
+
+- (void)toast:(NSString *)text {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:nil
+                                                               message:text
+                                                        preferredStyle:UIAlertControllerStyleAlert];
+    [self presentViewController:a animated:YES completion:nil];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [a dismissViewControllerAnimated:YES completion:nil];
+    });
 }
 
 #pragma mark - 状态

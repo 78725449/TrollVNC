@@ -19,9 +19,7 @@
 #import "TVNCClientListController.h"
 #import "TVNCConnectViewController.h"
 #import "TVNCControllerViewController.h"
-#import "TVNCRootListController.h"
-
-#import <Preferences/PSRootController.h>
+#import "TVNCSettingsViewController.h"
 
 @interface SceneDelegate ()
 
@@ -64,9 +62,9 @@
                                                              image:[UIImage systemImageNamed:@"rectangle.grid.2x2"]
                                                                tag:2];
 
-    // Tab 4 设置（复用 Preferences 设置列表，功能零风险）
-    TVNCRootListController *settings = [[TVNCRootListController alloc] init];
-    PSRootController *settingsNav = [[PSRootController alloc] initWithRootViewController:settings];
+    // Tab 4 设置（U2.1：8 分组 UIKit 设置）
+    TVNCSettingsViewController *settings = [[TVNCSettingsViewController alloc] init];
+    UINavigationController *settingsNav = [[UINavigationController alloc] initWithRootViewController:settings];
     settingsNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"设置"
                                                            image:[UIImage systemImageNamed:@"gearshape"]
                                                              tag:3];
