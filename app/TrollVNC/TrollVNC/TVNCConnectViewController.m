@@ -123,8 +123,14 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
     [stack addArrangedSubview:[self makeHeroCard]];
     [stack addArrangedSubview:[self makeModeCard]];
     [stack addArrangedSubview:[self makeDirectCard]];
+    [stack addArrangedSubview:[self makeClientsCard]];
 
-    NSLog(@"[TVNC] connect vc viewDidLoad end (stripped bisect: hero+mode+direct-basic)");
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(refreshStatus)
+                                                 name:TVNCServiceStatusDidChangeNotification
+                                               object:nil];
+    [self refreshStatus];
+    NSLog(@"[TVNC] connect vc viewDidLoad end (bisect4: no QR, with clients+status)");
 }
 
 - (void)viewDidAppear:(BOOL)animated {
