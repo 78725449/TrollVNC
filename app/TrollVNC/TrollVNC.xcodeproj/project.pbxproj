@@ -53,6 +53,7 @@
 		A8688B8057413A0EA6A00EC6 /* TVNCControllerViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = D657AD36CE988F4250151BD2 /* TVNCControllerViewController.m */; };
 		00342A5D6EC8F5E00BAD63A9 /* TVNCSettingFormController.m in Sources */ = {isa = PBXBuildFile; fileRef = 74F2A8E3A494173C94F687E3 /* TVNCSettingFormController.m */; };
 		CC483147D1560AF441749858 /* TVNCSettingsViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = DD91E4A482BBB29670FDBC43 /* TVNCSettingsViewController.m */; };
+		071F88A7AFEA63ED0B6FC348 /* TVNCViewerViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = 28C60A0ADF06564EFA55D1B5 /* TVNCViewerViewController.m */; };
 		CC91EF932E6CA6C5002F5B2A /* TVNCClientCell.m in Sources */ = {isa = PBXBuildFile; fileRef = CC91EF922E6CA6C5002F5B2A /* TVNCClientCell.m */; };
 		CC91EF972E6EF165002F5B2A /* TVNCListItemsController.m in Sources */ = {isa = PBXBuildFile; fileRef = CC91EF962E6EF165002F5B2A /* TVNCListItemsController.m */; };
 /* End PBXBuildFile section */
@@ -108,6 +109,8 @@
 		74F2A8E3A494173C94F687E3 /* TVNCSettingFormController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCSettingFormController.m; sourceTree = "<group>"; };
 		4194A93C0D7290F4743A243E /* TVNCSettingsViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCSettingsViewController.h; sourceTree = "<group>"; };
 		DD91E4A482BBB29670FDBC43 /* TVNCSettingsViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCSettingsViewController.m; sourceTree = "<group>"; };
+		C3AC89DAD51956D915F4D71C /* TVNCViewerViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCViewerViewController.h; sourceTree = "<group>"; };
+		28C60A0ADF06564EFA55D1B5 /* TVNCViewerViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCViewerViewController.m; sourceTree = "<group>"; };
 		CC91EF912E6CA6C5002F5B2A /* TVNCClientCell.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCClientCell.h; sourceTree = "<group>"; };
 		CC91EF922E6CA6C5002F5B2A /* TVNCClientCell.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCClientCell.m; sourceTree = "<group>"; };
 		CC91EF942E6E03BD002F5B2A /* Control.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Control.h; sourceTree = "<group>"; };
@@ -218,6 +221,8 @@
 				74F2A8E3A494173C94F687E3 /* TVNCSettingFormController.m */,
 				4194A93C0D7290F4743A243E /* TVNCSettingsViewController.h */,
 				DD91E4A482BBB29670FDBC43 /* TVNCSettingsViewController.m */,
+				C3AC89DAD51956D915F4D71C /* TVNCViewerViewController.h */,
+				28C60A0ADF06564EFA55D1B5 /* TVNCViewerViewController.m */,
 				61C756AF2E65BDAC00B2B371 /* TVNCHotspotManager.h */,
 				61C756B02E65BDAC00B2B371 /* TVNCHotspotManager.m */,
 				CC91EF952E6EF165002F5B2A /* TVNCListItemsController.h */,
@@ -399,6 +404,7 @@
 				A8688B8057413A0EA6A00EC6 /* TVNCControllerViewController.m in Sources */,
 				00342A5D6EC8F5E00BAD63A9 /* TVNCSettingFormController.m in Sources */,
 				CC483147D1560AF441749858 /* TVNCSettingsViewController.m in Sources */,
+				071F88A7AFEA63ED0B6FC348 /* TVNCViewerViewController.m in Sources */,
 				61B0DD092EB13BEF004CC42B /* TVNCSliderCell.m in Sources */,
 				CC91EF972E6EF165002F5B2A /* TVNCListItemsController.m in Sources */,
 				61C756C62E65BDAC00B2B371 /* TVNCServiceCoordinator.m in Sources */,

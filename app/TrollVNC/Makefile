@@ -20,6 +20,7 @@ else
 TrollVNC_CODESIGN_FLAGS += -STrollVNC/TrollVNC.entitlements
 endif
 
-TrollVNC_XCODEFLAGS += OTHER_LDFLAGS="-framework BackgroundTasks"
+TrollVNC_XCODEFLAGS += OTHER_LDFLAGS="-framework BackgroundTasks -L$(THEOS_PROJECT_DIR)/../../lib -lvncclient -lssl -lcrypto -ljpeg -lz"
+TrollVNC_XCODEFLAGS += HEADER_SEARCH_PATHS="$(THEOS_PROJECT_DIR)/../../include"
 
 include $(THEOS_MAKE_PATH)/xcodeproj.mk
