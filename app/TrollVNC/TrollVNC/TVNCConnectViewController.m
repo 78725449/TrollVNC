@@ -92,9 +92,13 @@ static NSInteger TVNCOnlineClientCount(void) {
     if (send(fd, cmd, strlen(cmd), 0) < 0) { close(fd); return 0; }
     NSMutableData *md = [NSMutableData data];
     char buf[2048];
-    struct timeval tv = {0, 300000};
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    fd_set rfds;
     for (;;) {
+        FD_ZERO(&rfds);
+        FD_SET(fd, &rfds);
+        struct timeval timeout = {0, 300000};
+        int sel = select(fd + 1, &rfds, NULL, NULL, &timeout);
+        if (sel <= 0) break;
         ssize_t n = recv(fd, buf, sizeof(buf), 0);
         if (n <= 0) break;
         [md appendBytes:buf length:(NSUInteger)n];
@@ -599,8 +603,14 @@ static NSInteger TVNCOnlineClientCount(void) {
 }
 
 - (void)refreshClientCount {
-    NSInteger n = TVNCOnlineClientCount();
-    self.clientsCountLabel.text = [NSString stringWithFormat:@"%ld 台", (long)n];
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSInteger n = TVNCOnlineClientCount();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            if (strongSelf) strongSelf.clientsCountLabel.text = [NSString stringWithFormat:@"%ld 台", (long)n];
+        });
+    });
 }
 
 - (void)openClients {
