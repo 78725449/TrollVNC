@@ -105,7 +105,6 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
 @property(nonatomic, strong) UIView *contentCard;
 @property(nonatomic, strong) UIImageView *qrImageView;
 @property(nonatomic, strong) UILabel *qrAddrLabel;
-@property(nonatomic, strong) UIStackView *qrActions;
 @property(nonatomic, strong) UIStackView *statusPill;
 @property(nonatomic, strong) UIView *statusDotView;
 @property(nonatomic, strong) UILabel *statusPillLabel;
@@ -307,12 +306,6 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
     UILabel *title = [self cardTitle:@"扫码直连"];
     [card addSubview:title];
 
-    self.qrAddrLabel = [[UILabel alloc] init];
-    self.qrAddrLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    self.qrAddrLabel.font = [UIFont boldSystemFontOfSize:16];
-    self.qrAddrLabel.textColor = [UIColor labelColor];
-    self.qrAddrLabel.textAlignment = NSTextAlignmentCenter;
-
     self.qrImageView = [[UIImageView alloc] init];
     self.qrImageView.translatesAutoresizingMaskIntoConstraints = NO;
     self.qrImageView.contentMode = UIViewContentModeScaleAspectFit;
@@ -320,42 +313,38 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
     self.qrImageView.layer.cornerRadius = 8;
     self.qrImageView.layer.masksToBounds = YES;
 
-    [card addSubview:self.qrAddrLabel];
+    self.qrAddrLabel = [[UILabel alloc] init];
+    self.qrAddrLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.qrAddrLabel.font = [UIFont boldSystemFontOfSize:16];
+    self.qrAddrLabel.textColor = [UIColor labelColor];
+    self.qrAddrLabel.textAlignment = NSTextAlignmentCenter;
+
+    UILabel *hint = [[UILabel alloc] init];
+    hint.translatesAutoresizingMaskIntoConstraints = NO;
+    hint.font = [UIFont systemFontOfSize:12];
+    hint.textColor = [UIColor secondaryLabelColor];
+    hint.textAlignment = NSTextAlignmentCenter;
+    hint.text = @"内网设备扫码即可连接";
+
     [card addSubview:self.qrImageView];
+    [card addSubview:self.qrAddrLabel];
+    [card addSubview:hint];
 
     [NSLayoutConstraint activateConstraints:@[
         [title.topAnchor constraintEqualToAnchor:card.topAnchor constant:16],
         [title.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18],
         [title.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18],
-        [self.qrAddrLabel.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:14],
-        [self.qrAddrLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18],
-        [self.qrAddrLabel.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18],
-        [self.qrImageView.topAnchor constraintEqualToAnchor:self.qrAddrLabel.bottomAnchor constant:12],
+        [self.qrImageView.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:14],
         [self.qrImageView.centerXAnchor constraintEqualToAnchor:card.centerXAnchor],
         [self.qrImageView.widthAnchor constraintEqualToConstant:170],
         [self.qrImageView.heightAnchor constraintEqualToConstant:170],
-        [self.qrImageView.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-16],
-    ]];
-
-    self.qrActions = [[UIStackView alloc] init];
-    self.qrActions.translatesAutoresizingMaskIntoConstraints = NO;
-    self.qrActions.axis = UILayoutConstraintAxisHorizontal;
-    self.qrActions.spacing = 12;
-    self.qrActions.distribution = UIStackViewDistributionFillEqually;
-    UIButton *copyBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    [copyBtn setTitle:@"复制地址" forState:UIControlStateNormal];
-    [copyBtn addTarget:self action:@selector(copyDirectURL) forControlEvents:UIControlEventTouchUpInside];
-    UIButton *openBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    [openBtn setTitle:@"打开网页" forState:UIControlStateNormal];
-    [openBtn addTarget:self action:@selector(openDirectURL) forControlEvents:UIControlEventTouchUpInside];
-    [self.qrActions addArrangedSubview:copyBtn];
-    [self.qrActions addArrangedSubview:openBtn];
-    [card addSubview:self.qrActions];
-    [NSLayoutConstraint activateConstraints:@[
-        [self.qrActions.topAnchor constraintEqualToAnchor:self.qrImageView.bottomAnchor constant:10],
-        [self.qrActions.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:48],
-        [self.qrActions.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-48],
-        [self.qrActions.heightAnchor constraintEqualToConstant:36],
+        [self.qrAddrLabel.topAnchor constraintEqualToAnchor:self.qrImageView.bottomAnchor constant:12],
+        [self.qrAddrLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18],
+        [self.qrAddrLabel.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18],
+        [hint.topAnchor constraintEqualToAnchor:self.qrAddrLabel.bottomAnchor constant:6],
+        [hint.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18],
+        [hint.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18],
+        [hint.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-14],
     ]];
 
     return card;
@@ -367,7 +356,6 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
     if (httpPort <= 0 || !ip.length) {
         self.qrAddrLabel.text = httpPort <= 0 ? @"HTTP 网页未开启（设置 → 直连参数 → HTTP 端口）" : @"未获取到 IP";
         self.qrImageView.hidden = YES;
-        self.qrActions.hidden = YES;
         return;
     }
     NSString *url = [NSString stringWithFormat:@"http://%@:%ld", ip, (long)httpPort];
@@ -378,10 +366,8 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
             if (qr) {
                 self.qrImageView.image = qr;
                 self.qrImageView.hidden = NO;
-                self.qrActions.hidden = NO;
             } else {
                 self.qrImageView.hidden = YES;
-                self.qrActions.hidden = NO;
             }
         });
     });
