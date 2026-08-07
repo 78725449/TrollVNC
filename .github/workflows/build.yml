@@ -85,7 +85,7 @@ jobs:
           # Install xcbeautify for build output formatting
           # Install ldid for iOS code signing
           # Install 7zip for compression
-          brew install xcbeautify ldid-procursus p7zip make
+          brew install ldid-procursus p7zip make  # xcbeautify temporarily removed for raw build logs
 
       - name: Checkout roothide/theos
         uses: actions/checkout@v4
