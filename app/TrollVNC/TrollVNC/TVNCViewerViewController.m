@@ -18,6 +18,8 @@
 #import "TVNCViewerViewController.h"
 
 #import <rfb/rfbclient.h>
+#import <stdlib.h>
+#import <string.h>
 
 static void *const kViewerClientTag = &kViewerClientTag;
 

@@ -24,6 +24,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (instancetype)initWithHost:(NSString *)host port:(int)port name:(NSString *)name;
 
+/// 由 libvncclient 帧回调调用（RFB 线程），标记有新帧可渲染
+- (void)markFrameReady;
+
 @end
 
 NS_ASSUME_NONNULL_END
