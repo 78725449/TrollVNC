@@ -33,10 +33,14 @@
 - (void)scene:(UIScene *)scene
     willConnectToSession:(UISceneSession *)session
                  options:(UISceneConnectionOptions *)connectionOptions {
-    // 【二分诊断】临时恢复为 no-op：走 storyboard 显示旧版 Preferences 设置页
-    // 目的：判断「启动即崩溃」是来自 Tab 搭建/新 VC，还是更早的链接库/AppDelegate/storyboard。
-    // 若此版本能打开 → 问题在 Tab 搭建；若仍秒退 → 问题在链接库或更早启动路径。
-    NSLog(@"[TVNC] scene no-op (bisect diagnostic)");
+    // 防御：新 Tab UI 启动异常时回退旧设置页
+    @try {
+        [self buildTabApp:scene];
+    } @catch (NSException *e) {
+        NSLog(@"[TVNC] Tab app launch failed: %@ %@", e.name, e.reason);
+        NSLog(@"[TVNC] %@", e.callStackSymbols);
+        [self buildLegacyRoot:scene];
+    }
 }
 
 - (void)buildTabApp:(UIScene *)scene {
@@ -46,8 +50,10 @@
 
     UITabBarController *tab = [[UITabBarController alloc] init];
 
-    // Tab 1 连接
-    TVNCConnectViewController *connect = [[TVNCConnectViewController alloc] init];
+    // Tab 1 连接（【二分诊断】占位 VC，排除连接页 viewDidLoad）
+    UIViewController *connect = [[UIViewController alloc] init];
+    connect.title = @"连接";
+    connect.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
     UINavigationController *connectNav = [[UINavigationController alloc] initWithRootViewController:connect];
     connectNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"连接"
                                                           image:[UIImage systemImageNamed:@"antenna.radiowaves.left.and.right"]
