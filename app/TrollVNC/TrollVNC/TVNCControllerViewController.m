@@ -57,15 +57,20 @@ static const NSInteger kConsolePort = 8080; // trollvnc-farm FARM_PORT 默认
     filter.translatesAutoresizingMaskIntoConstraints = NO;
     filter.axis = UILayoutConstraintAxisHorizontal;
     filter.spacing = 8;
+    filter.distribution = UIStackViewDistributionFill;
     self.chips = [NSMutableArray array];
     NSArray<NSString *> *titles = @[@"全部", @"直连", @"中继"];
     for (NSInteger i = 0; i < titles.count; i++) {
         UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
-        [b setTitle:titles[i] forState:UIControlStateNormal];
+        UIButtonConfiguration *cfg = [UIButtonConfiguration plainButtonConfiguration];
+        cfg.title = titles[i];
+        cfg.baseForegroundColor = [UIColor labelColor];
+        cfg.contentInsets = NSDirectionalEdgeInsetsMake(8, 16, 8, 16);
+        cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+        b.configuration = cfg;
         b.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
-        b.layer.cornerRadius = 18;
-        b.layer.borderWidth = 1;
-        b.contentEdgeInsets = UIEdgeInsetsMake(8, 16, 8, 16);
+        [b setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+        [b setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
         b.tag = i;
         [b addTarget:self action:@selector(chipTapped:) forControlEvents:UIControlEventTouchUpInside];
         [self.chips addObject:b];
@@ -248,15 +253,17 @@ static const NSInteger kConsolePort = 8080; // trollvnc-farm FARM_PORT 默认
 
 - (void)updateChipAppearance {
     for (UIButton *b in self.chips) {
+        UIButtonConfiguration *cfg = [b.configuration copy];
         if (b.selected) {
-            b.backgroundColor = [UIColor systemBlueColor];
-            [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-            b.layer.borderColor = [UIColor systemBlueColor].CGColor;
+            cfg.baseBackgroundColor = [UIColor systemBlueColor];
+            cfg.baseForegroundColor = [UIColor whiteColor];
         } else {
-            b.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
-            [b setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
-            b.layer.borderColor = [UIColor separatorColor].CGColor;
+            cfg.baseBackgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
+            cfg.baseForegroundColor = [UIColor labelColor];
         }
+        b.configuration = cfg;
+        b.layer.borderWidth = 1;
+        b.layer.borderColor = b.selected ? [UIColor systemBlueColor].CGColor : [UIColor separatorColor].CGColor;
     }
 }
 
@@ -264,7 +271,7 @@ static const NSInteger kConsolePort = 8080; // trollvnc-farm FARM_PORT 默认
 
 - (void)layoutTapped:(UIButton *)sender {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"布局"
-                                                                  message:@"卡片墙布局（横屏 N / 竖屏 N）将在后续版本生效"
+                                                                  message:@"布局（横屏 N / 竖屏 N）将在后续版本生效"
                                                            preferredStyle:UIAlertControllerStyleActionSheet];
     [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     if (sheet.popoverPresentationController) {

@@ -50,10 +50,8 @@
 
     UITabBarController *tab = [[UITabBarController alloc] init];
 
-    // Tab 1 连接（【二分诊断】占位 VC，排除连接页 viewDidLoad）
-    UIViewController *connect = [[UIViewController alloc] init];
-    connect.title = @"连接";
-    connect.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
+    // Tab 1 连接
+    TVNCConnectViewController *connect = [[TVNCConnectViewController alloc] init];
     UINavigationController *connectNav = [[UINavigationController alloc] initWithRootViewController:connect];
     connectNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"连接"
                                                           image:[UIImage systemImageNamed:@"antenna.radiowaves.left.and.right"]
@@ -65,6 +63,7 @@
     TVNCClientListController *clients = [[TVNCClientListController alloc] init];
     clients.bundle = resBundle ?: [NSBundle mainBundle];
     clients.primaryColor = [UIColor systemBlueColor];
+    clients.hideDismissButton = YES;
     UINavigationController *clientsNav = [[UINavigationController alloc] initWithRootViewController:clients];
     clientsNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"客户端"
                                                           image:[UIImage systemImageNamed:@"iphone"]

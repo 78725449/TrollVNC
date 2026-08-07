@@ -1,18 +1,7 @@
 /*
  This file is part of TrollVNC
  Copyright (c) 2025 82Flex <82flex@gmail.com> and contributors
-
- This program is free software; you can redistribute it and/or modify
- it under the terms of the GNU General Public License version 2
- as published by the Free Software Foundation.
-
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- GNU General Public License for more details.
-
- You should have received a copy of the GNU General Public License
- along with this program. If not, see <https://www.gnu.org/licenses/>.
+ ... license ...
 */
 
 #import "TVNCConnectViewController.h"
@@ -31,7 +20,6 @@ static NSString *const kDefaultsSuite = @"com.82flex.trollvnc";
 
 #pragma mark - 工具
 
-// en0 的 IPv4（与 VNC 服务同接口），用于扫码直连地址
 static NSString *TVNCEn0IPv4(void) {
     struct ifaddrs *ifaList = NULL;
     if (getifaddrs(&ifaList) != 0 || !ifaList) return nil;
@@ -52,23 +40,58 @@ static NSString *TVNCEn0IPv4(void) {
     return ip;
 }
 
-// 生成二维码（内容为 http://IP:httpPort）
+// 二维码生成（安全版：@try 保护 + 由调用方在后台线程执行）
 static UIImage *TVNCQRCodeImage(NSString *content) {
     if (!content.length) return nil;
-    NSData *data = [content dataUsingEncoding:NSISOLatin1StringEncoding];
-    if (!data) return nil;
-    CIFilter *filter = [CIFilter filterWithName:@"CIQRCodeGenerator"];
-    [filter setValue:data forKey:@"inputMessage"];
-    [filter setValue:@"M" forKey:@"inputCorrectionLevel"];
-    CIImage *out = filter.outputImage;
-    if (!out) return nil;
-    CIImage *scaled = [out imageByApplyingTransform:CGAffineTransformMakeScale(10, 10)];
-    CIContext *ctx = [CIContext contextWithOptions:nil];
-    CGImageRef cg = [ctx createCGImage:scaled fromRect:scaled.extent];
-    UIImage *img = cg ? [UIImage imageWithCGImage:cg] : nil;
-    if (cg) CGImageRelease(cg);
-    return img;
+    @try {
+        NSData *data = [content dataUsingEncoding:NSISOLatin1StringEncoding];
+        if (!data) return nil;
+        CIFilter *filter = [CIFilter filterWithName:@"CIQRCodeGenerator"];
+        [filter setValue:data forKey:@"inputMessage"];
+        [filter setValue:@"M" forKey:@"inputCorrectionLevel"];
+        CIImage *out = filter.outputImage;
+        if (!out) return nil;
+        CIImage *scaled = [out imageByApplyingTransform:CGAffineTransformMakeScale(10, 10)];
+        CIContext *ctx = [CIContext contextWithOptions:@{}];
+        CGImageRef cg = [ctx createCGImage:scaled fromRect:scaled.extent];
+        UIImage *img = cg ? [UIImage imageWithCGImage:cg] : nil;
+        if (cg) CGImageRelease(cg);
+        return img;
+    } @catch (NSException *e) {
+        NSLog(@"[TVNC] QR generation failed: %@ %@", e.name, e.reason);
+        return nil;
+    }
 }
+
+#pragma mark - 渐变 Hero 卡（layoutSubviews 更新渐变 frame，确保可见）
+
+@interface TVNCGradientCard : UIView
+@property(nonatomic, strong) CAGradientLayer *grad;
+@end
+
+@implementation TVNCGradientCard
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        _grad = [CAGradientLayer layer];
+        _grad.colors = @[
+            (id)[UIColor colorWithRed:0.16 green:0.35 blue:0.98 alpha:1].CGColor,
+            (id)[UIColor colorWithRed:0.24 green:0.52 blue:1.0 alpha:1].CGColor,
+            (id)[UIColor colorWithRed:0.42 green:0.72 blue:1.0 alpha:1].CGColor,
+        ];
+        _grad.startPoint = CGPointMake(0, 0);
+        _grad.endPoint = CGPointMake(1, 1);
+        [self.layer addSublayer:_grad];
+    }
+    return self;
+}
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    self.grad.frame = self.bounds;
+}
+@end
+
+#pragma mark - 连接页
 
 @interface TVNCConnectViewController ()
 
@@ -77,7 +100,10 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
 @property(nonatomic, strong) UILabel *gatewayLabel;
 @property(nonatomic, strong) UILabel *nameLabel;
 @property(nonatomic, strong) UISegmentedControl *modeSegment;
-@property(nonatomic, strong) UIView *contentCard;   // 随分段切换（直连=扫码卡 / 反向=参数卡）
+@property(nonatomic, strong) UIView *contentCard;
+@property(nonatomic, strong) UIImageView *qrImageView;
+@property(nonatomic, strong) UILabel *qrAddrLabel;
+@property(nonatomic, strong) UIStackView *qrActions;
 @property(nonatomic, strong) NSUserDefaults *defaults;
 
 @end
@@ -94,7 +120,6 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    NSLog(@"[TVNC] connect vc viewDidLoad begin");
     self.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
     self.title = @"连接";
 
@@ -105,7 +130,7 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
     UIStackView *stack = [[UIStackView alloc] init];
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     stack.axis = UILayoutConstraintAxisVertical;
-    stack.spacing = 16;
+    stack.spacing = 14;
     [scroll addSubview:stack];
 
     [NSLayoutConstraint activateConstraints:@[
@@ -130,12 +155,12 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
                                                  name:TVNCServiceStatusDidChangeNotification
                                                object:nil];
     [self refreshStatus];
-    NSLog(@"[TVNC] connect vc viewDidLoad end (bisect4: no QR, with clients+status)");
 }
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     [self refreshStatus];
+    [self generateQRAsync];
 }
 
 - (void)dealloc {
@@ -145,18 +170,10 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
 #pragma mark - Hero
 
 - (UIView *)makeHeroCard {
-    UIView *card = [[UIView alloc] init];
+    TVNCGradientCard *card = [[TVNCGradientCard alloc] init];
     card.translatesAutoresizingMaskIntoConstraints = NO;
     card.layer.cornerRadius = 24;
     card.clipsToBounds = YES;
-
-    CAGradientLayer *grad = [CAGradientLayer layer];
-    grad.colors = @[(id)[UIColor systemBlueColor].CGColor,
-                    (id)[UIColor systemIndigoColor].CGColor,
-                    (id)[UIColor systemTealColor].CGColor];
-    grad.startPoint = CGPointMake(0, 0);
-    grad.endPoint = CGPointMake(1, 1);
-    [card.layer insertSublayer:grad atIndex:0];
 
     self.nameLabel = [[UILabel alloc] init];
     self.nameLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -176,7 +193,7 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
     self.gatewayLabel = [[UILabel alloc] init];
     self.gatewayLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.gatewayLabel.font = [UIFont systemFontOfSize:13];
-    self.gatewayLabel.textColor = [UIColor colorWithWhite:1 alpha:0.9];
+    self.gatewayLabel.textColor = [UIColor colorWithWhite:1 alpha:0.92];
 
     UIStackView *statusRow = [[UIStackView alloc] initWithArrangedSubviews:@[self.statusDot, self.statusLabel]];
     statusRow.translatesAutoresizingMaskIntoConstraints = NO;
@@ -188,23 +205,23 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
     [card addSubview:self.gatewayLabel];
 
     [NSLayoutConstraint activateConstraints:@[
-        [card.heightAnchor constraintGreaterThanOrEqualToConstant:110],
-        [self.nameLabel.topAnchor constraintEqualToAnchor:card.topAnchor constant:18],
-        [self.nameLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18],
-        [self.nameLabel.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18],
-        [statusRow.topAnchor constraintEqualToAnchor:self.nameLabel.bottomAnchor constant:12],
-        [statusRow.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18],
+        [card.heightAnchor constraintGreaterThanOrEqualToConstant:120],
+        [self.nameLabel.topAnchor constraintEqualToAnchor:card.topAnchor constant:20],
+        [self.nameLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:20],
+        [self.nameLabel.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-20],
+        [statusRow.topAnchor constraintEqualToAnchor:self.nameLabel.bottomAnchor constant:14],
+        [statusRow.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:20],
         [self.statusDot.widthAnchor constraintEqualToConstant:8],
         [self.statusDot.heightAnchor constraintEqualToConstant:8],
         [self.gatewayLabel.topAnchor constraintEqualToAnchor:statusRow.bottomAnchor constant:8],
-        [self.gatewayLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18],
-        [self.gatewayLabel.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18],
-        [self.gatewayLabel.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-18],
+        [self.gatewayLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:20],
+        [self.gatewayLabel.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-20],
+        [self.gatewayLabel.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-20],
     ]];
     return card;
 }
 
-#pragma mark - 模式分段 + 内容卡
+#pragma mark - 模式分段
 
 - (UIView *)makeModeCard {
     UIView *card = [self newCard];
@@ -222,169 +239,106 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
     return card;
 }
 
-// 内容卡随分段切换：直连=扫码卡；反向=参数摘要卡
-- (void)refreshContentCard:(UIStackView *)stack {
-    if (self.contentCard) {
-        [stack removeArrangedSubview:self.contentCard];
-        [self.contentCard removeFromSuperview];
-        self.contentCard = nil;
-    }
-    UIView *card = (self.modeSegment.selectedSegmentIndex == 0) ? [self makeDirectCard] : [self makeReverseCard];
-    self.contentCard = card;
-    [stack insertArrangedSubview:card atIndex:2];
-}
-
 - (void)modeChanged:(UISegmentedControl *)seg {
-    UIStackView *stack = (UIStackView *)self.contentCard.superview;
-    [self refreshContentCard:stack];
+    // 反向连接参数摘要暂以弹窗提示（配置在设置页后续补齐）
+    if (seg.selectedSegmentIndex == 1) {
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"反向连接"
+                                                                  message:@"反向连接参数将在「设置」中提供配置"
+                                                           preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:a animated:YES completion:nil];
+        seg.selectedSegmentIndex = 0;
+    }
 }
 
-#pragma mark - 内网直连：扫码卡
+#pragma mark - 扫码直连卡
 
 - (UIView *)makeDirectCard {
     UIView *card = [self newCard];
     UILabel *title = [self cardTitle:@"扫码直连"];
     [card addSubview:title];
 
-    NSInteger httpPort = [self.defaults integerForKey:@"HttpPort"];
-    NSString *ip = TVNCEn0IPv4();
-    UILabel *addr = [[UILabel alloc] init];
-    addr.translatesAutoresizingMaskIntoConstraints = NO;
-    addr.font = [UIFont boldSystemFontOfSize:16];
-    addr.textAlignment = NSTextAlignmentCenter;
+    self.qrAddrLabel = [[UILabel alloc] init];
+    self.qrAddrLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.qrAddrLabel.font = [UIFont boldSystemFontOfSize:16];
+    self.qrAddrLabel.textColor = [UIColor labelColor];
+    self.qrAddrLabel.textAlignment = NSTextAlignmentCenter;
 
-    if (NO && httpPort > 0 && ip.length) {
-        NSString *url = [NSString stringWithFormat:@"http://%@:%ld", ip, (long)httpPort];
-        addr.text = url;
-        UIImage *qr = TVNCQRCodeImage(url);
-        UIImageView *iv = [[UIImageView alloc] initWithImage:qr];
-        iv.translatesAutoresizingMaskIntoConstraints = NO;
-        iv.contentMode = UIViewContentModeScaleAspectFit;
-        [card addSubview:iv];
-        [NSLayoutConstraint activateConstraints:@[
-            [iv.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:14],
-            [iv.centerXAnchor constraintEqualToAnchor:card.centerXAnchor],
-            [iv.widthAnchor constraintEqualToConstant:160],
-            [iv.heightAnchor constraintEqualToConstant:160],
-            [addr.topAnchor constraintEqualToAnchor:iv.bottomAnchor constant:12],
-        ]];
-    } else {
-        addr.text = httpPort <= 0 ? @"HTTP 网页未开启（设置 → 直连参数 → HTTP 端口）" : @"未获取到 IP";
-        addr.font = [UIFont systemFontOfSize:14];
-        addr.textColor = [UIColor secondaryLabelColor];
-        [NSLayoutConstraint activateConstraints:@[
-            [addr.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:20],
-        ]];
-    }
+    self.qrImageView = [[UIImageView alloc] init];
+    self.qrImageView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.qrImageView.contentMode = UIViewContentModeScaleAspectFit;
+    self.qrImageView.backgroundColor = [UIColor whiteColor];
+    self.qrImageView.layer.cornerRadius = 8;
+    self.qrImageView.layer.masksToBounds = YES;
 
-    UIStackView *actions = [[UIStackView alloc] init];
-    actions.translatesAutoresizingMaskIntoConstraints = NO;
-    actions.axis = UILayoutConstraintAxisHorizontal;
-    actions.spacing = 12;
-    actions.distribution = UIStackViewDistributionFillEqually;
+    [card addSubview:self.qrAddrLabel];
+    [card addSubview:self.qrImageView];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [title.topAnchor constraintEqualToAnchor:card.topAnchor constant:16],
+        [title.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18],
+        [title.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18],
+        [self.qrAddrLabel.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:14],
+        [self.qrAddrLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18],
+        [self.qrAddrLabel.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18],
+        [self.qrImageView.topAnchor constraintEqualToAnchor:self.qrAddrLabel.bottomAnchor constant:12],
+        [self.qrImageView.centerXAnchor constraintEqualToAnchor:card.centerXAnchor],
+        [self.qrImageView.widthAnchor constraintEqualToConstant:170],
+        [self.qrImageView.heightAnchor constraintEqualToConstant:170],
+        [self.qrImageView.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-16],
+    ]];
+
+    self.qrActions = [[UIStackView alloc] init];
+    self.qrActions.translatesAutoresizingMaskIntoConstraints = NO;
+    self.qrActions.axis = UILayoutConstraintAxisHorizontal;
+    self.qrActions.spacing = 12;
+    self.qrActions.distribution = UIStackViewDistributionFillEqually;
     UIButton *copyBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     [copyBtn setTitle:@"复制地址" forState:UIControlStateNormal];
-    copyBtn.layer.cornerRadius = 12;
-    copyBtn.layer.borderWidth = 1;
-    copyBtn.layer.borderColor = [UIColor systemBlueColor].CGColor;
     [copyBtn addTarget:self action:@selector(copyDirectURL) forControlEvents:UIControlEventTouchUpInside];
     UIButton *openBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     [openBtn setTitle:@"打开网页" forState:UIControlStateNormal];
-    openBtn.layer.cornerRadius = 12;
-    openBtn.layer.borderWidth = 1;
-    openBtn.layer.borderColor = [UIColor systemBlueColor].CGColor;
     [openBtn addTarget:self action:@selector(openDirectURL) forControlEvents:UIControlEventTouchUpInside];
-    [actions addArrangedSubview:copyBtn];
-    [actions addArrangedSubview:openBtn];
-    if (httpPort <= 0 || !ip.length) actions.hidden = YES;
-
-    UILabel *hint = [[UILabel alloc] init];
-    hint.translatesAutoresizingMaskIntoConstraints = NO;
-    hint.font = [UIFont systemFontOfSize:12];
-    hint.textColor = [UIColor secondaryLabelColor];
-    hint.textAlignment = NSTextAlignmentCenter;
-    hint.text = @"内网设备扫码即可连接";
-
-    [card addSubview:addr];
-    [card addSubview:actions];
-    [card addSubview:hint];
-
+    [self.qrActions addArrangedSubview:copyBtn];
+    [self.qrActions addArrangedSubview:openBtn];
+    [card addSubview:self.qrActions];
     [NSLayoutConstraint activateConstraints:@[
-        [title.topAnchor constraintEqualToAnchor:card.topAnchor constant:14],
-        [title.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
-        [title.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16],
-        [addr.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
-        [addr.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16],
-        [actions.topAnchor constraintEqualToAnchor:addr.bottomAnchor constant:12],
-        [actions.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:40],
-        [actions.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-40],
-        [actions.heightAnchor constraintEqualToConstant:36],
-        [hint.topAnchor constraintEqualToAnchor:actions.bottomAnchor constant:10],
-        [hint.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
-        [hint.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16],
-        [hint.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-14],
+        [self.qrActions.topAnchor constraintEqualToAnchor:self.qrImageView.bottomAnchor constant:10],
+        [self.qrActions.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:48],
+        [self.qrActions.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-48],
+        [self.qrActions.heightAnchor constraintEqualToConstant:36],
     ]];
+
     return card;
 }
 
-#pragma mark - 反向连接：参数摘要卡
-
-- (UIView *)makeReverseCard {
-    UIView *card = [self newCard];
-    UILabel *title = [self cardTitle:@"反向连接（需对端监听）"];
-    [card addSubview:title];
-
-    NSString *mode = [self.defaults stringForKey:@"ReverseMode"] ?: @"none";
-    NSString *sock = [self.defaults stringForKey:@"ReverseSocket"] ?: @"";
-    NSString *rid = [self.defaults stringForKey:@"ReverseRepeaterID"] ?: @"";
-
-    NSArray<NSArray<NSString *> *> *rows = @[
-        @[@"模式", mode],
-        @[@"服务器", sock.length ? sock : @"（未设置）"],
-        @[@"中继 ID", rid.length ? rid : @"（未设置）"],
-    ];
-    UIStackView *rowStack = [[UIStackView alloc] init];
-    rowStack.translatesAutoresizingMaskIntoConstraints = NO;
-    rowStack.axis = UILayoutConstraintAxisVertical;
-    rowStack.spacing = 8;
-    for (NSArray<NSString *> *row in rows) {
-        UILabel *k = [[UILabel alloc] init];
-        k.font = [UIFont systemFontOfSize:13];
-        k.textColor = [UIColor secondaryLabelColor];
-        k.text = row[0];
-        UILabel *v = [[UILabel alloc] init];
-        v.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
-        v.text = row[1];
-        v.textAlignment = NSTextAlignmentRight;
-        UIStackView *line = [[UIStackView alloc] initWithArrangedSubviews:@[k, v]];
-        line.axis = UILayoutConstraintAxisHorizontal;
-        line.spacing = 12;
-        [rowStack addArrangedSubview:line];
+- (void)generateQRAsync {
+    NSInteger httpPort = [self.defaults integerForKey:@"HttpPort"];
+    NSString *ip = TVNCEn0IPv4();
+    if (httpPort <= 0 || !ip.length) {
+        self.qrAddrLabel.text = httpPort <= 0 ? @"HTTP 网页未开启（设置 → 直连参数 → HTTP 端口）" : @"未获取到 IP";
+        self.qrImageView.hidden = YES;
+        self.qrActions.hidden = YES;
+        return;
     }
-    UILabel *hint = [[UILabel alloc] init];
-    hint.translatesAutoresizingMaskIntoConstraints = NO;
-    hint.font = [UIFont systemFontOfSize:12];
-    hint.textColor = [UIColor secondaryLabelColor];
-    hint.text = @"反向参数在「设置」中配置；反向开启会关闭本地直连/HTTP/Bonjour。";
-
-    [card addSubview:rowStack];
-    [card addSubview:hint];
-    [NSLayoutConstraint activateConstraints:@[
-        [title.topAnchor constraintEqualToAnchor:card.topAnchor constant:14],
-        [title.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
-        [title.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16],
-        [rowStack.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:14],
-        [rowStack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
-        [rowStack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16],
-        [hint.topAnchor constraintEqualToAnchor:rowStack.bottomAnchor constant:12],
-        [hint.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
-        [hint.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16],
-        [hint.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-14],
-    ]];
-    return card;
+    NSString *url = [NSString stringWithFormat:@"http://%@:%ld", ip, (long)httpPort];
+    self.qrAddrLabel.text = url;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        UIImage *qr = TVNCQRCodeImage(url);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (qr) {
+                self.qrImageView.image = qr;
+                self.qrImageView.hidden = NO;
+                self.qrActions.hidden = NO;
+            } else {
+                self.qrImageView.hidden = YES;
+                self.qrActions.hidden = NO;
+            }
+        });
+    });
 }
 
-#pragma mark - 在线客户端卡
+#pragma mark - 客户端入口卡
 
 - (UIView *)makeClientsCard {
     UIView *card = [self newCard];
@@ -399,12 +353,12 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
     [card addSubview:more];
 
     [NSLayoutConstraint activateConstraints:@[
-        [title.topAnchor constraintEqualToAnchor:card.topAnchor constant:14],
-        [title.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
+        [title.topAnchor constraintEqualToAnchor:card.topAnchor constant:16],
+        [title.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18],
         [title.trailingAnchor constraintLessThanOrEqualToAnchor:more.leadingAnchor constant:-8],
         [more.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
         [more.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-14],
-        [more.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-14],
+        [more.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-16],
     ]];
     return card;
 }
@@ -413,7 +367,7 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
     self.tabBarController.selectedIndex = 1;
 }
 
-#pragma mark - U3 扫码直连操作
+#pragma mark - U3 操作
 
 - (NSString *)directURL {
     NSInteger httpPort = [self.defaults integerForKey:@"HttpPort"];
@@ -425,8 +379,7 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
 - (void)copyDirectURL {
     NSString *url = [self directURL];
     if (!url) return;
-    UIPasteboard *pb = [UIPasteboard generalPasteboard];
-    pb.string = url;
+    [UIPasteboard generalPasteboard].string = url;
     [self toast:[NSString stringWithFormat:@"已复制 %@", url]];
 }
 
@@ -458,7 +411,6 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
 
     NSString *host = [self.defaults stringForKey:@"GatewayHost"];
     if (host.length) {
-        // 控制台端口（trollvnc-farm FARM_PORT 默认 8080；便于浏览器直接登录控制台）
         self.gatewayLabel.text = [NSString stringWithFormat:@"网关 %@:8080", host];
     } else {
         self.gatewayLabel.text = @"网关未配置（设置 → 网关）";
@@ -472,6 +424,8 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
     card.translatesAutoresizingMaskIntoConstraints = NO;
     card.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
     card.layer.cornerRadius = 18;
+    card.layer.borderWidth = 1;
+    card.layer.borderColor = [UIColor separatorColor].CGColor;
     return card;
 }
 
@@ -480,6 +434,7 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
     l.translatesAutoresizingMaskIntoConstraints = NO;
     l.font = [UIFont boldSystemFontOfSize:15];
     l.text = t;
+    l.textColor = [UIColor labelColor];
     return l;
 }
 

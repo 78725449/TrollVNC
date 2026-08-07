@@ -134,7 +134,11 @@ static int TVNCConnect(void) {
     self.refreshControl = refreshControl;
 
     self.navigationItem.leftBarButtonItem = self.disconnectItem;
-    self.navigationItem.rightBarButtonItem = self.dismissItem;
+    if (self.hideDismissButton) {
+        self.navigationItem.rightBarButtonItem = nil;
+    } else {
+        self.navigationItem.rightBarButtonItem = self.dismissItem;
+    }
 
     // Diffable data source
     self.clientLookup = [NSMutableDictionary new];

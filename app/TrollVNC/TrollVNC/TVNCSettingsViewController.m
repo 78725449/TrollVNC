@@ -213,6 +213,11 @@
     NSDictionary *page = self.pages[ip.row];
     cell.textLabel.text = page[@"title"];
     cell.detailTextLabel.text = page[@"subtitle"];
+    NSArray<NSString *> *icons = @[ @"network", @"wifi", @"lock.shield", @"display", @"keyboard", @"bell.badge", @"wrench.and.screwdriver", @"info.circle" ];
+    if (ip.row < icons.count) {
+        cell.imageView.image = [UIImage systemImageNamed:icons[ip.row]];
+        cell.imageView.tintColor = [UIColor systemBlueColor];
+    }
     return cell;
 }
 
