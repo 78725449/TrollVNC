@@ -16,6 +16,12 @@
 */
 
 #import "SceneDelegate.h"
+#import "TVNCClientListController.h"
+#import "TVNCConnectViewController.h"
+#import "TVNCControllerViewController.h"
+#import "TVNCRootListController.h"
+
+#import <Preferences/PSRootController.h>
 
 @interface SceneDelegate ()
 
@@ -26,10 +32,48 @@
 - (void)scene:(UIScene *)scene
     willConnectToSession:(UISceneSession *)session
                  options:(UISceneConnectionOptions *)connectionOptions {
-    // Use this method to optionally configure and attach the UIWindow `window` to the provided UIWindowScene `scene`.
-    // If using a storyboard, the `window` property will automatically be initialized and attached to the scene.
-    // This delegate does not imply the connecting scene or session are new (see
-    // `application:configurationForConnectingSceneSession` instead).
+    // U2：程序化构建 UIKit Tab 工程（连接/客户端/控制端/设置）
+    if (!self.window) {
+        self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+    }
+
+    UITabBarController *tab = [[UITabBarController alloc] init];
+
+    // Tab 1 连接
+    TVNCConnectViewController *connect = [[TVNCConnectViewController alloc] init];
+    UINavigationController *connectNav = [[UINavigationController alloc] initWithRootViewController:connect];
+    connectNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"连接"
+                                                          image:[UIImage systemImageNamed:@"antenna.radiowaves.left.and.right"]
+                                                            tag:0];
+
+    // Tab 2 客户端（复用现有客户端列表）
+    NSBundle *resBundle = [NSBundle bundleWithPath:[[NSBundle mainBundle] pathForResource:@"TrollVNCPrefs"
+                                                                                   ofType:@"bundle"]];
+    TVNCClientListController *clients = [[TVNCClientListController alloc] init];
+    clients.bundle = resBundle ?: [NSBundle mainBundle];
+    clients.primaryColor = [UIColor systemBlueColor];
+    UINavigationController *clientsNav = [[UINavigationController alloc] initWithRootViewController:clients];
+    clientsNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"客户端"
+                                                          image:[UIImage systemImageNamed:@"iphone"]
+                                                            tag:1];
+
+    // Tab 3 控制端（U2 外壳；viewer 为 U4 远期）
+    TVNCControllerViewController *controller = [[TVNCControllerViewController alloc] init];
+    UINavigationController *controllerNav = [[UINavigationController alloc] initWithRootViewController:controller];
+    controllerNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"控制端"
+                                                             image:[UIImage systemImageNamed:@"rectangle.grid.2x2"]
+                                                               tag:2];
+
+    // Tab 4 设置（复用 Preferences 设置列表，功能零风险）
+    TVNCRootListController *settings = [[TVNCRootListController alloc] init];
+    PSRootController *settingsNav = [[PSRootController alloc] initWithRootViewController:settings];
+    settingsNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"设置"
+                                                           image:[UIImage systemImageNamed:@"gearshape"]
+                                                             tag:3];
+
+    tab.viewControllers = @[ connectNav, clientsNav, controllerNav, settingsNav ];
+    self.window.rootViewController = tab;
+    [self.window makeKeyAndVisible];
 }
 
 - (void)sceneDidDisconnect:(UIScene *)scene {

@@ -49,6 +49,8 @@
 		CC80617F2E74967500B1AA3E /* GitHubReleaseUpdater.m in Sources */ = {isa = PBXBuildFile; fileRef = CC80617D2E74967500B1AA3E /* GitHubReleaseUpdater.m */; };
 		CC8061802E74967500B1AA3E /* DpkgVersion.m in Sources */ = {isa = PBXBuildFile; fileRef = CC80617B2E74967500B1AA3E /* DpkgVersion.m */; };
 		CC91EF902E6C2208002F5B2A /* TVNCClientListController.m in Sources */ = {isa = PBXBuildFile; fileRef = CC91EF8F2E6C2208002F5B2A /* TVNCClientListController.m */; };
+		3F51D099F730BA38987C1300 /* TVNCConnectViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = D848AFF7B581F040AA4D4DDE /* TVNCConnectViewController.m */; };
+		A8688B8057413A0EA6A00EC6 /* TVNCControllerViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = D657AD36CE988F4250151BD2 /* TVNCControllerViewController.m */; };
 		CC91EF932E6CA6C5002F5B2A /* TVNCClientCell.m in Sources */ = {isa = PBXBuildFile; fileRef = CC91EF922E6CA6C5002F5B2A /* TVNCClientCell.m */; };
 		CC91EF972E6EF165002F5B2A /* TVNCListItemsController.m in Sources */ = {isa = PBXBuildFile; fileRef = CC91EF962E6EF165002F5B2A /* TVNCListItemsController.m */; };
 /* End PBXBuildFile section */
@@ -96,6 +98,10 @@
 		CC80617D2E74967500B1AA3E /* GitHubReleaseUpdater.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = GitHubReleaseUpdater.m; sourceTree = "<group>"; };
 		CC91EF8E2E6C2208002F5B2A /* TVNCClientListController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCClientListController.h; sourceTree = "<group>"; };
 		CC91EF8F2E6C2208002F5B2A /* TVNCClientListController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCClientListController.m; sourceTree = "<group>"; };
+		9B4C2EC419B458E5117B3D1E /* TVNCConnectViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCConnectViewController.h; sourceTree = "<group>"; };
+		D848AFF7B581F040AA4D4DDE /* TVNCConnectViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCConnectViewController.m; sourceTree = "<group>"; };
+		B3E2E095A3361275E03B4580 /* TVNCControllerViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCControllerViewController.h; sourceTree = "<group>"; };
+		D657AD36CE988F4250151BD2 /* TVNCControllerViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCControllerViewController.m; sourceTree = "<group>"; };
 		CC91EF912E6CA6C5002F5B2A /* TVNCClientCell.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCClientCell.h; sourceTree = "<group>"; };
 		CC91EF922E6CA6C5002F5B2A /* TVNCClientCell.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCClientCell.m; sourceTree = "<group>"; };
 		CC91EF942E6E03BD002F5B2A /* Control.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Control.h; sourceTree = "<group>"; };
@@ -198,6 +204,10 @@
 				CC91EF922E6CA6C5002F5B2A /* TVNCClientCell.m */,
 				CC91EF8E2E6C2208002F5B2A /* TVNCClientListController.h */,
 				CC91EF8F2E6C2208002F5B2A /* TVNCClientListController.m */,
+				9B4C2EC419B458E5117B3D1E /* TVNCConnectViewController.h */,
+				D848AFF7B581F040AA4D4DDE /* TVNCConnectViewController.m */,
+				B3E2E095A3361275E03B4580 /* TVNCControllerViewController.h */,
+				D657AD36CE988F4250151BD2 /* TVNCControllerViewController.m */,
 				61C756AF2E65BDAC00B2B371 /* TVNCHotspotManager.h */,
 				61C756B02E65BDAC00B2B371 /* TVNCHotspotManager.m */,
 				CC91EF952E6EF165002F5B2A /* TVNCListItemsController.h */,
@@ -375,6 +385,8 @@
 				CC17D9BB2EC79DA1005C275A /* ZTSelfSignedCertificate.m in Sources */,
 				61C756C52E65BDAC00B2B371 /* TVNCRootListController.m in Sources */,
 				CC91EF902E6C2208002F5B2A /* TVNCClientListController.m in Sources */,
+				3F51D099F730BA38987C1300 /* TVNCConnectViewController.m in Sources */,
+				A8688B8057413A0EA6A00EC6 /* TVNCControllerViewController.m in Sources */,
 				61B0DD092EB13BEF004CC42B /* TVNCSliderCell.m in Sources */,
 				CC91EF972E6EF165002F5B2A /* TVNCListItemsController.m in Sources */,
 				61C756C62E65BDAC00B2B371 /* TVNCServiceCoordinator.m in Sources */,
