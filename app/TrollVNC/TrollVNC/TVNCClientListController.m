@@ -133,12 +133,9 @@ static int TVNCConnect(void) {
     [refreshControl addTarget:self action:@selector(refresh) forControlEvents:UIControlEventValueChanged];
     self.refreshControl = refreshControl;
 
-    self.navigationItem.leftBarButtonItem = self.disconnectItem;
-    if (self.hideDismissButton) {
-        self.navigationItem.rightBarButtonItem = nil;
-    } else {
-        self.navigationItem.rightBarButtonItem = self.dismissItem;
-    }
+    // 对齐 mockup：右上角「全部断开」（嵌入 Tab，无 dismiss 语义）
+    self.navigationItem.leftBarButtonItem = nil;
+    self.navigationItem.rightBarButtonItem = self.disconnectItem;
 
     // Diffable data source
     self.clientLookup = [NSMutableDictionary new];

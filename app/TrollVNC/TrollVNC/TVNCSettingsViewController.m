@@ -51,6 +51,7 @@
                     @{@"type" : @"text", @"key" : @"GatewayHost", @"label" : @"网关地址", @"placeholder" : @"如 192.168.1.1"},
                     @{@"type" : @"text", @"key" : @"GatewayPort", @"label" : @"网关注册端口", @"default" : @"18081", @"placeholder" : @"18081"},
                     @{@"type" : @"password", @"key" : @"GatewayToken", @"label" : @"网关令牌（可选）", @"placeholder" : @"FARM_TOKEN"},
+                    @{@"type" : @"text", @"key" : @"TVNCConsolePort", @"label" : @"控制台端口", @"default" : @"8080", @"placeholder" : @"8080"},
                     @{@"type" : @"button", @"label" : @"搜索网关", @"action" : @"searchGateway"},
                 ],
             },
@@ -123,7 +124,7 @@
             @{
                 @"title" : @"输入",
                 @"rows" : @[
-                    @{@"type" : @"switch", @"key" : @"NaturalScroll", @"label" : @"自然滚动方向", @"default" : @NO},
+                    @{@"type" : @"switch", @"key" : @"NaturalScroll", @"label" : @"自然滚动方向", @"default" : @YES},
                     @{@"type" : @"choice", @"key" : @"ModifierMap", @"label" : @"修饰键映射", @"default" : @"std", @"options" : @[ @{@"title" : @"标准（Alt=Option）", @"value" : @"std"}, @{@"title" : @"macOS（Alt=Command）", @"value" : @"altcmd"} ]},
                     @{@"type" : @"switch", @"key" : @"AutoAssistEnabled", @"label" : @"辅助触控自动开启", @"default" : @NO},
                     @{@"type" : @"slider", @"key" : @"WheelStepPx", @"label" : @"滚轮步长（px）", @"min" : @0, @"max" : @1000, @"step" : @8, @"format" : @"%.0f", @"default" : @48},

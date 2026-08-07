@@ -505,7 +505,7 @@
 			<key>label</key>
 			<string>Natural Scroll Direction</string>
 			<key>default</key>
-			<false/>
+			<true/>
 		</dict>
 		<dict>
 			<key>cell</key>

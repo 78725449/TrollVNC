@@ -152,7 +152,9 @@ static const NSInteger kConsolePort = 8080; // trollvnc-farm FARM_PORT 默认
         [self applyFilter];
         return;
     }
-    NSString *urlStr = [NSString stringWithFormat:@"http://%@:%ld/api/devices", host, (long)kConsolePort];
+    NSInteger consolePort = [self.defaults integerForKey:@"TVNCConsolePort"];
+    if (consolePort <= 0) consolePort = kConsolePort;
+    NSString *urlStr = [NSString stringWithFormat:@"http://%@:%ld/api/devices", host, (long)consolePort];
     NSURL *url = [NSURL URLWithString:urlStr];
     if (!url) return;
 

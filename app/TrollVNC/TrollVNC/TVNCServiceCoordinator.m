@@ -87,6 +87,12 @@ int SBSLaunchApplicationWithIdentifierAndURLAndLaunchOptions(CFStringRef bundleI
     NSBundle *prefsBundle = [NSBundle bundleWithPath:[[NSBundle mainBundle] pathForResource:@"TrollVNCPrefs"
                                                                                      ofType:@"bundle"]];
 
+    // 自然滚动方向默认开启（未显式设置过时写入，保证服务端真实生效）
+    if ([_userDefaults objectForKey:@"NaturalScroll"] == nil) {
+        [_userDefaults setBool:YES forKey:@"NaturalScroll"];
+        [_userDefaults synchronize];
+    }
+
     NSString *presetPath = [prefsBundle pathForResource:@"Managed" ofType:@"plist"];
     if (presetPath) {
         NSDictionary *presetDefaults = [NSDictionary dictionaryWithContentsOfFile:presetPath];
