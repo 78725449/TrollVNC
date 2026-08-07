@@ -85,7 +85,7 @@ jobs:
           # Install xcbeautify for build output formatting
           # Install ldid for iOS code signing
           # Install 7zip for compression
-          brew install ldid-procursus p7zip make  # xcbeautify temporarily removed for raw build logs
+          brew install xcbeautify ldid-procursus p7zip make
 
       - name: Checkout roothide/theos
         uses: actions/checkout@v4
@@ -107,6 +107,15 @@ jobs:
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: "16.2"
+
+      - name: Neutralize xcbeautify (diagnostic passthrough)
+        run: |
+          printf '#!/bin/sh\ncat\n' > /tmp/xcbeautify
+          chmod +x /tmp/xcbeautify
+          mkdir -p /tmp/xcb-path
+          printf '#!/bin/sh\nexec /tmp/xcbeautify "$@"\n' > /tmp/xcb-path/xcbeautify
+          chmod +x /tmp/xcb-path/xcbeautify
+          echo "/tmp/xcb-path" >> $GITHUB_PATH
 
       - name: Generate Managed.plist (managed build)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.is_managed == true }}
