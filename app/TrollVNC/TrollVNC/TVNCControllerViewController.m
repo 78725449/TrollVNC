@@ -67,6 +67,10 @@ static const NSInteger kConsolePort = 8080; // trollvnc-farm FARM_PORT 默认
         cfg.baseForegroundColor = [UIColor labelColor];
         cfg.contentInsets = NSDirectionalEdgeInsetsMake(8, 16, 8, 16);
         cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+        UIBackgroundConfiguration *bg = [UIBackgroundConfiguration clearConfiguration];
+        bg.strokeColor = [UIColor separatorColor];
+        bg.strokeWidth = 1;
+        cfg.background = bg;
         b.configuration = cfg;
         b.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
         [b setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
@@ -257,13 +261,13 @@ static const NSInteger kConsolePort = 8080; // trollvnc-farm FARM_PORT 默认
         if (b.selected) {
             cfg.baseBackgroundColor = [UIColor systemBlueColor];
             cfg.baseForegroundColor = [UIColor whiteColor];
+            cfg.background.strokeColor = [UIColor systemBlueColor];
         } else {
             cfg.baseBackgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
             cfg.baseForegroundColor = [UIColor labelColor];
+            cfg.background.strokeColor = [UIColor separatorColor];
         }
         b.configuration = cfg;
-        b.layer.borderWidth = 1;
-        b.layer.borderColor = b.selected ? [UIColor systemBlueColor].CGColor : [UIColor separatorColor].CGColor;
     }
 }
 
