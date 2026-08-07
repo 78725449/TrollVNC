@@ -17,6 +17,7 @@
 #import <sys/socket.h>
 #import <sys/select.h>
 #import <sys/time.h>
+#import <string.h>
 #import <time.h>
 #import <unistd.h>
 
@@ -72,6 +73,8 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 - (void)_workerMain;
 - (BOOL)_connectAndRun;
 - (void)_sendHello:(int)fd;
+- (void)_handleServerLine:(NSString *)line fd:(int)fd;
+- (void)_sendAck:(NSDictionary *)ack fd:(int)fd;
 - (NSData *)_registerData;
 - (NSArray<NSString *> *)_capabilities;
 - (NSDictionary *)_configs;
@@ -309,7 +312,9 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     _retryDelay = kMinRetryDelay;
 
     // 读线程循环：读 ack/任意数据；每 kHelloInterval 发 hello；select 超时检测
-    char buf[512];
+    // 命令通道行缓冲：接收网关注册通道下发的 JSON 行（cmd 命令，宪法 7.4）
+    char inBuf[1024];
+    size_t inLen = 0;
     time_t lastHello = time(NULL);
     while (_started && ![[NSThread currentThread] isCancelled]) {
         fd_set rfds;
@@ -346,18 +351,66 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
             }
             continue;
         }
-        ssize_t n = read(fd, buf, sizeof(buf) - 1);
+        ssize_t n = read(fd, inBuf + inLen, sizeof(inBuf) - inLen - 1);
         if (n <= 0) {
             close(fd);
             return NO;
         }
-        buf[n] = '\0';
-        // ack 等消息暂只用于保活确认，无需处理
-        (void)buf;
+        inLen += (size_t)n;
+        inBuf[inLen] = '\0';
+        // 逐行处理下发的 JSON 消息
+        size_t start = 0;
+        for (size_t i = 0; i < inLen; i++) {
+            if (inBuf[i] == '\n') {
+                inBuf[i] = '\0';
+                [self _handleServerLine:[NSString stringWithUTF8String:inBuf + start] fd:fd];
+                start = i + 1;
+            }
+        }
+        if (start > 0) {
+            memmove(inBuf, inBuf + start, inLen - start);
+            inLen -= start;
+            inBuf[inLen] = '\0';
+        } else if (inLen >= sizeof(inBuf) - 1) {
+            // 超长无换行数据：丢弃整段，防止阻塞
+            inLen = 0;
+            inBuf[0] = '\0';
+        }
     }
 
     close(fd);
     return YES;
+}
+
+#pragma mark - 命令通道（宪法 7.4，v1 仅 ping）
+
+// 处理网关注册通道下发的 JSON 行：cmd 命令 → 回 ack
+- (void)_handleServerLine:(NSString *)line fd:(int)fd {
+    NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
+    if (!data) return;
+    NSDictionary *msg = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+    if (![msg isKindOfClass:[NSDictionary class]]) return;
+    NSString *type = [msg[@"type"] description];
+    if (![type isEqualToString:@"cmd"]) return;
+    NSString *cmd = msg[@"cmd"] ? [msg[@"cmd"] description] : @"";
+    NSString *cid = msg[@"id"] ? [msg[@"id"] description] : @"";
+    if ([cmd isEqualToString:@"ping"]) {
+        [self _sendAck:@{ @"type": @"ack", @"cmd": cmd, @"id": cid, @"ok": @YES } fd:fd];
+    } else {
+        // v1 仅支持 ping；set 等命令明确拒绝（宪法 1.3/7.4，B4 决策点）
+        [self _sendAck:@{ @"type": @"ack", @"cmd": cmd, @"id": cid, @"ok": @NO, @"error": @"unsupported command" } fd:fd];
+    }
+}
+
+- (void)_sendAck:(NSDictionary *)ack fd:(int)fd {
+    NSData *json = [NSJSONSerialization dataWithJSONObject:ack options:0 error:NULL];
+    if (!json) return;
+    NSMutableData *md = [json mutableCopy];
+    const char nl = '\n';
+    [md appendBytes:&nl length:1];
+    if (write(fd, md.bytes, md.length) < 0) {
+        // 写失败说明连接已断，read 循环会尽快退出
+    }
 }
 
 - (void)_sendHello:(int)fd {
