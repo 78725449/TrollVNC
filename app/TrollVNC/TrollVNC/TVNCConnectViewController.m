@@ -94,6 +94,7 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    NSLog(@"[TVNC] connect vc viewDidLoad begin");
     self.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
     self.title = @"连接";
 
@@ -129,6 +130,7 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
                                                  name:TVNCServiceStatusDidChangeNotification
                                                object:nil];
     [self refreshStatus];
+    NSLog(@"[TVNC] connect vc viewDidLoad end");
 }
 
 - (void)viewDidAppear:(BOOL)animated {

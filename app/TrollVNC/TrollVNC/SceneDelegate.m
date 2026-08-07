@@ -20,6 +20,9 @@
 #import "TVNCConnectViewController.h"
 #import "TVNCControllerViewController.h"
 #import "TVNCSettingsViewController.h"
+#import "TVNCRootListController.h"
+
+#import <Preferences/PSRootController.h>
 
 @interface SceneDelegate ()
 
@@ -31,6 +34,17 @@
     willConnectToSession:(UISceneSession *)session
                  options:(UISceneConnectionOptions *)connectionOptions {
     // U2：程序化构建 UIKit Tab 工程（连接/客户端/控制端/设置）
+    // 防御：若新 Tab UI 启动异常，回退到旧设置页，保证 App 能打开并记录日志
+    @try {
+        [self buildTabApp:scene];
+    } @catch (NSException *e) {
+        NSLog(@"[TVNC] Tab app launch failed: %@ %@", e.name, e.reason);
+        NSLog(@"[TVNC] %@", e.callStackSymbols);
+        [self buildLegacyRoot:scene];
+    }
+}
+
+- (void)buildTabApp:(UIScene *)scene {
     if (!self.window) {
         self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
     }
@@ -71,6 +85,17 @@
 
     tab.viewControllers = @[ connectNav, clientsNav, controllerNav, settingsNav ];
     self.window.rootViewController = tab;
+    [self.window makeKeyAndVisible];
+}
+
+// 回退：旧 Preferences 设置页（设备上已验证可打开）
+- (void)buildLegacyRoot:(UIScene *)scene {
+    if (!self.window) {
+        self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+    }
+    TVNCRootListController *settings = [[TVNCRootListController alloc] init];
+    PSRootController *nav = [[PSRootController alloc] initWithRootViewController:settings];
+    self.window.rootViewController = nav;
     [self.window makeKeyAndVisible];
 }
 
