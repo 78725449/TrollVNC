@@ -1,5 +1,6 @@
-﻿<!-- index.vnc - TrollVNC 自动连接响应式页面（内网自用版）
-     $PORT 由 LibVNCServer 替换为 VNC 端口 -->
+<!-- index.vnc - TrollVNC 自动连接响应式页面（内网自用版）
+     $PORT 由 LibVNCServer 替换为 VNC 端口
+     操作集由能力清单驱动（caps.js，与网关控制台同源；宪法 6.6） -->
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -25,6 +26,7 @@
     background: #141414; padding: 8px 6px; box-sizing: border-box;
     overflow-y: auto;
   }
+  #barCaps { display: flex; flex-direction: column; gap: 6px; }
   #bar button {
     min-height: 44px; font-size: 18px; border: 1px solid #333;
     background: #222; color: #eee; border-radius: 10px; cursor: pointer;
@@ -59,15 +61,8 @@
 <div id="stage">
   <div id="screen"><div id="hint">连接中…</div></div>
   <div id="bar">
-    <button data-op="home" title="Home 键">🏠</button>
-    <button data-op="power" title="电源">⏻</button>
-    <button data-op="volup" title="音量 +">🔊</button>
-    <button data-op="voldn" title="音量 −">🔉</button>
-    <button data-op="mute" title="静音">🔇</button>
-    <button data-op="briup" title="亮度 +">☀️</button>
-    <button data-op="bridn" title="亮度 −">🌙</button>
-    <button data-op="kb" title="键盘">⌨️</button>
-    <button data-op="clip" title="粘贴剪贴板">📋</button>
+    <div id="barCaps"></div>
+    <hr style="border:none;border-top:1px solid #333;margin:4px 0" />
     <button data-op="fit" title="适配画面">⛶</button>
     <button data-op="full" title="全屏">🖥️</button>
     <button data-op="disc" title="断开" style="color:#ff9d9d">⏹</button>
@@ -75,16 +70,8 @@
 </div>
 <button id="fabBtn" title="设备操作">⚙</button>
 <div id="opsMenu">
-  <div class="g">
-    <button data-op="home" title="Home">🏠</button>
-    <button data-op="power" title="电源">⏻</button>
-    <button data-op="volup" title="音量+">🔊</button>
-    <button data-op="voldn" title="音量−">🔉</button>
-    <button data-op="mute" title="静音">🔇</button>
-    <button data-op="briup" title="亮度+">☀️</button>
-    <button data-op="bridn" title="亮度−">🌙</button>
-    <button data-op="kb" title="键盘">⌨️</button>
-    <button data-op="clip" title="剪贴板">📋</button>
+  <div class="g" id="opsCaps"></div>
+  <div class="g" style="margin-top:6px">
     <button data-op="fit" title="适配">⛶</button>
     <button data-op="full" title="全屏">🖥️</button>
     <button data-op="disc" title="断开">⏹</button>
@@ -93,6 +80,7 @@
 </div>
 <script type="module">
 import RFB from './novnc/core/rfb.js';
+import { DEFAULT_CAPS, CAP_META } from './caps.js';
 (function () {
   var host = location.hostname;
   var port = $PORT;
@@ -146,6 +134,26 @@ import RFB from './novnc/core/rfb.js';
       case 'disc': try { rfb.disconnect(); } catch (e) {} break;
     }
   }
+  // 能力清单驱动渲染（宪法 5.2/6.6）：设备操作来自清单（优先 runtime 注入 window.TVNC_CAPS），
+  // 适配/全屏/断开为本地操作，由静态按钮提供
+  function renderCapOps(container) {
+    if (!container) return;
+    var caps = (window.TVNC_CAPS && window.TVNC_CAPS.length) ? window.TVNC_CAPS : DEFAULT_CAPS;
+    container.innerHTML = '';
+    caps.forEach(function (c) {
+      var meta = CAP_META[c];
+      if (!meta) return;
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.dataset.op = meta.op;
+      b.title = meta.title;
+      b.textContent = meta.icon;
+      b.addEventListener('click', function () { doOp(meta.op); });
+      container.appendChild(b);
+    });
+  }
+  renderCapOps(document.getElementById('barCaps'));
+  renderCapOps(document.getElementById('opsCaps'));
   function bind(sel) {
     document.querySelectorAll(sel).forEach(function (b) {
       b.addEventListener('click', function () { doOp(b.dataset.op); });
