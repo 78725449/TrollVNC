@@ -151,7 +151,9 @@ static NSInteger TVNCOnlineClientCount(void) {
 @property(nonatomic, strong) UITextField *revIdField;
 @property(nonatomic, strong) UITextField *revIntervalField;
 @property(nonatomic, strong) UIButton *dialBtn;
-@property(nonatomic, strong) UIButton *statusPill;
+@property(nonatomic, strong) UIView *statusPill;
+@property(nonatomic, strong) UIView *statusDotView;
+@property(nonatomic, strong) UILabel *statusPillLabel;
 @property(nonatomic, strong) UILabel *clientsCountLabel;
 @property(nonatomic, strong) NSUserDefaults *defaults;
 
@@ -224,44 +226,44 @@ static NSInteger TVNCOnlineClientCount(void) {
 #pragma mark - 右上角状态胶囊（只读）
 
 - (void)setupStatusPill {
-    UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
-    UIButtonConfiguration *cfg = [UIButtonConfiguration plainButtonConfiguration];
-    cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-    cfg.contentInsets = NSDirectionalEdgeInsetsMake(6, 12, 6, 12);
-    UIBackgroundConfiguration *bg = [UIBackgroundConfiguration clearConfiguration];
-    bg.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
-    bg.strokeColor = [UIColor separatorColor];
-    bg.strokeWidth = 1;
-    cfg.background = bg;
-    b.configuration = cfg;
-    b.userInteractionEnabled = NO; // 只读展示
-    b.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
-    self.statusPill = b;
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:b];
+    UIView *pill = [[UIView alloc] init];
+    pill.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
+    pill.layer.cornerRadius = 15;
+    pill.layer.borderWidth = 1;
+    pill.layer.borderColor = [UIColor separatorColor].CGColor;
+    pill.translatesAutoresizingMaskIntoConstraints = NO;
+
+    self.statusDotView = [[UIView alloc] init];
+    self.statusDotView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.statusDotView.layer.cornerRadius = 4;
+
+    self.statusPillLabel = [[UILabel alloc] init];
+    self.statusPillLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    self.statusPillLabel.textColor = [UIColor labelColor];
+
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[self.statusDotView, self.statusPillLabel]];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.spacing = 6;
+    row.alignment = UIStackViewAlignmentCenter;
+    [pill addSubview:row];
+    [NSLayoutConstraint activateConstraints:@[
+        [row.topAnchor constraintEqualToAnchor:pill.topAnchor constant:6],
+        [row.bottomAnchor constraintEqualToAnchor:pill.bottomAnchor constant:-6],
+        [row.leadingAnchor constraintEqualToAnchor:pill.leadingAnchor constant:12],
+        [row.trailingAnchor constraintEqualToAnchor:pill.trailingAnchor constant:-12],
+        [self.statusDotView.widthAnchor constraintEqualToConstant:8],
+        [self.statusDotView.heightAnchor constraintEqualToConstant:8],
+    ]];
+
+    self.statusPill = pill;
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:pill];
 }
 
 - (void)updateStatusPill {
     BOOL running = [[TVNCServiceCoordinator sharedCoordinator] isServiceRunning];
-    UIColor *dot = running ? [UIColor systemGreenColor] : [UIColor systemGrayColor];
-    NSString *txt = running ? @"已连接" : @"未连接";
-    if (self.statusPill) {
-        UIButtonConfiguration *cfg = [self.statusPill.configuration copy];
-        cfg.image = [self statusDotImage:dot];
-        cfg.imagePlacement = UIButtonConfigurationImagePlacementLeading;
-        cfg.imagePadding = 6;
-        cfg.baseForegroundColor = [UIColor labelColor];
-        self.statusPill.configuration = cfg;
-        [self.statusPill setTitle:txt forState:UIControlStateNormal];
-    }
-}
-
-- (UIImage *)statusDotImage:(UIColor *)color {
-    CGFloat s = 10;
-    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(s, s)];
-    return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
-        [color setFill];
-        [ctx fillRect:CGRectMake(0, 0, s, s)];
-    }];
+    self.statusDotView.backgroundColor = running ? [UIColor systemGreenColor] : [UIColor systemGrayColor];
+    self.statusPillLabel.text = running ? @"已连接" : @"未连接";
 }
 
 #pragma mark - Hero
