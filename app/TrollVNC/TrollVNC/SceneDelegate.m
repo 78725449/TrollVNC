@@ -33,15 +33,10 @@
 - (void)scene:(UIScene *)scene
     willConnectToSession:(UISceneSession *)session
                  options:(UISceneConnectionOptions *)connectionOptions {
-    // U2：程序化构建 UIKit Tab 工程（连接/客户端/控制端/设置）
-    // 防御：若新 Tab UI 启动异常，回退到旧设置页，保证 App 能打开并记录日志
-    @try {
-        [self buildTabApp:scene];
-    } @catch (NSException *e) {
-        NSLog(@"[TVNC] Tab app launch failed: %@ %@", e.name, e.reason);
-        NSLog(@"[TVNC] %@", e.callStackSymbols);
-        [self buildLegacyRoot:scene];
-    }
+    // 【二分诊断】临时恢复为 no-op：走 storyboard 显示旧版 Preferences 设置页
+    // 目的：判断「启动即崩溃」是来自 Tab 搭建/新 VC，还是更早的链接库/AppDelegate/storyboard。
+    // 若此版本能打开 → 问题在 Tab 搭建；若仍秒退 → 问题在链接库或更早启动路径。
+    NSLog(@"[TVNC] scene no-op (bisect diagnostic)");
 }
 
 - (void)buildTabApp:(UIScene *)scene {
