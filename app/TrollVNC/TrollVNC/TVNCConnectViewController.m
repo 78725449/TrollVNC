@@ -122,15 +122,9 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
 
     [stack addArrangedSubview:[self makeHeroCard]];
     [stack addArrangedSubview:[self makeModeCard]];
-    [self refreshContentCard:stack];
-    [stack addArrangedSubview:[self makeClientsCard]];
+    [stack addArrangedSubview:[self makeDirectCard]];
 
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(refreshStatus)
-                                                 name:TVNCServiceStatusDidChangeNotification
-                                               object:nil];
-    [self refreshStatus];
-    NSLog(@"[TVNC] connect vc viewDidLoad end");
+    NSLog(@"[TVNC] connect vc viewDidLoad end (stripped bisect: hero+mode+direct-basic)");
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -253,7 +247,7 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
     addr.font = [UIFont boldSystemFontOfSize:16];
     addr.textAlignment = NSTextAlignmentCenter;
 
-    if (httpPort > 0 && ip.length) {
+    if (NO && httpPort > 0 && ip.length) {
         NSString *url = [NSString stringWithFormat:@"http://%@:%ld", ip, (long)httpPort];
         addr.text = url;
         UIImage *qr = TVNCQRCodeImage(url);
