@@ -23,4 +23,7 @@ endif
 TrollVNC_XCODEFLAGS += OTHER_LDFLAGS="-framework BackgroundTasks -L$(CURDIR)/../../lib -lvncclient -lssl -lcrypto -ljpeg -lturbojpeg -llzo2 -lsasl2 -lz"
 TrollVNC_XCODEFLAGS += HEADER_SEARCH_PATHS="$(CURDIR)/../../include"
 
+# 诊断：禁用 xcbeautify 以输出原始 xcodebuild 日志
+TARGET_XCPRETTY :=
+
 include $(THEOS_MAKE_PATH)/xcodeproj.mk
