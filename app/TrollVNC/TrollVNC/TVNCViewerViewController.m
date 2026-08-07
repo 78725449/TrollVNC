@@ -21,6 +21,19 @@
 #import <stdlib.h>
 #import <string.h>
 
+// SASL 静态插件链接桩：libsasl2 的 dlopen.o 引用了各机制插件的 init 符号，但本仓库的
+// libsasl2.a 不含插件实现。内网自用不使用 SASL 认证，运行时不会调用这些函数；
+// 仅提供符号以满足链接（若未来启用 SASL，需替换为真实插件实现）。
+void *plain_client_plug_init(void) { return NULL; }
+void *plain_server_plug_init(void) { return NULL; }
+void *anonymous_client_plug_init(void) { return NULL; }
+void *anonymous_server_plug_init(void) { return NULL; }
+void *scram_client_plug_init(void) { return NULL; }
+void *scram_server_plug_init(void) { return NULL; }
+void *otp_client_plug_init(void) { return NULL; }
+void *otp_server_plug_init(void) { return NULL; }
+void *sasldb_auxprop_plug_init(void) { return NULL; }
+
 static void *const kViewerClientTag = &kViewerClientTag;
 
 #pragma mark - C 回调（libvncclient）
