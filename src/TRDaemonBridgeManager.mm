@@ -15,6 +15,8 @@
 */
 
 #import <Foundation/Foundation.h>
+// Control.h 声明的全局变量，Manager 端默认赋 0（守护进程负责实际旋转修正）
+int gOrientationFixQuad = 0;
 
 NSDictionary *tvGetInflightStats(void) {
     return @{ @"current": @0, @"max": @0 };
