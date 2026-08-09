@@ -126,6 +126,29 @@ jobs:
           source devkit/${{ matrix.scheme }}.sh
           FINALPACKAGE=1 gmake clean package
 
+      - name: Diagnose bootstrap app compile (raw xcodebuild)
+        if: ${{ failure() && matrix.scheme == 'bootstrap' }}
+        run: |
+          source devkit/bootstrap.sh
+          cd app/TrollVNC
+          set +e
+          xcodebuild -project TrollVNC.xcodeproj -scheme TrollVNC \
+            -sdk iphoneos -destination 'generic/platform=iOS' -configuration Release \
+            -derivedDataPath /tmp/tvnc-diag \
+            ARCHS="arm64" ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO \
+            'GCC_PREPROCESSOR_DEFINITIONS=THEBOOTSTRAP=1 THEOS_PACKAGE_SCHEME="bootstrap" PACKAGE_VERSION="3.2-272"' \
+            "HEADER_SEARCH_PATHS=$(pwd)/../../include" \
+            build 2>&1 | tee /tmp/tvnc-diag.log
+          RC=${PIPESTATUS[0]}
+          echo "===== diagnostic exit: $RC ====="
+          echo "----- TVNCControllerViewController / error context -----"
+          grep -n -B2 -A25 -E "TVNCControllerViewController|error:|fatal error" /tmp/tvnc-diag.log | tail -n 140
+          echo "----- last 40 lines -----"
+          tail -n 40 /tmp/tvnc-diag.log
+          echo "----- crash reports -----"
+          ls -t ~/Library/Logs/DiagnosticReports 2>/dev/null | head -n 5
+          exit 0
+
       - name: Prepare artifacts
         run: |
           # Create directories for artifacts
