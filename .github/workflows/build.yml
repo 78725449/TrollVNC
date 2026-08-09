@@ -133,7 +133,8 @@ jobs:
           cd app/TrollVNC
           set +e
           xcodebuild -project TrollVNC.xcodeproj -scheme TrollVNC \
-            -sdk "$THEOS/sdks/iPhoneOS16.5.sdk" -destination 'generic/platform=iOS' -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -configuration Release \
+            SDKROOT="$THEOS/sdks/iPhoneOS16.5.sdk" \
             -derivedDataPath /tmp/tvnc-diag \
             ARCHS="arm64" ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO \
             'GCC_PREPROCESSOR_DEFINITIONS=THEBOOTSTRAP=1 THEOS_PACKAGE_SCHEME="bootstrap" PACKAGE_VERSION="3.2-272"' \
