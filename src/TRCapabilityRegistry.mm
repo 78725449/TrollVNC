@@ -420,7 +420,7 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
                 *e = [NSError errorWithDomain:@"TRCap" code:3 userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"触点数超过上限 %lu", (unsigned long)HIDMaxTouchCount]}];
                 return nil;
             }
-            CGPoint *locations = malloc(count * sizeof(CGPoint));
+            CGPoint *locations = (CGPoint *)malloc(count * sizeof(CGPoint));
             if (!locations) { *e = [NSError errorWithDomain:@"TRCap" code:4 userInfo:@{NSLocalizedDescriptionKey:@"内存分配失败"}]; return nil; }
             for (NSUInteger i = 0; i < count; i++) {
                 locations[i] = [self _denormalizePoint:pts[i] error:e];
@@ -443,7 +443,7 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
                 *e = [NSError errorWithDomain:@"TRCap" code:3 userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"触点数超过上限 %lu", (unsigned long)HIDMaxTouchCount]}];
                 return nil;
             }
-            CGPoint *locations = malloc(count * sizeof(CGPoint));
+            CGPoint *locations = (CGPoint *)malloc(count * sizeof(CGPoint));
             if (!locations) { *e = [NSError errorWithDomain:@"TRCap" code:4 userInfo:@{NSLocalizedDescriptionKey:@"内存分配失败"}]; return nil; }
             for (NSUInteger i = 0; i < count; i++) {
                 locations[i] = [self _denormalizePoint:pts[i] error:e];
@@ -1269,6 +1269,14 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
              enumValues:nil enumTitles:nil reload:reload];
 }
 
+/** 无 min/max 但含枚举的注册重载 */
+- (void)_registerConfig:(NSString *)key title:(NSString *)title type:(NSString *)type
+             enumValues:(NSArray *)enumValues enumTitles:(NSArray *)enumTitles
+                 reload:(TRConfigReload)reload {
+    [self _registerConfig:key title:title type:type min:nil max:nil step:nil
+             enumValues:enumValues enumTitles:enumTitles reload:reload];
+}
+
 /** 无 min/max 的简化注册重载 */
 - (void)_registerConfig:(NSString *)key title:(NSString *)title type:(NSString *)type reload:(TRConfigReload)reload {
     [self _registerConfig:key title:title type:type min:nil max:nil step:nil reload:reload];
@@ -1322,8 +1330,8 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 
 /**
  * 按能力 ID 前缀 + route 类型推断 category
- * 功能：优先按 capId 前缀推断（覆盖 route 类型无法区分的情况，如 stylus.*/service.*/gateway.*/clients.*），
- *       Phase 11.3/11.4：新增 app.*/macro.*/screen.hash/diff/waitStable/subscribe 前缀推断。
+ * 功能：优先按 capId 前缀推断（覆盖 route 类型无法区分的情况，如 stylus、service、gateway、clients 等），
+ *       Phase 11.3/11.4：新增 app、macro、screen.hash/diff/waitStable/subscribe 前缀推断。
  * 参数：capId - 能力 ID
  *       route - 路由类型
  * 返回值：NSString* - category 字符串
