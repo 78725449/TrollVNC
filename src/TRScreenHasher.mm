@@ -3,8 +3,8 @@
   pHash 计算管线（Accelerate framework）：
     01 取帧（ScreenCapturer.captureSingleFrameBuffer，跳过 JPEG）
     02 缩放 32×32（vImageScale_ARGB8888 → ARGB 缓冲区 4KB）
-    03 转灰度（vImageMatrixMultiply，0.299R+0.587G+0.114B → 8bit Gray 1KB）
-    04 DCT-II（vDSP_DCT_Execute → 32×32 频域系数）
+    03 转灰度（手写 Rec.601 加权，0.299R+0.587G+0.114B → 8bit Gray 1KB）
+    04 DCT-II（手写可分离 2D DCT-II → 32×32 频域系数；theos SDK 无 vDSP_DCT API）
     05 取左上 8×8 低频（排除 DC [0][0]）+ 求均值 + 逐位比较 → uint64_t
 */
 
@@ -14,6 +14,7 @@
 
 #import <Accelerate/Accelerate.h>
 #import <mach/mach_time.h>
+#import <math.h>
 
 #import "Logging.h"
 #import "ScreenCapturer.h"
@@ -28,8 +29,6 @@ static const int kHashBits = 64;                      // 哈希位数
 @implementation TRScreenHasher {
     // 串行队列：串行化帧访问，避免并发取帧冲突
     dispatch_queue_t _queue;
-    // DCT setup（init 时创建一次，复用，避免重复创建开销）
-    vDSP_DCT_Setup _dctSetup;
     // 缓冲区（init 时分配，复用，避免每帧 malloc/free）
     vImage_Buffer _argbBuffer;      // 32×32 ARGB（4KB）
     vImage_Buffer _grayBuffer;      // 32×32 Gray（1KB）
@@ -60,7 +59,7 @@ static const int kHashBits = 64;                      // 哈希位数
 
 /**
  * 初始化 pHash 计算管线。
- * 功能：创建 DCT setup（复用）、分配固定缓冲区（4KB ARGB + 1KB Gray + 8KB DCT）。
+ * 功能：分配固定缓冲区（4KB ARGB + 1KB Gray + 8KB DCT）；DCT 为手写实现，无需 setup。
  * 参数：无
  * 返回值：TRScreenHasher* - 初始化后的实例
  */
@@ -71,15 +70,6 @@ static const int kHashBits = 64;                      // 哈希位数
 
     // 串行队列：串行化帧访问
     _queue = dispatch_queue_create("com.trollvnc.screenHasher", DISPATCH_QUEUE_SERIAL);
-
-    // DCT setup：创建一次复用（vDSP_DFT_CreateSetup 用于 Type-II DCT）
-    // 注意：vDSP_DFT_Setup 适用于 DFT，DCT 需要使用 vDSP_DCT_Setup
-    // iOS Accelerate 提供 vDSP_DCT_CreateSetup（iOS 9+）
-    _dctSetup = vDSP_DCT_CreateSetup(NULL, kDCTLength, vDSP_DCT_II);
-    if (!_dctSetup) {
-        TVLog(@"[TRScreenHasher] FATAL: vDSP_DCT_CreateSetup 失败，pHash 管线不可用");
-        return nil;
-    }
 
     // 分配固定缓冲区（复用，避免每帧 malloc/free）
     // ARGB 缓冲区：32×32×4 = 4096 bytes
@@ -105,21 +95,17 @@ static const int kHashBits = 64;                      // 哈希位数
     _lastPushedHash = 0;
     _lastPushedTimeMs = 0;
 
-    TVLog(@"[TRScreenHasher] 初始化完成（DCT setup=%p, ARGB=%zuB, Gray=%zuB, DCT=%zuB）",
-          _dctSetup, (size_t)(kHashSize * kHashSize * 4), (size_t)(kHashSize * kHashSize),
+    TVLog(@"[TRScreenHasher] 初始化完成（ARGB=%zuB, Gray=%zuB, DCT=%zuB）",
+          (size_t)(kHashSize * kHashSize * 4), (size_t)(kHashSize * kHashSize),
           (size_t)(kDCTLength * sizeof(float) * 2));
 
     return self;
 }
 
 /**
- * 析构：释放 DCT setup 和缓冲区。
+ * 析构：释放缓冲区。
  */
 - (void)dealloc {
-    if (_dctSetup) {
-        vDSP_DCT_DestroySetup(_dctSetup);
-        _dctSetup = NULL;
-    }
     free(_argbData);
     free(_grayData);
     free(_dctInput);
@@ -135,9 +121,11 @@ static const int kHashBits = 64;                      // 哈希位数
  * 返回值：uint64_t — 64bit pHash；取帧失败返回 0
  */
 - (uint64_t)computeHashForCurrentFrame {
-    return dispatch_sync(_queue, ^{
-        return [self _computeHashUnsafe];
+    __block uint64_t hash = 0;
+    dispatch_sync(_queue, ^{
+        hash = [self _computeHashUnsafe];
     });
+    return hash;
 }
 
 /**
@@ -176,55 +164,78 @@ static const int kHashBits = 64;                      // 哈希位数
         srcBuffer.rowBytes = srcRowBytes;
 
         // ===== 步骤 02：缩放 32×32（vImageScale_ARGB8888）=====
-        // 源格式应为 ARGB（ScreenCapturer 像素格式 'ARGB' = 0x42475241）
-        // BGRA 四字符码 = 0x41524742
-        vImage_Error scaleErr;
-        if (srcFormat == 0x42475241 /* 'ARGB' */) {
-            scaleErr = vImageScale_ARGB8888(&srcBuffer, &_argbBuffer, NULL, kvImageNoFlags);
-        } else if (srcFormat == 0x41524742 /* 'BGRA' */) {
-            // 若源为 BGRA，先缩放再转 ARGB
-            vImage_Buffer tempBuffer;
-            tempBuffer.data = _argbData;
-            tempBuffer.width = kHashSize;
-            tempBuffer.height = kHashSize;
-            tempBuffer.rowBytes = kHashSize * 4;
-            scaleErr = vImageScale_BGRA8888(&srcBuffer, &tempBuffer, NULL, kvImageNoFlags);
-            if (scaleErr == kvImageNoError) {
-                // BGRA → ARGB 通道交换：BGRA(B,G,R,A) → ARGB(A,R,G,B)
-                uint8_t permuteMap[4] = {3, 2, 1, 0}; // A←3, R←2, G←1, B←0
-                scaleErr = vImagePermuteChannels_ARGB8888(&tempBuffer, &_argbBuffer, permuteMap, kvImageNoFlags);
-            }
-        } else {
+        // vImageScale_ARGB8888 对 ARGB/BGRA 均适用（每通道独立插值，不关心通道顺序），
+        // 通道顺序在步骤 03 灰度化时按源格式区分。
+        // 'ARGB' = 0x42475241，'BGRA' = 0x41524742
+        if (srcFormat != 0x42475241 /* 'ARGB' */ && srcFormat != 0x41524742 /* 'BGRA' */) {
             TVLog(@"[TRScreenHasher] 不支持的像素格式 0x%08X，仅支持 ARGB/BGRA", (unsigned)srcFormat);
             return 0;
         }
-
+        vImage_Error scaleErr = vImageScale_ARGB8888(&srcBuffer, &_argbBuffer, NULL, kvImageNoFlags);
         if (scaleErr != kvImageNoError) {
             TVLog(@"[TRScreenHasher] vImageScale 失败（err=%zd）", scaleErr);
             return 0;
         }
 
-        // ===== 步骤 03：转灰度（vImageMatrixMultiply，0.299R+0.587G+0.114B）=====
-        // ARGB → 8bit Gray，使用 Rec.601 亮度系数
-        int16_t matrix[4] = {
-            (int16_t)(0.114 * 256), // B → 系数 29
-            (int16_t)(0.587 * 256), // G → 系数 150
-            (int16_t)(0.299 * 256), // R → 系数 76
-            0                        // A → 忽略
-        };
-        vImage_Error grayErr = vImageMatrixMultiply_ARGB8888toPlanar8(
-            &_argbBuffer, &_grayBuffer, matrix, 4, NULL, NULL, kvImageNoFlags);
-        if (grayErr != kvImageNoError) {
-            TVLog(@"[TRScreenHasher] vImageMatrixMultiply 失败（err=%zd）", grayErr);
-            return 0;
+        // ===== 步骤 03：转灰度（手写 Rec.601 加权，0.299R+0.587G+0.114B）=====
+        // g = (77·R + 150·G + 29·B) >> 8；与 vImageMatrixMultiply 系数一致，
+        // 且兼容 ARGB/BGRA 通道顺序，避免 theos SDK 中 ARGB8888ToPlanar8 的签名差异。
+        // 同时直接生成 DCT 输入的 float 灰度值，避免额外 uint8→float 转换 API。
+        const BOOL isBGRA = (srcFormat == 0x41524742 /* 'BGRA' */);
+        {
+            const uint8_t *pix = _argbData;
+            for (int i = 0; i < kDCTLength; i++, pix += 4) {
+                uint8_t r, g, b;
+                if (isBGRA) {
+                    b = pix[0]; g = pix[1]; r = pix[2];
+                } else {
+                    r = pix[1]; g = pix[2]; b = pix[3]; // ARGB：A=0, R=1, G=2, B=3
+                }
+                const uint8_t gray = (uint8_t)((77 * r + 150 * g + 29 * b) >> 8);
+                _grayData[i] = gray;
+                _dctInput[i] = (float)gray;
+            }
         }
 
-        // ===== 步骤 04：DCT-II（vDSP_DCT_Execute，32×32 频域系数）=====
-        // 灰度 uint8 → float（vDSP_vfltu8tof32）
-        vDSP_vfltu8tof32(_grayData, 1, _dctInput, 1, kDCTLength);
-
-        // 执行 Type-II DCT
-        vDSP_DCT_Execute(_dctSetup, _dctInput, _dctOutput);
+        // ===== 步骤 04：DCT-II（手写可分离 2D DCT-II，32×32 频域系数）=====
+        // theos SDK（iPhoneOS16.5 头文件）不含 vDSP_DCT_* API，改为手写实现。
+        // 公式：X[k] = Σ x[n]·cos((2n+1)kπ/2N)，k=0..N-1；归一化系数 2/N 为常数，
+        //       不影响「低频 vs 均值」比较，省略以省计算。
+        {
+            const int N = (int)kHashSize; // 32
+            static const float kPi = 3.14159265358979f;
+            // cos 查找表：cosTable[n][k] = cos((2n+1)kπ/2N)，N×N = 1024 项
+            float cosTable[32][32];
+            for (int n = 0; n < N; n++) {
+                const float base = (float)(2 * n + 1) * kPi / (float)(2 * N);
+                for (int k = 0; k < N; k++) {
+                    cosTable[n][k] = cosf(base * (float)k);
+                }
+            }
+            // 行变换：对每行 32 点做 1D DCT-II → rowTemp（1024）
+            float rowTemp[32 * 32];
+            for (int row = 0; row < N; row++) {
+                const float *srcRow = _dctInput + row * N;
+                float *dstRow = rowTemp + row * N;
+                for (int k = 0; k < N; k++) {
+                    float sum = 0.0f;
+                    for (int n = 0; n < N; n++) {
+                        sum += srcRow[n] * cosTable[n][k];
+                    }
+                    dstRow[k] = sum;
+                }
+            }
+            // 列变换：对每列 32 点做 1D DCT-II（转置读取 rowTemp）→ _dctOutput（行优先）
+            for (int col = 0; col < N; col++) {
+                for (int k = 0; k < N; k++) {
+                    float sum = 0.0f;
+                    for (int m = 0; m < N; m++) {
+                        sum += rowTemp[m * N + col] * cosTable[m][k];
+                    }
+                    _dctOutput[k * N + col] = sum;
+                }
+            }
+        }
 
         // ===== 步骤 05：取左上 8×8 低频 + 求均值（排除 DC [0][0]）+ 逐位比较 =====
         // DCT 输出是行优先 32×32 矩阵，取左上 8×8（index 0..7, 32..39, ..., 7*32..7*32+7）
