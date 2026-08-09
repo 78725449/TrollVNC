@@ -514,6 +514,10 @@
 					$THEOS/include,
 					$THEOS/vendor/include,
 				);
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SDKROOT)/System/Library/PrivateFrameworks",
+				);
 				TARGETED_DEVICE_FAMILY = "1,2";
 				THEOS = $HOME/theos;
 			};
@@ -566,6 +570,10 @@
 				SYSTEM_HEADER_SEARCH_PATHS = (
 					$THEOS/include,
 					$THEOS/vendor/include,
+				);
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SDKROOT)/System/Library/PrivateFrameworks",
 				);
 				TARGETED_DEVICE_FAMILY = "1,2";
 				THEOS = $HOME/theos;
@@ -742,6 +750,10 @@
 					$THEOS/include,
 					$THEOS/vendor/include,
 				);
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SDKROOT)/System/Library/PrivateFrameworks",
+				);
 				TARGETED_DEVICE_FAMILY = "1,2";
 				THEOS = $HOME/theos;
 			};
@@ -794,6 +806,10 @@
 				SYSTEM_HEADER_SEARCH_PATHS = (
 					$THEOS/include,
 					$THEOS/vendor/include,
+				);
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SDKROOT)/System/Library/PrivateFrameworks",
 				);
 				TARGETED_DEVICE_FAMILY = "1,2";
 				THEOS = $HOME/theos;
