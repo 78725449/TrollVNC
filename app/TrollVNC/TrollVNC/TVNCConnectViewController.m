@@ -7,6 +7,8 @@
 #import "TVNCConnectViewController.h"
 #import "TVNCServiceCoordinator.h"
 #import "Control.h"
+#import "TVNCUtil.h"
+#import "TVNCClientListController.h"
 #import <sys/socket.h>
 
 #import <CoreImage/CoreImage.h>
@@ -97,19 +99,20 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
 
 @interface TVNCConnectViewController ()
 
-@property(nonatomic, strong) UIView *statusDot;
-@property(nonatomic, strong) UILabel *statusLabel;
-@property(nonatomic, strong) UILabel *gatewayLabel;
-@property(nonatomic, strong) UILabel *nameLabel;
-@property(nonatomic, strong) UISegmentedControl *modeSegment;
+// Hero 卡片（3 行直观信息）
+@property(nonatomic, strong) UILabel *nameLabel;             // 第 1 行：设备名
+@property(nonatomic, strong) UIView *heroStatusDot;          // 第 1 行右侧：状态点
+@property(nonatomic, strong) UILabel *heroStatusLabel;        // 第 1 行右侧：状态文字（已连接/未连接）
+@property(nonatomic, strong) UILabel *connectStateLabel;     // 第 2 行：连接状态文字
+@property(nonatomic, strong) UILabel *serviceStateLabel;     // 第 3 行：服务状态文字
+
 @property(nonatomic, strong) UIView *contentCard;
 @property(nonatomic, strong) UIImageView *qrImageView;
 @property(nonatomic, strong) UILabel *qrAddrLabel;
-@property(nonatomic, strong) UIStackView *statusPill;
-@property(nonatomic, strong) UIView *statusDotView;
-@property(nonatomic, strong) UILabel *statusPillLabel;
-@property(nonatomic, strong) UILabel *clientsCountLabel;
+@property(nonatomic, strong) UILabel *clientsCountLabel;     // 客户端卡：在线/冻结计数
+@property(nonatomic, strong) TVNCClientListController *clientsVC;
 @property(nonatomic, strong) NSUserDefaults *defaults;
+@property(nonatomic, assign) NSInteger currentOnlineCount;   // 缓存在线客户端数（供 Hero 第 3 行使用）
 
 @end
 
@@ -127,7 +130,6 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
     self.title = @"连接";
-    [self setupStatusPill];
 
     UIScrollView *scroll = [[UIScrollView alloc] init];
     scroll.translatesAutoresizingMaskIntoConstraints = NO;
@@ -152,9 +154,13 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
     ]];
 
     [stack addArrangedSubview:[self makeHeroCard]];
-    [stack addArrangedSubview:[self makeModeCard]];
-    [stack addArrangedSubview:[self makeDirectCard]];
+
+    self.contentCard = [[UIView alloc] init];
+    self.contentCard.translatesAutoresizingMaskIntoConstraints = NO;
+    [stack addArrangedSubview:self.contentCard];
+
     [stack addArrangedSubview:[self makeClientsCard]];
+    [self refreshContentCard];
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(refreshStatus)
@@ -175,135 +181,144 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    [self updateStatusPill];
-    [self refreshClientCount];
-}
-
-#pragma mark - 右上角状态胶囊
-
-- (void)setupStatusPill {
-    self.statusDotView = [[UIView alloc] init];
-    self.statusDotView.translatesAutoresizingMaskIntoConstraints = NO;
-    self.statusDotView.layer.cornerRadius = 4;
-
-    self.statusPillLabel = [[UILabel alloc] init];
-    self.statusPillLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
-    self.statusPillLabel.textColor = [UIColor labelColor];
-
-    UIStackView *pill = [[UIStackView alloc] initWithArrangedSubviews:@[self.statusDotView, self.statusPillLabel]];
-    pill.axis = UILayoutConstraintAxisHorizontal;
-    pill.spacing = 6;
-    pill.alignment = UIStackViewAlignmentCenter;
-    pill.layoutMarginsRelativeArrangement = YES;
-    pill.layoutMargins = UIEdgeInsetsMake(6, 12, 6, 12);
-    pill.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
-    pill.layer.cornerRadius = 15;
-    pill.layer.borderWidth = 1;
-    pill.layer.borderColor = [UIColor separatorColor].CGColor;
-    pill.translatesAutoresizingMaskIntoConstraints = NO;
-    self.statusPill = pill;
-    [NSLayoutConstraint activateConstraints:@[
-        [self.statusDotView.widthAnchor constraintEqualToConstant:8],
-        [self.statusDotView.heightAnchor constraintEqualToConstant:8],
-    ]];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:pill];
-}
-
-- (void)updateStatusPill {
-    BOOL running = [[TVNCServiceCoordinator sharedCoordinator] isServiceRunning];
-    self.statusDotView.backgroundColor = running ? [UIColor systemGreenColor] : [UIColor systemGrayColor];
-    self.statusPillLabel.text = running ? @"已连接" : @"未连接";
+    [self refreshStatus];
 }
 
 #pragma mark - Hero
 
+/**
+ * 构建 Hero 卡片（3 行直观信息）。
+ * 功能：创建渐变卡片，包含三行：
+ *   - 第 1 行：设备名（左）+ 状态点+文字（右，🟢已连接/🔴未连接）
+ *   - 第 2 行：连接状态文字（已注册到网关，隧道已建立 / 未注册到网关）
+ *   - 第 3 行：服务状态文字（VNC 服务运行中·N 个客户端在线 / VNC 服务未运行·请前往设置配置网关）
+ * 参数：无
+ * 返回值：UIView* - Hero 卡片根视图（TVNCGradientCard 实例）
+ */
 - (UIView *)makeHeroCard {
     TVNCGradientCard *card = [[TVNCGradientCard alloc] init];
     card.translatesAutoresizingMaskIntoConstraints = NO;
     card.layer.cornerRadius = 24;
     card.clipsToBounds = YES;
 
+    // 第 1 行：设备名（左）+ 状态点+文字（右）
     self.nameLabel = [[UILabel alloc] init];
     self.nameLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    self.nameLabel.font = [UIFont boldSystemFontOfSize:20];
+    self.nameLabel.font = [UIFont boldSystemFontOfSize:21];
     self.nameLabel.textColor = [UIColor whiteColor];
     self.nameLabel.text = [[UIDevice currentDevice] name];
+    self.nameLabel.numberOfLines = 1;
+    self.nameLabel.adjustsFontSizeToFitWidth = YES;
+    self.nameLabel.minimumScaleFactor = 0.6;
 
-    self.statusDot = [[UIView alloc] init];
-    self.statusDot.translatesAutoresizingMaskIntoConstraints = NO;
-    self.statusDot.layer.cornerRadius = 4;
+    self.heroStatusDot = [[UIView alloc] init];
+    self.heroStatusDot.translatesAutoresizingMaskIntoConstraints = NO;
+    self.heroStatusDot.layer.cornerRadius = 4;
+    self.heroStatusDot.backgroundColor = [UIColor systemGreenColor];
 
-    self.statusLabel = [[UILabel alloc] init];
-    self.statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    self.statusLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
-    self.statusLabel.textColor = [UIColor whiteColor];
+    self.heroStatusLabel = [[UILabel alloc] init];
+    self.heroStatusLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.heroStatusLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    self.heroStatusLabel.textColor = [UIColor whiteColor];
+    self.heroStatusLabel.text = @"已连接";
 
-    self.gatewayLabel = [[UILabel alloc] init];
-    self.gatewayLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    self.gatewayLabel.font = [UIFont systemFontOfSize:13];
-    self.gatewayLabel.textColor = [UIColor colorWithWhite:1 alpha:0.92];
+    UIStackView *statusStack = [[UIStackView alloc]
+        initWithArrangedSubviews:@[self.heroStatusDot, self.heroStatusLabel]];
+    statusStack.translatesAutoresizingMaskIntoConstraints = NO;
+    statusStack.axis = UILayoutConstraintAxisHorizontal;
+    statusStack.alignment = UIStackViewAlignmentCenter;
+    statusStack.spacing = 6;
 
-    UIStackView *statusRow = [[UIStackView alloc] initWithArrangedSubviews:@[self.statusDot, self.statusLabel]];
-    statusRow.translatesAutoresizingMaskIntoConstraints = NO;
-    statusRow.axis = UILayoutConstraintAxisHorizontal;
-    statusRow.spacing = 7;
+    // 第 2 行：连接状态文字
+    self.connectStateLabel = [[UILabel alloc] init];
+    self.connectStateLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.connectStateLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+    self.connectStateLabel.textColor = [UIColor colorWithWhite:1 alpha:0.94];
+    self.connectStateLabel.numberOfLines = 1;
+    self.connectStateLabel.adjustsFontSizeToFitWidth = YES;
+    self.connectStateLabel.minimumScaleFactor = 0.6;
+
+    // 第 3 行：服务状态文字
+    self.serviceStateLabel = [[UILabel alloc] init];
+    self.serviceStateLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.serviceStateLabel.font = [UIFont systemFontOfSize:13];
+    self.serviceStateLabel.textColor = [UIColor colorWithWhite:1 alpha:0.82];
+    self.serviceStateLabel.numberOfLines = 1;
+    self.serviceStateLabel.adjustsFontSizeToFitWidth = YES;
+    self.serviceStateLabel.minimumScaleFactor = 0.5;
 
     [card addSubview:self.nameLabel];
-    [card addSubview:statusRow];
-    [card addSubview:self.gatewayLabel];
+    [card addSubview:statusStack];
+    [card addSubview:self.connectStateLabel];
+    [card addSubview:self.serviceStateLabel];
 
     [NSLayoutConstraint activateConstraints:@[
-        [card.heightAnchor constraintGreaterThanOrEqualToConstant:120],
-        [self.nameLabel.topAnchor constraintEqualToAnchor:card.topAnchor constant:20],
-        [self.nameLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:20],
-        [self.nameLabel.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-20],
-        [statusRow.topAnchor constraintEqualToAnchor:self.nameLabel.bottomAnchor constant:14],
-        [statusRow.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:20],
-        [self.statusDot.widthAnchor constraintEqualToConstant:8],
-        [self.statusDot.heightAnchor constraintEqualToConstant:8],
-        [self.gatewayLabel.topAnchor constraintEqualToAnchor:statusRow.bottomAnchor constant:8],
-        [self.gatewayLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:20],
-        [self.gatewayLabel.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-20],
-        [self.gatewayLabel.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-20],
+        // 第 1 行：设备名顶部 + 左对齐，状态栈右对齐，居中对齐
+        [self.nameLabel.topAnchor constraintEqualToAnchor:card.topAnchor constant:22],
+        [self.nameLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:22],
+        [self.nameLabel.trailingAnchor constraintLessThanOrEqualToAnchor:statusStack.leadingAnchor constant:-8],
+
+        [statusStack.centerYAnchor constraintEqualToAnchor:self.nameLabel.centerYAnchor],
+        [statusStack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-22],
+
+        [self.heroStatusDot.widthAnchor constraintEqualToConstant:8],
+        [self.heroStatusDot.heightAnchor constraintEqualToConstant:8],
+
+        // 第 2 行：连接状态文字
+        [self.connectStateLabel.topAnchor constraintEqualToAnchor:self.nameLabel.bottomAnchor constant:10],
+        [self.connectStateLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:22],
+        [self.connectStateLabel.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-22],
+
+        // 第 3 行：服务状态文字
+        [self.serviceStateLabel.topAnchor constraintEqualToAnchor:self.connectStateLabel.bottomAnchor constant:6],
+        [self.serviceStateLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:22],
+        [self.serviceStateLabel.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-22],
+        [self.serviceStateLabel.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-22],
     ]];
     return card;
 }
 
-#pragma mark - 模式分段
+#pragma mark - 内容卡切换
 
-- (UIView *)makeModeCard {
-    UIView *card = [self newCard];
-    self.modeSegment = [[UISegmentedControl alloc] initWithItems:@[@"内网直连", @"反向连接"]];
-    self.modeSegment.translatesAutoresizingMaskIntoConstraints = NO;
-    self.modeSegment.selectedSegmentIndex = 0;
-    [self.modeSegment addTarget:self action:@selector(modeChanged:) forControlEvents:UIControlEventValueChanged];
-    [card addSubview:self.modeSegment];
-    [NSLayoutConstraint activateConstraints:@[
-        [self.modeSegment.topAnchor constraintEqualToAnchor:card.topAnchor constant:12],
-        [self.modeSegment.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:12],
-        [self.modeSegment.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-12],
-        [self.modeSegment.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-12],
-    ]];
-    return card;
-}
-
-- (void)modeChanged:(UISegmentedControl *)seg {
-    // 反向连接参数摘要暂以弹窗提示（配置在设置页后续补齐）
-    if (seg.selectedSegmentIndex == 1) {
-        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"反向连接"
-                                                                  message:@"反向连接参数将在「设置」中提供配置"
-                                                           preferredStyle:UIAlertControllerStyleAlert];
-        [a addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
-        [self presentViewController:a animated:YES completion:nil];
-        seg.selectedSegmentIndex = 0;
+- (void)refreshContentCard {
+    if (!self.contentCard) return;
+    for (UIView *v in [self.contentCard.subviews copy]) {
+        [v removeFromSuperview];
     }
+    UIView *card = [self makeDirectCard];
+    [self.contentCard addSubview:card];
+    [NSLayoutConstraint activateConstraints:@[
+        [card.topAnchor constraintEqualToAnchor:self.contentCard.topAnchor],
+        [card.leadingAnchor constraintEqualToAnchor:self.contentCard.leadingAnchor],
+        [card.trailingAnchor constraintEqualToAnchor:self.contentCard.trailingAnchor],
+        [card.bottomAnchor constraintEqualToAnchor:self.contentCard.bottomAnchor],
+    ]];
 }
 
-#pragma mark - 扫码直连卡
+- (UILabel *)fieldLabel:(NSString *)t {
+    UILabel *l = [[UILabel alloc] init];
+    l.translatesAutoresizingMaskIntoConstraints = NO;
+    l.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+    l.textColor = [UIColor secondaryLabelColor];
+    l.text = t;
+    return l;
+}
+
+- (UITextField *)fieldInput {
+    UITextField *f = [[UITextField alloc] init];
+    f.translatesAutoresizingMaskIntoConstraints = NO;
+    f.borderStyle = UITextBorderStyleRoundedRect;
+    f.font = [UIFont systemFontOfSize:15];
+    f.autocorrectionType = UITextAutocorrectionTypeNo;
+    f.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    return f;
+}
+
+#pragma mark - 扫描直连卡
 
 - (UIView *)makeDirectCard {
     UIView *card = [self newCard];
-    UILabel *title = [self cardTitle:@"扫码直连"];
+    UILabel *title = [self cardTitle:@"扫描直连"];
     [card addSubview:title];
 
     self.qrImageView = [[UIImageView alloc] init];
@@ -336,8 +351,8 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
         [title.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18],
         [self.qrImageView.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:14],
         [self.qrImageView.centerXAnchor constraintEqualToAnchor:card.centerXAnchor],
-        [self.qrImageView.widthAnchor constraintEqualToConstant:170],
-        [self.qrImageView.heightAnchor constraintEqualToConstant:170],
+        [self.qrImageView.widthAnchor constraintEqualToConstant:110],
+        [self.qrImageView.heightAnchor constraintEqualToConstant:110],
         [self.qrAddrLabel.topAnchor constraintEqualToAnchor:self.qrImageView.bottomAnchor constant:12],
         [self.qrAddrLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18],
         [self.qrAddrLabel.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18],
@@ -377,38 +392,79 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
 
 - (UIView *)makeClientsCard {
     UIView *card = [self newCard];
-    UILabel *title = [self cardTitle:@"在线客户端"];
+    UILabel *title = [self cardTitle:@"客户端"];
     [card addSubview:title];
 
     self.clientsCountLabel = [[UILabel alloc] init];
     self.clientsCountLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.clientsCountLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
     self.clientsCountLabel.textColor = [UIColor secondaryLabelColor];
-    self.clientsCountLabel.text = @"0 台";
+    self.clientsCountLabel.text = @"在线 0 · 冻结 0";
     [card addSubview:self.clientsCountLabel];
 
-    UIButton *more = [UIButton buttonWithType:UIButtonTypeSystem];
-    more.translatesAutoresizingMaskIntoConstraints = NO;
-    [more setTitle:@"查看全部 ›" forState:UIControlStateNormal];
-    more.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
-    [more addTarget:self action:@selector(openClients) forControlEvents:UIControlEventTouchUpInside];
-    [card addSubview:more];
+    UIButton *disconnectAll = [UIButton buttonWithType:UIButtonTypeSystem];
+    disconnectAll.translatesAutoresizingMaskIntoConstraints = NO;
+    [disconnectAll setTitle:@"全部断开" forState:UIControlStateNormal];
+    disconnectAll.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    [disconnectAll setTitleColor:[UIColor systemRedColor] forState:UIControlStateNormal];
+    [disconnectAll addTarget:self action:@selector(disconnectAllClients) forControlEvents:UIControlEventTouchUpInside];
+    [card addSubview:disconnectAll];
+
+    // 内嵌客户端列表（子控制器，卡片内直接显示与管理）
+    UIView *tableContainer = [[UIView alloc] init];
+    tableContainer.translatesAutoresizingMaskIntoConstraints = NO;
+    tableContainer.layer.cornerRadius = 12;
+    tableContainer.clipsToBounds = YES;
+    [card addSubview:tableContainer];
+
+    TVNCClientListController *clientsVC = [[TVNCClientListController alloc] init];
+    NSBundle *resBundle = [NSBundle bundleWithPath:[[NSBundle mainBundle] pathForResource:@"TrollVNCPrefs"
+                                                                                   ofType:@"bundle"]];
+    clientsVC.bundle = resBundle ?: [NSBundle mainBundle];
+    clientsVC.primaryColor = [UIColor systemBlueColor];
+    clientsVC.embedded = YES;
+    __weak typeof(self) weakSelf = self;
+    clientsVC.onCountChange = ^(NSInteger online, NSInteger frozen) {
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf) {
+            // 缓存在线数并刷新客户端卡计数 + Hero 第 3 行服务状态文字
+            strongSelf.currentOnlineCount = online;
+            strongSelf.clientsCountLabel.text =
+                [NSString stringWithFormat:@"在线 %ld · 冻结 %ld", (long)online, (long)frozen];
+            [strongSelf updateHeroServiceState];
+        }
+    };
+    [self addChildViewController:clientsVC];
+    clientsVC.view.translatesAutoresizingMaskIntoConstraints = NO;
+    [tableContainer addSubview:clientsVC.view];
+    [clientsVC didMoveToParentViewController:self];
+    self.clientsVC = clientsVC;
 
     [NSLayoutConstraint activateConstraints:@[
         [title.topAnchor constraintEqualToAnchor:card.topAnchor constant:16],
         [title.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18],
         [self.clientsCountLabel.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
         [self.clientsCountLabel.leadingAnchor constraintEqualToAnchor:title.trailingAnchor constant:8],
-        [title.trailingAnchor constraintLessThanOrEqualToAnchor:more.leadingAnchor constant:-8],
-        [more.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
-        [more.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-14],
-        [more.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-16],
+        [title.trailingAnchor constraintLessThanOrEqualToAnchor:disconnectAll.leadingAnchor constant:-8],
+        [disconnectAll.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
+        [disconnectAll.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16],
+
+        [tableContainer.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:10],
+        [tableContainer.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:8],
+        [tableContainer.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-8],
+        [tableContainer.heightAnchor constraintEqualToConstant:260],
+        [tableContainer.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8],
+
+        [clientsVC.view.topAnchor constraintEqualToAnchor:tableContainer.topAnchor],
+        [clientsVC.view.leadingAnchor constraintEqualToAnchor:tableContainer.leadingAnchor],
+        [clientsVC.view.trailingAnchor constraintEqualToAnchor:tableContainer.trailingAnchor],
+        [clientsVC.view.bottomAnchor constraintEqualToAnchor:tableContainer.bottomAnchor],
     ]];
     return card;
 }
 
-- (void)openClients {
-    self.tabBarController.selectedIndex = 1;
+- (void)disconnectAllClients {
+    [self.clientsVC disconnectAllClients];
 }
 
 #pragma mark - U3 操作
@@ -448,64 +504,44 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
 
 #pragma mark - 状态
 
+/**
+ * 刷新 Hero 卡片状态显示（3 行整体刷新）。
+ * 功能：依据 TVNCServiceCoordinator.isServiceRunning 更新 Hero 卡片：
+ *   - 第 1 行状态点颜色 + 状态文字（已连接/未连接）
+ *   - 第 2 行连接状态文字（已注册到网关，隧道已建立 / 未注册到网关）
+ *   - 第 3 行服务状态文字（VNC 服务运行中·N 个客户端在线 / VNC 服务未运行·请前往设置配置网关）
+ * 参数：无
+ * 返回值：void
+ */
 - (void)refreshStatus {
-    BOOL running = [[TVNCServiceCoordinator sharedCoordinator] isServiceRunning];
-    self.statusDot.backgroundColor = running ? [UIColor systemGreenColor] : [UIColor systemGrayColor];
-    self.statusLabel.text = running ? @"已连接" : @"未连接";
+    BOOL connected = [[TVNCServiceCoordinator sharedCoordinator] isServiceRunning];
 
-    NSString *host = [self.defaults stringForKey:@"GatewayHost"];
-    if (host.length) {
-        self.gatewayLabel.text = [NSString stringWithFormat:@"网关 %@:8080", host];
+    // 第 1 行右侧：状态点（UI 实心圆，绿=已连接/灰=未连接）+ 纯文字（不带 emoji，避免与状态点重复）
+    self.heroStatusDot.backgroundColor = connected ? [UIColor systemGreenColor] : [UIColor systemGrayColor];
+    self.heroStatusLabel.text = connected ? @"已连接" : @"未连接";
+
+    // 第 2 行：连接状态文字
+    self.connectStateLabel.text = connected ? @"已注册到网关，隧道已建立" : @"未注册到网关";
+
+    // 第 3 行：服务状态文字
+    [self updateHeroServiceState];
+}
+
+/**
+ * 仅刷新 Hero 第 3 行服务状态文字。
+ * 功能：按 isServiceRunning + currentOnlineCount 更新 serviceStateLabel 文案。
+ *       当客户端计数变化时（onCountChange 回调）调用此方法可避免完整 refreshStatus 的重复状态读取。
+ * 参数：无
+ * 返回值：void
+ */
+- (void)updateHeroServiceState {
+    BOOL connected = [[TVNCServiceCoordinator sharedCoordinator] isServiceRunning];
+    if (connected) {
+        self.serviceStateLabel.text =
+            [NSString stringWithFormat:@"VNC 服务运行中 · %ld 个客户端在线", (long)self.currentOnlineCount];
     } else {
-        self.gatewayLabel.text = @"网关未配置（设置 → 网关）";
+        self.serviceStateLabel.text = @"VNC 服务未运行 · 请前往设置配置网关";
     }
-}
-
-#pragma mark - 在线客户端计数
-
-- (void)refreshClientCount {
-    __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSInteger n = [self onlineClientCount];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            typeof(self) strongSelf = weakSelf;
-            if (strongSelf) strongSelf.clientsCountLabel.text = [NSString stringWithFormat:@"%ld 台", (long)n];
-        });
-    });
-}
-
-- (NSInteger)onlineClientCount {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return 0;
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_len = sizeof(addr);
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(kTvDefaultCtlPort);
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) { close(fd); return 0; }
-    const char *cmd = "list\n";
-    if (send(fd, cmd, strlen(cmd), 0) < 0) { close(fd); return 0; }
-    NSMutableData *md = [NSMutableData data];
-    char buf[2048];
-    fd_set rfds;
-    for (;;) {
-        FD_ZERO(&rfds);
-        FD_SET(fd, &rfds);
-        struct timeval timeout = {0, 300000};
-        int sel = select(fd + 1, &rfds, NULL, NULL, &timeout);
-        if (sel <= 0) break;
-        ssize_t n = recv(fd, buf, sizeof(buf), 0);
-        if (n <= 0) break;
-        [md appendBytes:buf length:(NSUInteger)n];
-    }
-    close(fd);
-    NSString *tsv = [[NSString alloc] initWithData:md encoding:NSUTF8StringEncoding] ?: @"";
-    NSInteger count = 0;
-    for (NSString *ln in [tsv componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
-        if ([ln componentsSeparatedByString:@"\t"].count >= 5) count++;
-    }
-    return count;
 }
 
 #pragma mark - 卡片工厂

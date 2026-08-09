@@ -19,11 +19,13 @@
 #import "TrollVNC-Swift.h"
 
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 #import <MobileCoreServices/LSApplicationProxy.h>
 #import <BackgroundTasks/BackgroundTasks.h>
 #import <arpa/inet.h>
 #import <netinet/in.h>
 #import <sys/socket.h>
+#import <dlfcn.h>
 
 #import "Control.h"
 
@@ -41,6 +43,28 @@ int SBSLaunchApplicationWithIdentifierAndURLAndLaunchOptions(CFStringRef bundleI
 @property(nonatomic, strong) NSTimer *checkTimer;
 @property(nonatomic, strong) NSUserDefaults *userDefaults;
 @end
+
+NSString *TVNCDeviceUDID(void) {
+    static NSString *sUDID = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        void *handle = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_LAZY);
+        if (handle) {
+            CFStringRef (*mgCopyAnswer)(CFStringRef) = (CFStringRef(*)(CFStringRef))dlsym(handle, "MGCopyAnswer");
+            if (mgCopyAnswer) {
+                CFStringRef v = mgCopyAnswer(CFSTR("UniqueDeviceID"));
+                if (v) {
+                    sUDID = (__bridge_transfer NSString *)v;
+                }
+            }
+        }
+        if (!sUDID.length) {
+            NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+            sUDID = [d stringForKey:@"DeviceUUID"] ?: @"";
+        }
+    });
+    return sUDID;
+}
 
 @implementation TVNCServiceCoordinator
 
@@ -91,6 +115,22 @@ int SBSLaunchApplicationWithIdentifierAndURLAndLaunchOptions(CFStringRef bundleI
     if ([_userDefaults objectForKey:@"NaturalScroll"] == nil) {
         [_userDefaults setBool:YES forKey:@"NaturalScroll"];
         [_userDefaults synchronize];
+    }
+
+    // 设备名称统一使用“关于本机”的真实名称（设置项已移除，注册/VNC 桌面名/mDNS 保持一致）
+    NSString *realDeviceName = [[UIDevice currentDevice] name];
+    if (realDeviceName.length) {
+        [_userDefaults setObject:realDeviceName forKey:@"DesktopName"];
+        [_userDefaults synchronize];
+    }
+
+    // 设备唯一标识：首次启动用硬件 UDID 作为设备身份（注册/去重/展示一致）
+    if (![_userDefaults stringForKey:@"DeviceUUID"].length) {
+        NSString *udid = TVNCDeviceUDID();
+        if (udid.length) {
+            [_userDefaults setObject:udid forKey:@"DeviceUUID"];
+            [_userDefaults synchronize];
+        }
     }
 
     NSString *presetPath = [prefsBundle pathForResource:@"Managed" ofType:@"plist"];

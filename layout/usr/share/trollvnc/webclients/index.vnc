@@ -1,17 +1,28 @@
-<!-- index.vnc - TrollVNC 自动连接响应式页面（内网自用版）
+<!-- index.vnc - TrollVNC 自动连接响应式页面（悬浮按钮版，2026-08）
      $PORT 由 LibVNCServer 替换为 VNC 端口
-     操作集由能力清单驱动（caps.js，与网关控制台同源；宪法 6.6） -->
+     连接代码与原始可用版逐字节一致：仅依赖 noVNC core/rfb.js（无额外模块依赖）
+     交互方案：
+       手机端（触屏/窄屏）：画面全屏 + 一个可拖动悬浮按钮(FAB)，点击展开操作列
+       PC 端（鼠标/宽屏）：右侧固定操作栏（桌面鼠标操作更顺手）
+     操作集：内联默认值；caps.js 仅在可加载时作为增强（失败不影响连接） -->
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<link rel="icon" href="data:," />
 <title>TrollVNC</title>
 <style>
+  /* 安全区域变量：JS 通过 getComputedStyle 读取，用于 FAB 拖动边界约束 */
+  :root {
+    --safe-top: env(safe-area-inset-top);
+    --safe-right: env(safe-area-inset-right);
+    --safe-bottom: env(safe-area-inset-bottom);
+    --safe-left: env(safe-area-inset-left);
+  }
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-  body { display: flex; align-items: center; justify-content: center; }
-  #stage { display: flex; align-items: stretch; max-width: 100vw; max-height: 100vh; }
-  #screen { position: relative; background: #000; }
+  body { display: flex; flex-direction: column; }
+  #screen { flex: 1; position: relative; min-height: 0; background: #000; }
   #screen canvas { position: absolute; left: 0; top: 0; }
   #hint {
     position: absolute; left: 8px; top: 8px; z-index: 5;
@@ -19,68 +30,186 @@
     border-radius: 12px; font: 12px system-ui, sans-serif; pointer-events: none;
     max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  /* 桌面：右侧紧贴屏幕的操作面板（图标 + hover 提示） */
+
+  /* ===== PC 端侧边栏（鼠标 + 宽屏显示） ===== */
   #bar {
-    width: 60px; flex: 0 0 60px;
-    display: flex; flex-direction: column; gap: 6px;
-    background: #141414; padding: 8px 6px; box-sizing: border-box;
-    overflow-y: auto;
+    display: none;
+    gap: clamp(4px, 1.5vw, 10px); justify-content: flex-start;
+    padding: 8px; background: #141414; flex-direction: column;
+    overflow-y: auto; -webkit-overflow-scrolling: touch;
   }
-  #barCaps { display: flex; flex-direction: column; gap: 6px; }
   #bar button {
-    min-height: 44px; font-size: 18px; border: 1px solid #333;
-    background: #222; color: #eee; border-radius: 10px; cursor: pointer;
+    flex: 0 0 auto;
+    min-width: 64px; min-height: 44px;
+    border: 1px solid #333; background: #222; color: #eee;
+    border-radius: 10px; font: 500 13px system-ui, sans-serif;
+    padding: 4px 10px;
   }
   #bar button:active { background: #3a3a3a; }
+  @media (min-width: 900px) and (hover: hover) and (pointer: fine) {
+    body { flex-direction: row; }
+    #bar { display: flex; }
+  }
 
-  /* 移动端：全屏画面 + 悬浮菜单按钮 */
-  #fabBtn {
-    display: none; position: fixed; right: 16px; bottom: 24px; z-index: 60;
-    width: 56px; height: 56px; border-radius: 50%; font-size: 24px;
-    background: #4f8cff; color: #fff; border: none; cursor: pointer;
-    box-shadow: 0 6px 20px rgba(0,0,0,.5);
+  /* ===== 手机端悬浮按钮 FAB（触屏/窄屏显示） ===== */
+  #fab {
+    position: fixed;
+    right: max(16px, env(safe-area-inset-right));
+    bottom: max(16px, env(safe-area-inset-bottom));
+    width: 56px; height: 56px;
+    border-radius: 50%;
+    background: rgba(124, 92, 255, .92);
+    color: #fff;
+    border: none;
+    font: 700 22px system-ui, sans-serif;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, .45);
+    z-index: 10;
+    touch-action: none;            /* 拖动时阻止浏览器默认滚动 */
+    user-select: none; -webkit-user-select: none;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: transform .12s ease, background .12s ease;
   }
-  #opsMenu {
-    display: none; position: fixed; right: 12px; bottom: 96px; z-index: 65;
-    width: min(300px, 90vw); background: #1f2a40; border: 1px solid #2b3852;
-    border-radius: 14px; padding: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.55);
+  #fab:active { transform: scale(.94); background: rgba(91, 63, 224, .95); }
+  #fab.dragging { transition: none; }
+  @media (min-width: 900px) and (hover: hover) and (pointer: fine) {
+    #fab { display: none; }
   }
-  #opsMenu.show { display: block; }
-  #opsMenu .g { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
-  #opsMenu .g button { min-height: 44px; font-size: 18px; border: 1px solid #2b3852; background: #222; color: #eee; border-radius: 10px; }
-  #opsMenu #menuClose { width: 100%; margin-top: 8px; padding: 8px; border-radius: 10px; border: 1px solid #2b3852; background: #333; color: #ff9d9d; }
 
-  @media (max-width: 900px) {
-    #bar { display: none; }
-    #fabBtn { display: block; }
-    #stage { max-width: 100vw; }
+  /* ===== 操作面板（点击 FAB 展开） ===== */
+  #panel {
+    position: fixed;
+    display: none;
+    flex-direction: column;
+    gap: 6px;
+    background: rgba(20, 20, 20, .96);
+    border: 1px solid #333;
+    padding: 8px;
+    border-radius: 14px;
+    z-index: 11;
+    max-height: 70vh;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    min-width: 152px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, .5);
   }
+  #panel.show { display: flex; }
+  #panel button {
+    min-height: 44px; min-width: 140px;
+    border: 1px solid #333; background: #222; color: #eee;
+    border-radius: 10px; font: 500 14px system-ui, sans-serif;
+    padding: 8px 12px;
+    display: flex; align-items: center; justify-content: flex-start;
+    gap: 8px;
+  }
+  #panel button:active { background: #3a3a3a; }
+  #panel .panel-close {
+    min-height: 36px; font-size: 13px; color: #999;
+    border-color: #2a2a2a; background: #1a1a1a;
+  }
+  @media (min-width: 900px) and (hover: hover) and (pointer: fine) {
+    #panel { display: none !important; }
+  }
+
+  /* 横屏手机：FAB 稍小，避免遮挡 */
+  @media (max-width: 900px) and (orientation: landscape) and (max-height: 500px) {
+    #fab { width: 48px; height: 48px; font-size: 18px; }
+  }
+
+  /* ===== 剪贴板手动输入浮层（HTTP 环境降级方案） ===== */
+  #clipOverlay {
+    position: fixed; inset: 0; z-index: 20;
+    background: rgba(0, 0, 0, .6);
+    display: none;
+    align-items: center; justify-content: center;
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  }
+  #clipOverlay.show { display: flex; }
+  #clipModal {
+    background: #1c1c1e; border: 1px solid #3a3a3c;
+    border-radius: 14px; padding: 16px;
+    width: 100%; max-width: 360px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, .5);
+  }
+  #clipModal h3 {
+    margin: 0 0 4px; font: 600 16px/24px system-ui, sans-serif; color: #eee;
+  }
+  #clipModal p {
+    margin: 0 0 12px; font: 12px/18px system-ui, sans-serif; color: #999;
+  }
+  #clipText {
+    width: 100%; min-height: 96px;
+    background: #2c2c2e; border: 1px solid #3a3a3c;
+    border-radius: 10px; color: #eee;
+    font: 14px/20px system-ui, sans-serif;
+    padding: 10px; resize: vertical;
+    box-sizing: border-box; -webkit-appearance: none;
+  }
+  #clipText:focus { outline: 2px solid var(--brand, #7C5CFF); }
+  .clip-btns { display: flex; gap: 8px; margin-top: 12px; }
+  .clip-btns button {
+    flex: 1; min-height: 44px;
+    border-radius: 10px; border: 1px solid #3a3a3c;
+    font: 500 15px system-ui, sans-serif; padding: 8px;
+  }
+  #clipCancel { background: #2c2c2e; color: #eee; }
+  #clipSend { background: #7C5CFF; color: #fff; border-color: #7C5CFF; }
+  #clipSend:active { background: #5B3FE0; }
 </style>
 </head>
 <body>
-<div id="stage">
-  <div id="screen"><div id="hint">连接中…</div></div>
-  <div id="bar">
-    <div id="barCaps"></div>
-    <hr style="border:none;border-top:1px solid #333;margin:4px 0" />
-    <button data-op="fit" title="适配画面">⛶</button>
-    <button data-op="full" title="全屏">🖥️</button>
-    <button data-op="disc" title="断开" style="color:#ff9d9d">⏹</button>
+<div id="screen"><div id="hint">连接中…</div></div>
+
+<!-- PC 端侧边栏 -->
+<div id="bar">
+  <button data-op="home">Home</button>
+  <button data-op="power">电源</button>
+  <button data-op="volup">Vol+</button>
+  <button data-op="voldn">Vol−</button>
+  <button data-op="mute">静音</button>
+  <button data-op="briup">亮+</button>
+  <button data-op="bridn">亮−</button>
+  <button data-op="kb">键盘</button>
+  <button data-op="clip">剪贴板</button>
+  <button data-op="fit">适配</button>
+  <button data-op="full">全屏</button>
+  <button data-op="disc">断开</button>
+</div>
+
+<!-- 手机端悬浮按钮 -->
+<button id="fab" aria-label="操作菜单">≡</button>
+<div id="panel" role="menu">
+  <button data-op="home"><span>🏠</span><span>Home 键</span></button>
+  <button data-op="power"><span>⏻</span><span>电源</span></button>
+  <button data-op="volup"><span>🔊</span><span>音量 +</span></button>
+  <button data-op="voldn"><span>🔉</span><span>音量 −</span></button>
+  <button data-op="mute"><span>🔇</span><span>静音</span></button>
+  <button data-op="briup"><span>☀️</span><span>亮度 +</span></button>
+  <button data-op="bridn"><span>🌙</span><span>亮度 −</span></button>
+  <button data-op="kb"><span>⌨️</span><span>键盘</span></button>
+  <button data-op="clip"><span>📋</span><span>剪贴板</span></button>
+  <button data-op="fit"><span>⛶</span><span>适配画面</span></button>
+  <button data-op="full"><span>⤢</span><span>全屏</span></button>
+  <button class="panel-close" data-op="close">收起菜单</button>
+  <button data-op="disc" style="color:#ff6b6b;border-color:#5a2a2a"><span>✕</span><span>断开连接</span></button>
+</div>
+
+<!-- 剪贴板手动输入浮层（HTTP 环境降级：Clipboard API 被拒绝时使用） -->
+<div id="clipOverlay">
+  <div id="clipModal">
+    <h3>📋 粘贴到手机</h3>
+    <p>浏览器拒绝自动读取剪贴板，请长按下方输入框手动粘贴内容后发送。</p>
+    <textarea id="clipText" placeholder="在此粘贴要发送到手机的文字…" autocomplete="off"></textarea>
+    <div class="clip-btns">
+      <button id="clipCancel">取消</button>
+      <button id="clipSend">发送</button>
+    </div>
   </div>
 </div>
-<button id="fabBtn" title="设备操作">⚙</button>
-<div id="opsMenu">
-  <div class="g" id="opsCaps"></div>
-  <div class="g" style="margin-top:6px">
-    <button data-op="fit" title="适配">⛶</button>
-    <button data-op="full" title="全屏">🖥️</button>
-    <button data-op="disc" title="断开">⏹</button>
-  </div>
-  <button id="menuClose">✕ 关闭</button>
-</div>
+
 <script type="module">
 import RFB from './novnc/core/rfb.js';
-import { DEFAULT_CAPS, CAP_META } from './caps.js';
+
 (function () {
   var host = location.hostname;
   var port = $PORT;
@@ -94,17 +223,55 @@ import { DEFAULT_CAPS, CAP_META } from './caps.js';
   rfb.resizeSession = false;
   rfb.showDotCursor = true;
 
-  rfb.addEventListener('connect', function () { hint.textContent = '已连接 ' + host + ':' + port; });
-  rfb.addEventListener('disconnect', function () { hint.textContent = '已断开'; });
+  rfb.addEventListener('connect', function () {
+    hint.textContent = '已连接 ' + host + ':' + port + '（等待首帧…）';
+    // 检测是否真的收到画面帧（区分"连上但黑帧"与"连不上"）
+    var gotFrame = false;
+    function fbSize() {
+      var d = rfb._display;
+      if (!d) return 0;
+      return d._fbWidth || d._fbHeight || (d.get_width ? d.get_width() : 0) || (d.get_height ? d.get_height() : 0);
+    }
+    var fc = setInterval(function () {
+      if (fbSize() > 0) {
+        gotFrame = true;
+        hint.textContent = '已连接 · 画面接收中';
+        clearInterval(fc);
+      }
+    }, 800);
+    setTimeout(function () {
+      clearInterval(fc);
+      if (!gotFrame) hint.textContent = '已连接但未收到画面（锁屏黑帧 / 抓屏异常 / 编码不支持）';
+    }, 5000);
+  });
+  rfb.addEventListener('disconnect', function (e) {
+    var msg = (e && e.detail && e.detail.message) ? '：' + e.detail.message : '';
+    hint.textContent = '已断开' + msg + '（目标 ' + url + '）';
+  });
+  rfb.addEventListener('error', function () { hint.textContent = '连接失败 ' + url; });
   rfb.addEventListener('credentialsrequired', function () {
     var p = window.prompt('请输入 VNC 密码：');
     if (p) rfb.sendCredentials({ password: p });
   });
 
+  // ===== 操作执行器（PC 栏与手机面板共用） =====
+
+  /**
+   * 发送单次按键（按下 + 短暂抬起）
+   * @param {number} ks   - X11 keysym（如 0xff50=Home）
+   * @param {string} code - 键码名（如 'Home'）
+   * @returns {void}
+   */
   function tapKey(ks, code) {
     try { rfb.sendKey(ks, code, true); } catch (e) { return; }
     setTimeout(function () { try { rfb.sendKey(ks, code, false); } catch (e) {} }, 60);
   }
+
+  /**
+   * 直接注入 RFB PointerEvent（type=5）：中键=电源（TrollVNC 映射）
+   * @param {number} mask - 按钮掩码（2=中键按下，0=释放）
+   * @returns {void}
+   */
   function pointer(mask) {
     try {
       var b = new Uint8Array(6);
@@ -113,60 +280,299 @@ import { DEFAULT_CAPS, CAP_META } from './caps.js';
       if (mask !== 0) setTimeout(function () { pointer(0); }, 80);
     } catch (e) {}
   }
-  function doOp(op) {
+
+  /**
+   * 按 data-op 派发对应操作
+   * @param {string} op - 操作标识（home/power/volup/.../fit/full/disc/close）
+   * @returns {void}
+   */
+  function dispatchOp(op) {
     switch (op) {
-      case 'home': tapKey(0xff50, 'Home'); break;
+      case 'home':  tapKey(0xff50, 'Home'); break;
       case 'power': pointer(2); break;
-      case 'volup': tapKey(0x1008ff13, 'AudioVolumeUp'); break;
       case 'voldn': tapKey(0x1008ff11, 'AudioVolumeDown'); break;
-      case 'mute': tapKey(0x1008ff12, 'AudioVolumeMute'); break;
+      case 'volup': tapKey(0x1008ff13, 'AudioVolumeUp'); break;
+      case 'mute':  tapKey(0x1008ff12, 'AudioVolumeMute'); break;
       case 'briup': tapKey(0x1008ff03, 'BrightnessUp'); break;
       case 'bridn': tapKey(0x1008ff02, 'BrightnessDown'); break;
-      case 'kb': try { rfb.focus(); } catch (e) {} break;
-      case 'clip':
-        navigator.clipboard.readText().then(function (t) { if (t) try { rfb.clipboardPasteFrom(t); } catch (e) {} }).catch(function () {});
+      case 'kb':
+        // 弹出虚拟键盘：让 noVNC 抢焦收到后续 keydown/keyup
+        try { rfb.focus(); } catch (e) {}
         break;
-      case 'fit': rfb.scaleViewport = true; break;
+      case 'clip':
+        // 优先用 Clipboard API（安全上下文下生效），失败则降级到手动输入浮层
+        tryClipboardPaste();
+        break;
+      case 'fit':   rfb.scaleViewport = true; break;
       case 'full':
         if (document.fullscreenElement) document.exitFullscreen();
         else document.documentElement.requestFullscreen().catch(function () {});
         break;
-      case 'disc': try { rfb.disconnect(); } catch (e) {} break;
+      case 'disc':
+        try { rfb.disconnect(); } catch (e) {}
+        break;
+      case 'close': break; // 仅关闭面板，由调用处处理
     }
   }
-  // 能力清单驱动渲染（宪法 5.2/6.6）：设备操作来自清单（优先 runtime 注入 window.TVNC_CAPS），
-  // 适配/全屏/断开为本地操作，由静态按钮提供
-  function renderCapOps(container) {
-    if (!container) return;
-    var caps = (window.TVNC_CAPS && window.TVNC_CAPS.length) ? window.TVNC_CAPS : DEFAULT_CAPS;
-    container.innerHTML = '';
-    caps.forEach(function (c) {
-      var meta = CAP_META[c];
+
+  // ===== 剪贴板降级方案：Clipboard API 失败时弹出手动输入浮层 =====
+
+  /**
+   * 尝试读取本机剪贴板并粘贴到远端；失败或为空时降级到手动输入浮层
+   * @returns {void}
+   */
+  function tryClipboardPaste() {
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      navigator.clipboard.readText().then(function (t) {
+        if (t) {
+          try { rfb.clipboardPasteFrom(t); } catch (e) {}
+        } else {
+          // 剪贴板为空，降级到手动输入
+          showClipModal();
+        }
+      }).catch(function () {
+        // Clipboard API 被拒绝（HTTP 环境常见），降级到手动输入
+        showClipModal();
+      });
+    } else {
+      // 浏览器不支持 Clipboard API，直接降级
+      showClipModal();
+    }
+  }
+
+  var clipOverlay = document.getElementById('clipOverlay');
+  var clipText = document.getElementById('clipText');
+  var clipSend = document.getElementById('clipSend');
+  var clipCancel = document.getElementById('clipCancel');
+
+  /**
+   * 显示剪贴板手动输入浮层，用户粘贴文本后点击发送
+   * @returns {void}
+   */
+  function showClipModal() {
+    clipText.value = '';
+    clipOverlay.classList.add('show');
+    // 延迟聚焦以等待过渡动画完成（部分浏览器需要元素可见后才能聚焦）
+    setTimeout(function () {
+      clipText.focus();
+    }, 100);
+  }
+
+  /**
+   * 关闭剪贴板浮层并清除内容
+   * @returns {void}
+   */
+  function closeClipModal() {
+    clipOverlay.classList.remove('show');
+    clipText.value = '';
+  }
+
+  // 发送按钮：将 textarea 内容粘贴到远端并关闭浮层
+  clipSend.addEventListener('click', function () {
+    var t = clipText.value;
+    if (t) {
+      try { rfb.clipboardPasteFrom(t); } catch (e) {}
+    }
+    closeClipModal();
+  });
+
+  // 取消按钮：关闭浮层
+  clipCancel.addEventListener('click', closeClipModal);
+
+  // 点击遮罩区域关闭浮层
+  clipOverlay.addEventListener('click', function (e) {
+    if (e.target === clipOverlay) closeClipModal();
+  });
+
+  // 统一绑定所有 data-op 按钮（PC 栏 + 手机面板）
+  document.querySelectorAll('[data-op]').forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      // 面板内按钮点击后收起面板（PC 栏按钮无需处理面板）
+      var op = btn.getAttribute('data-op');
+      dispatchOp(op);
+      if (op === 'close') {
+        panel.classList.remove('show');
+      } else if (panel.contains(btn)) {
+        panel.classList.remove('show');
+      }
+    });
+  });
+
+  // ===== 悬浮按钮拖动 + 点击展开 =====
+
+  var fab = document.getElementById('fab');
+  var panel = document.getElementById('panel');
+  var dragState = null;   // { startX, startY, originLeft, originTop, moved }
+
+  /**
+   * 计算 FAB 拖动安全边界（考虑 env(safe-area-inset-*) 避开刘海/Home 条）
+   * @returns {{minX:number, minY:number, maxX:number, maxY:number}} FAB 左上角可移动范围（px）
+   */
+  function getSafeBounds() {
+    var cs = getComputedStyle(document.documentElement);
+    // 读取 env() 计算后的像素值；非 iOS 设备返回 0
+    var st = parseInt(cs.getPropertyValue('--safe-top')) || 0;
+    var sr = parseInt(cs.getPropertyValue('--safe-right')) || 0;
+    var sb = parseInt(cs.getPropertyValue('--safe-bottom')) || 0;
+    var sl = parseInt(cs.getPropertyValue('--safe-left')) || 0;
+    var pad = 8;  // 额外留白，避免 FAB 紧贴边缘
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var fw = fab.offsetWidth, fh = fab.offsetHeight;
+    return {
+      minX: sl + pad,
+      minY: st + pad,
+      maxX: vw - fw - sr - pad,
+      maxY: vh - fh - sb - pad
+    };
+  }
+
+  /**
+   * 计算面板弹出位置（默认在 FAB 上方，空间不足则向下；约束在视口内）
+   * @returns {{left:number, top:number}} 面板左上角坐标（px）
+   */
+  function computePanelPos() {
+    var fr = fab.getBoundingClientRect();
+    var pw = panel.offsetWidth || 168;
+    var ph = panel.offsetHeight || 360;
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var gap = 10;
+    // 水平：默认与 FAB 左对齐，越界右对齐
+    var left = fr.left;
+    if (left + pw > vw - 8) left = vw - pw - 8;
+    if (left < 8) left = 8;
+    // 垂直：优先在 FAB 上方
+    var top = fr.top - ph - gap;
+    if (top < 8) top = fr.bottom + gap;       // 上方空间不足 → 向下
+    if (top + ph > vh - 8) top = vh - ph - 8; // 仍越界 → 顶到下边
+    if (top < 8) top = 8;
+    return { left: left, top: top };
+  }
+
+  /**
+   * 切换操作面板显隐（显示时按 FAB 位置定位）
+   * @returns {void}
+   */
+  function togglePanel() {
+    if (panel.classList.contains('show')) {
+      panel.classList.remove('show');
+      return;
+    }
+    panel.classList.add('show');      // 先显示以获取尺寸
+    var pos = computePanelPos();
+    panel.style.left = pos.left + 'px';
+    panel.style.top = pos.top + 'px';
+  }
+
+  /**
+   * 拖动开始：记录起点与 FAB 原始位置
+   * @param {PointerEvent} e - 指针事件
+   * @returns {void}
+   */
+  fab.addEventListener('pointerdown', function (e) {
+    var rect = fab.getBoundingClientRect();
+    dragState = {
+      startX: e.clientX, startY: e.clientY,
+      originLeft: rect.left, originTop: rect.top,
+      moved: false
+    };
+    fab.classList.add('dragging');
+    try { fab.setPointerCapture(e.pointerId); } catch (err) {}
+    e.preventDefault();
+  });
+
+  /**
+   * 拖动中：更新 FAB 位置并约束在视口内
+   * @param {PointerEvent} e - 指针事件
+   * @returns {void}
+   */
+  fab.addEventListener('pointermove', function (e) {
+    if (!dragState) return;
+    var dx = e.clientX - dragState.startX;
+    var dy = e.clientY - dragState.startY;
+    if (Math.abs(dx) > 6 || Math.abs(dy) > 6) dragState.moved = true;
+    var nx = dragState.originLeft + dx;
+    var ny = dragState.originTop + dy;
+    // 边界约束（考虑 env(safe-area-inset-*) 避开刘海/Home 条）
+    var b = getSafeBounds();
+    nx = Math.max(b.minX, Math.min(nx, b.maxX));
+    ny = Math.max(b.minY, Math.min(ny, b.maxY));
+    fab.style.left = nx + 'px';
+    fab.style.top = ny + 'px';
+    fab.style.right = 'auto';
+    fab.style.bottom = 'auto';
+    // 面板可见时实时跟随 FAB 重新定位（仅真正拖动后触发，避免轻微抖动闪烁）
+    if (panel.classList.contains('show') && dragState.moved) {
+      var pos = computePanelPos();
+      panel.style.left = pos.left + 'px';
+      panel.style.top = pos.top + 'px';
+    }
+  });
+
+  /**
+   * 拖动结束：未移动则视为点击（展开/收起面板）
+   * @param {PointerEvent} e - 指针事件
+   * @returns {void}
+   */
+  fab.addEventListener('pointerup', function (e) {
+    var wasMoved = dragState && dragState.moved;
+    fab.classList.remove('dragging');
+    try { fab.releasePointerCapture(e.pointerId); } catch (err) {}
+    dragState = null;
+    if (!wasMoved) togglePanel();
+  });
+
+  fab.addEventListener('pointercancel', function () {
+    fab.classList.remove('dragging');
+    dragState = null;
+  });
+
+  // 点击面板外区域收起面板
+  document.addEventListener('pointerdown', function (e) {
+    if (!panel.classList.contains('show')) return;
+    if (panel.contains(e.target) || e.target === fab) return;
+    panel.classList.remove('show');
+  });
+
+  // 窗口尺寸变化时：约束 FAB 位置到新视口内 + 若面板可见则重新定位
+  window.addEventListener('resize', function () {
+    // 1. 约束 FAB 位置到新视口内（避免旋转/缩放后越界消失）
+    var fabRect = fab.getBoundingClientRect();
+    var b = getSafeBounds();
+    var nx = Math.max(b.minX, Math.min(fabRect.left, b.maxX));
+    var ny = Math.max(b.minY, Math.min(fabRect.top, b.maxY));
+    if (Math.abs(nx - fabRect.left) > 0.5 || Math.abs(ny - fabRect.top) > 0.5) {
+      fab.style.left = nx + 'px';
+      fab.style.top = ny + 'px';
+      fab.style.right = 'auto';
+      fab.style.bottom = 'auto';
+    }
+    // 2. 面板可见时重新定位跟随 FAB
+    if (panel.classList.contains('show')) {
+      var pos = computePanelPos();
+      panel.style.left = pos.left + 'px';
+      panel.style.top = pos.top + 'px';
+    }
+  });
+
+  // 能力清单增强（可选）：caps.js 可加载时覆盖按钮标题（失败不影响连接）
+  import('./caps.js').then(function (m) {
+    if (!m || !m.CAP_META) return;
+    // 同时更新 PC 栏与手机面板按钮文案（含 keyboard/clipboard）
+    document.querySelectorAll('[data-op]').forEach(function (btn) {
+      var op = btn.getAttribute('data-op');
+      var meta = m.CAP_META[op];
       if (!meta) return;
-      var b = document.createElement('button');
-      b.type = 'button';
-      b.dataset.op = meta.op;
-      b.title = meta.title;
-      b.textContent = meta.icon;
-      b.addEventListener('click', function () { doOp(meta.op); });
-      container.appendChild(b);
+      // PC 栏按钮：纯文本
+      if (btn.closest('#bar')) {
+        btn.textContent = meta.label;
+      }
+      // 面板按钮：保留图标 + 更新文字 span
+      if (btn.closest('#panel')) {
+        var spans = btn.querySelectorAll('span');
+        if (spans.length >= 2) spans[1].textContent = meta.label;
+      }
     });
-  }
-  renderCapOps(document.getElementById('barCaps'));
-  renderCapOps(document.getElementById('opsCaps'));
-  function bind(sel) {
-    document.querySelectorAll(sel).forEach(function (b) {
-      b.addEventListener('click', function () { doOp(b.dataset.op); });
-    });
-  }
-  bind('#bar [data-op]');
-  bind('#opsMenu [data-op]');
-  document.getElementById('fabBtn').addEventListener('click', function () {
-    document.getElementById('opsMenu').classList.toggle('show');
-  });
-  document.getElementById('menuClose').addEventListener('click', function () {
-    document.getElementById('opsMenu').classList.remove('show');
-  });
+  }).catch(function () {});
 })();
 </script>
 </body>

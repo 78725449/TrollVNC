@@ -8,6 +8,8 @@
   断线退避重连（2s 起，上限 30s）；设置变更时重发 register 保持能力清单新鲜。
 */
 #import "TRGatewayClient.h"
+#import "TRCapabilityRegistry.h"
+#import "TRTunnelClient.h"
 #import "Logging.h"
 #import <UIKit/UIKit.h>
 
@@ -58,6 +60,7 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     NSThread *_workerThread;
     BOOL _started;
     BOOL _needsReregister;      // 设置变更后由 worker 线程重发 register（保持清单新鲜）
+    BOOL _tunnelStarted;        // Phase 10.5：注册 ack 后启动隧道标志，防止重复调用 _startTunnel
     NSTimeInterval _retryDelay;
     NSString *_deviceId;
     NSString *_deviceName;
@@ -66,6 +69,7 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 
 - (NSString *)_gatewayHost;
 - (NSInteger)_gatewayPort;
+- (NSString *)_gatewayToken;
 - (NSString *)_deviceId;
 - (NSString *)_deviceName;
 - (NSInteger)_vncPort;
@@ -74,12 +78,14 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 - (BOOL)_connectAndRun;
 - (void)_sendHello:(int)fd;
 - (void)_handleServerLine:(NSString *)line fd:(int)fd;
+- (NSDictionary *)_buildAckForCommand:(NSDictionary *)msg;
 - (void)_sendAck:(NSDictionary *)ack fd:(int)fd;
 - (NSData *)_registerData;
 - (NSArray<NSString *> *)_capabilities;
 - (NSDictionary *)_configs;
 - (NSDictionary *)_screenInfo;
 - (void)_defaultsChanged;
+- (void)_startTunnel;
 
 @end
 
@@ -122,6 +128,15 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 - (NSInteger)_gatewayPort {
     NSInteger port = [_defaults integerForKey:kGatewayPortKey];
     return (port > 0 && port < 65536) ? port : 18081;
+}
+
+/**
+ * 读取网关鉴权 token（Phase 7：供隧道握手使用，可为 nil）
+ * @return token 字符串，未配置返回 nil
+ */
+- (NSString *)_gatewayToken {
+    NSString *t = [_defaults stringForKey:@"GatewayToken"];
+    return t.length ? t : nil;
 }
 
 - (NSString *)_deviceId {
@@ -168,36 +183,16 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     return (http > 0 && http < 65536) ? http : 0;
 }
 
-#pragma mark - 能力清单（宪法 7.3，v1 只上报不下发）
+#pragma mark - 能力清单（Phase 4.1：从 TRCapabilityRegistry 自动生成）
 
 - (NSArray<NSString *> *)_capabilities {
-    // 固定枚举：仅 RFB 可注入的操作；适配/全屏/断开是控制台本地操作，不入清单
-    return @[ @"home", @"power", @"volup", @"voldn", @"mute", @"briup", @"bridn", @"keyboard", @"clipboard" ];
+    // 控制型能力 ID 由注册表自动生成，不再硬编码
+    return [[TRCapabilityRegistry sharedRegistry] allCapabilityIds];
 }
 
 - (NSDictionary *)_configs {
-    // 白名单 = Root.plist 现有键的子集；密码只报存在性，不上报明文
-    NSMutableDictionary *cfg = [NSMutableDictionary dictionary];
-    cfg[@"scale"] = @(TVNCDoublePref(_defaults, @"Scale", 1.0));
-    cfg[@"frameRateSpec"] = TVNCStrPref(_defaults, @"FrameRateSpec", @"60");
-    cfg[@"port"] = @([self _vncPort]);
-    cfg[@"httpPort"] = @([self _httpPort]);
-    cfg[@"bonjourEnabled"] = @(TVNCBoolPref(_defaults, @"BonjourEnabled", YES));
-    cfg[@"orientationSync"] = @(TVNCBoolPref(_defaults, @"OrientationSync", YES));
-    cfg[@"orientationPadFix"] = @(TVNCIntPref(_defaults, @"OrientationPadFix", 0));
-    cfg[@"naturalScroll"] = @(TVNCBoolPref(_defaults, @"NaturalScroll", NO));
-    cfg[@"keepAliveSec"] = @(TVNCDoublePref(_defaults, @"KeepAliveSec", 0.0));
-    cfg[@"clipboardEnabled"] = @(TVNCBoolPref(_defaults, @"ClipboardEnabled", YES));
-    cfg[@"viewOnly"] = @(TVNCBoolPref(_defaults, @"ViewOnly", NO));
-    cfg[@"modifierMap"] = TVNCStrPref(_defaults, @"ModifierMap", @"std");
-    cfg[@"wheelStepPx"] = @(TVNCDoublePref(_defaults, @"WheelStepPx", 48.0));
-    cfg[@"serverCursor"] = @(TVNCBoolPref(_defaults, @"ServerCursor", NO));
-    cfg[@"reverseMode"] = TVNCStrPref(_defaults, @"ReverseMode", @"none");
-    NSString *fullPw = [_defaults stringForKey:@"FullPassword"];
-    NSString *viewPw = [_defaults stringForKey:@"ViewOnlyPassword"];
-    cfg[@"hasPassword"] = @(fullPw.length > 0);
-    cfg[@"hasViewOnlyPassword"] = @(viewPw.length > 0);
-    return cfg;
+    // 配置值由注册表统一读取（覆盖 Root.plist 全字段，密码只报存在性）
+    return [[TRCapabilityRegistry sharedRegistry] currentConfigs];
 }
 
 - (NSDictionary *)_screenInfo {
@@ -217,6 +212,8 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     reg[@"name"] = [self _deviceName];
     reg[@"vncPort"] = @([self _vncPort]);
     reg[@"capabilities"] = [self _capabilities];
+    reg[@"capMetadata"] = [[TRCapabilityRegistry sharedRegistry] allControlMetadata];
+    reg[@"configSchema"] = [[TRCapabilityRegistry sharedRegistry] allConfigSchema];
     reg[@"configs"] = [self _configs];
     reg[@"screen"] = [self _screenInfo];
     reg[@"httpPort"] = @([self _httpPort]);
@@ -250,6 +247,22 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
         [_workerThread cancel];
         _workerThread = nil;
     }
+    // Phase 7：同步停止隧道客户端
+    [TRTunnelClient.sharedClient stop];
+}
+
+#pragma mark - 公开属性（供 gateway.* 能力查询）
+
+- (BOOL)isConnected { return _started; }
+- (NSTimeInterval)retryDelay { return _retryDelay; }
+- (NSDictionary *)deviceInfo {
+    return @{
+        @"deviceId": [self _deviceId] ?: [NSNull null],
+        @"name": [self _deviceName] ?: [NSNull null],
+        @"vncPort": @([self _vncPort]),
+        @"httpPort": @([self _httpPort]),
+        @"screen": [self _screenInfo] ?: [NSNull null],
+    };
 }
 
 - (void)_defaultsChanged {
@@ -310,6 +323,10 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     }
 
     _retryDelay = kMinRetryDelay;
+
+    // Phase 10.5：隧道启动移至收到注册 ack 之后（避免 hello 在 register 被处理前到达网关 18181 被拒）
+    // 此处重置标志，允许本次连接的首个 ack 触发 _startTunnel
+    _tunnelStarted = NO;
 
     // 读线程循环：读 ack/任意数据；每 kHelloInterval 发 hello；select 超时检测
     // 命令通道行缓冲：接收网关注册通道下发的 JSON 行（cmd 命令，宪法 7.4）
@@ -382,23 +399,136 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     return YES;
 }
 
-#pragma mark - 命令通道（宪法 7.4，v1 仅 ping）
+#pragma mark - 命令通道 v2（Phase 4.2：支持 query/set/invoke/restart）
 
-// 处理网关注册通道下发的 JSON 行：cmd 命令 → 回 ack
+/**
+ * 处理网关注册通道下发的 JSON 行消息
+ * 功能：解析 JSON 行，区分两类消息：
+ *   1) 注册 ack（type=="ack"）→ 确认 register 已被网关处理，此时启动 18181 隧道（_startTunnel），
+ *      用 _tunnelStarted 标志防止重复调用；
+ *   2) cmd 命令（type=="cmd"）→ 委托 _buildAckForCommand 构造 ack 并回写，
+ *      支持 ping/query/set/invoke/restart。
+ * @param line JSON 行字符串
+ * @param fd   连接 fd（用于回 ACK）
+ * @return void
+ */
 - (void)_handleServerLine:(NSString *)line fd:(int)fd {
     NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
     if (!data) return;
     NSDictionary *msg = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
     if (![msg isKindOfClass:[NSDictionary class]]) return;
     NSString *type = [msg[@"type"] description];
-    if (![type isEqualToString:@"cmd"]) return;
+    // Phase 10.5：收到注册 ack 后启动隧道（确保 register 已被网关处理，hello 不再以 "device not registered" 被拒）
+    if ([type isEqualToString:@"ack"]) {
+        @synchronized(self) {
+            if (!_tunnelStarted) {
+                _tunnelStarted = YES;
+                [self _startTunnel];
+            }
+        }
+        return;
+    }
+    // cmd 命令：构造 ack 并回写
+    NSDictionary *ack = [self _buildAckForCommand:msg];
+    if (ack) [self _sendAck:ack fd:fd];
+}
+
+/**
+ * 构造命令 ack 字典（Phase 7：抽出为公共方法，供注册通道与隧道 CMD 帧复用）
+ * 支持：ping/query/set/invoke/restart
+ * @param msg 原始命令字典（{type:"cmd", cmd, id, ...}）
+ * @return ack 字典（{type:"ack", cmd, id, ok, ...}）；非 cmd 类型返回 nil
+ */
+- (NSDictionary *)_buildAckForCommand:(NSDictionary *)msg {
+    NSString *type = [msg[@"type"] description];
+    if (![type isEqualToString:@"cmd"]) return nil;
     NSString *cmd = msg[@"cmd"] ? [msg[@"cmd"] description] : @"";
     NSString *cid = msg[@"id"] ? [msg[@"id"] description] : @"";
+
     if ([cmd isEqualToString:@"ping"]) {
-        [self _sendAck:@{ @"type": @"ack", @"cmd": cmd, @"id": cid, @"ok": @YES } fd:fd];
+        return @{ @"type": @"ack", @"cmd": cmd, @"id": cid, @"ok": @YES };
+    }
+    else if ([cmd isEqualToString:@"query"]) {
+        // 查询能力清单/配置/客户端/状态
+        NSString *target = msg[@"target"] ? [msg[@"target"] description] : @"caps";
+        return [self _buildQueryAck:target cid:cid];
+    }
+    else if ([cmd isEqualToString:@"set"]) {
+        // 下发配置：写 NSUserDefaults + 返回 reload 策略
+        NSString *key = msg[@"key"] ? [msg[@"key"] description] : @"";
+        id value = msg[@"value"];
+        NSError *err = nil;
+        NSString *reload = [[TRCapabilityRegistry sharedRegistry] setConfig:key value:value error:&err];
+        if (reload) {
+            return @{ @"type": @"ack", @"cmd": cmd, @"id": cid, @"ok": @YES, @"reload": reload };
+        } else {
+            return @{ @"type": @"ack", @"cmd": cmd, @"id": cid, @"ok": @NO, @"error": err.localizedDescription ?: @"set failed" };
+        }
+    }
+    else if ([cmd isEqualToString:@"invoke"]) {
+        // 调用控制型能力：按 route 自动路由执行
+        NSString *capId = msg[@"cap"] ? [msg[@"cap"] description] : @"";
+        NSDictionary *params = msg[@"params"];
+        if (![params isKindOfClass:[NSDictionary class]]) params = @{};
+        NSError *err = nil;
+        NSDictionary *result = [[TRCapabilityRegistry sharedRegistry] invoke:capId params:params error:&err];
+        if (result) {
+            NSMutableDictionary *ack = [NSMutableDictionary dictionary];
+            ack[@"type"] = @"ack"; ack[@"cmd"] = cmd; ack[@"id"] = cid; ack[@"ok"] = @YES;
+            [ack addEntriesFromDictionary:result];
+            return ack;
+        } else {
+            return @{ @"type": @"ack", @"cmd": cmd, @"id": cid, @"ok": @NO, @"error": err.localizedDescription ?: @"invoke failed" };
+        }
+    }
+    else if ([cmd isEqualToString:@"restart"]) {
+        // 重启服务：调用注入的 restartHandler
+        if (_restartHandler && _restartHandler()) {
+            return @{ @"type": @"ack", @"cmd": cmd, @"id": cid, @"ok": @YES };
+        } else {
+            return @{ @"type": @"ack", @"cmd": cmd, @"id": cid, @"ok": @NO, @"error": @"restart handler not available" };
+        }
+    }
+    else {
+        return @{ @"type": @"ack", @"cmd": cmd, @"id": cid, @"ok": @NO, @"error": @"unsupported command" };
+    }
+}
+
+/**
+ * 处理 query 命令：按 target 返回能力清单/配置/状态（委托 _buildQueryAck 构造并回写）
+ * @param target 查询目标：caps|configs|schema|status
+ * @param cid    命令 ID
+ * @param fd     连接 fd
+ */
+- (void)_handleQuery:(NSString *)target cid:(NSString *)cid fd:(int)fd {
+    NSDictionary *resp = [self _buildQueryAck:target cid:cid];
+    [self _sendAck:resp fd:fd];
+}
+
+/**
+ * 构造 query 命令 ack 字典（Phase 7：抽出供隧道 CMD 帧复用）
+ * @param target 查询目标：caps|configs|schema|status
+ * @param cid    命令 ID
+ * @return ack 字典
+ */
+- (NSDictionary *)_buildQueryAck:(NSString *)target cid:(NSString *)cid {
+    TRCapabilityRegistry *reg = [TRCapabilityRegistry sharedRegistry];
+    if ([target isEqualToString:@"caps"]) {
+        return @{ @"type": @"ack", @"cmd": @"query", @"id": cid, @"ok": @YES,
+                  @"capabilities": [reg allControlMetadata] };
+    } else if ([target isEqualToString:@"configs"]) {
+        return @{ @"type": @"ack", @"cmd": @"query", @"id": cid, @"ok": @YES,
+                  @"configs": [reg currentConfigs] };
+    } else if ([target isEqualToString:@"schema"]) {
+        return @{ @"type": @"ack", @"cmd": @"query", @"id": cid, @"ok": @YES,
+                  @"schema": [reg allConfigSchema] };
+    } else if ([target isEqualToString:@"status"]) {
+        return @{ @"type": @"ack", @"cmd": @"query", @"id": cid, @"ok": @YES,
+                  @"deviceId": [self _deviceId], @"name": [self _deviceName],
+                  @"vncPort": @([self _vncPort]), @"httpPort": @([self _httpPort]),
+                  @"screen": [self _screenInfo] };
     } else {
-        // v1 仅支持 ping；set 等命令明确拒绝（宪法 1.3/7.4，B4 决策点）
-        [self _sendAck:@{ @"type": @"ack", @"cmd": cmd, @"id": cid, @"ok": @NO, @"error": @"unsupported command" } fd:fd];
+        return @{ @"type": @"ack", @"cmd": @"query", @"id": cid, @"ok": @NO, @"error": @"unknown target" };
     }
 }
 
@@ -419,6 +549,27 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     if (n < 0) {
         // 写失败说明连接已断，read 循环会尽快退出
     }
+}
+
+#pragma mark - Phase 7：隧道客户端
+
+/**
+ * 启动 18181 隧道客户端并注入命令处理器（复用 _buildAckForCommand）
+ * 注册发送成功后调用，使设备通过隧道向网关透传 RFB 数据并对 CMD 帧返回 ack。
+ * commandHandler 用 weak-self 避免单例持有 self 造成循环引用。
+ */
+- (void)_startTunnel {
+    TRTunnelClient *tun = [TRTunnelClient sharedClient];
+    __weak typeof(self) weakSelf = self;
+    tun.commandHandler = ^NSDictionary *(NSDictionary *cmd) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return nil;
+        return [strongSelf _buildAckForCommand:cmd];
+    };
+    [tun startWithHost:[self _gatewayHost]
+                  port:18181
+              deviceId:[self _deviceId]
+                 token:[self _gatewayToken]];
 }
 
 @end

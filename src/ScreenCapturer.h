@@ -21,6 +21,7 @@
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -101,6 +102,24 @@ NS_ASSUME_NONNULL_BEGIN
  to the frame handler even if no screen changes are detected.
  */
 - (void)forceNextFrameUpdate;
+
+/**
+ Capture a single frame of the current screen synchronously and return it as a UIImage.
+ Renders the current screen contents into the internal IOSurface on demand and converts
+ it to a UIImage via CoreImage. Does not trigger the system screenshot animation and does
+ not save to the photo library — silent capture intended for AI automation.
+ @return A UIImage containing the current screen contents, or nil if rendering/conversion fails.
+ */
+- (nullable UIImage *)captureSingleFrameImage;
+
+/**
+ 同步捕获当前屏幕单帧并返回 CVPixelBufferRef（零拷贝 IOSurface 包装）。
+ 功能：按需将当前屏幕内容渲染到内部 IOSurface，直接包装为 CVPixelBufferRef 返回。
+       跳过 CIImage/UIImage/JPEG 编码链路，供 pHash 等仅需原始像素的场景使用（省 ~8ms）。
+ 参数：无
+ 返回值：CVPixelBufferRef — ARGB 格式像素缓冲区（调用方负责 CVPixelBufferRelease）；失败返回 NULL
+ */
+- (nullable CVPixelBufferRef)captureSingleFrameBuffer CF_RETURNS_RETAINED;
 
 @end
 

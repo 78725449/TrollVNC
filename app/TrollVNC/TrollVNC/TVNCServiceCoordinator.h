@@ -21,6 +21,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 FOUNDATION_EXPORT NSNotificationName const TVNCServiceStatusDidChangeNotification;
 
+// 设备唯一标识（硬件 UDID；拿不到时回退注册 UUID）
+FOUNDATION_EXPORT NSString *TVNCDeviceUDID(void);
+
+
 @interface TVNCServiceCoordinator : NSObject
 
 @property(nonatomic, assign, getter=isServiceRunning) BOOL serviceRunning;

@@ -16,10 +16,7 @@
 */
 
 #import "SceneDelegate.h"
-#import "TVNCClientListController.h"
-#import "TVNCConnectViewController.h"
-#import "TVNCControllerViewController.h"
-#import "TVNCSettingsViewController.h"
+#import "TRMainTabBarController.h"
 #import "TVNCRootListController.h"
 
 #import <Preferences/PSRootController.h>
@@ -48,42 +45,8 @@
         self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
     }
 
-    UITabBarController *tab = [[UITabBarController alloc] init];
-
-    // Tab 1 连接
-    TVNCConnectViewController *connect = [[TVNCConnectViewController alloc] init];
-    UINavigationController *connectNav = [[UINavigationController alloc] initWithRootViewController:connect];
-    connectNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"连接"
-                                                          image:[UIImage systemImageNamed:@"antenna.radiowaves.left.and.right"]
-                                                            tag:0];
-
-    // Tab 2 客户端（复用现有客户端列表）
-    NSBundle *resBundle = [NSBundle bundleWithPath:[[NSBundle mainBundle] pathForResource:@"TrollVNCPrefs"
-                                                                                   ofType:@"bundle"]];
-    TVNCClientListController *clients = [[TVNCClientListController alloc] init];
-    clients.bundle = resBundle ?: [NSBundle mainBundle];
-    clients.primaryColor = [UIColor systemBlueColor];
-    clients.hideDismissButton = YES;
-    UINavigationController *clientsNav = [[UINavigationController alloc] initWithRootViewController:clients];
-    clientsNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"客户端"
-                                                          image:[UIImage systemImageNamed:@"iphone"]
-                                                            tag:1];
-
-    // Tab 3 控制端（U2 外壳；viewer 为 U4 远期）
-    TVNCControllerViewController *controller = [[TVNCControllerViewController alloc] init];
-    UINavigationController *controllerNav = [[UINavigationController alloc] initWithRootViewController:controller];
-    controllerNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"控制端"
-                                                             image:[UIImage systemImageNamed:@"rectangle.grid.2x2"]
-                                                               tag:2];
-
-    // Tab 4 设置（U2.1：8 分组 UIKit 设置）
-    TVNCSettingsViewController *settings = [[TVNCSettingsViewController alloc] init];
-    UINavigationController *settingsNav = [[UINavigationController alloc] initWithRootViewController:settings];
-    settingsNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"设置"
-                                                           image:[UIImage systemImageNamed:@"gearshape"]
-                                                             tag:3];
-
-    tab.viewControllers = @[ connectNav, clientsNav, controllerNav, settingsNav ];
+    // Phase 12.2：根控制器改为 TRMainTabBarController（三 Tab 导航）
+    TRMainTabBarController *tab = [[TRMainTabBarController alloc] init];
     self.window.rootViewController = tab;
     [self.window makeKeyAndVisible];
 }

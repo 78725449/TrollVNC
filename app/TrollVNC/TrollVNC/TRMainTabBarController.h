@@ -19,8 +19,11 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// 连接页（Tab 1，U2）：设备状态 + 扫描直连
-@interface TVNCConnectViewController : UIViewController
+/// 主 TabBarController（Phase 12.2）：三 Tab 导航重构
+/// - Tab 1 "连接"：TVNCConnectViewController（首页，保持不变）
+/// - Tab 2 "控制"：TVNCControllerViewController（卡片墙，升为主入口之一）
+/// - Tab 3 "设置"：TVNCRootListController（配置，降为次要入口）
+@interface TRMainTabBarController : UITabBarController
 
 @end
 

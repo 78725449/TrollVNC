@@ -11,6 +11,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+@class TRWatchDog;
+
 @interface TRGatewayClient : NSObject
 
 + (instancetype)sharedClient;
@@ -20,6 +22,22 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// 停止连接与重连
 - (void)stop;
+
+/// 设置服务重启处理器（由 trollvncmanager 注入，restart 命令触发）
+/// @param handler 返回 YES 表示重启已发起
+@property(nonatomic, copy, nullable) BOOL (^restartHandler)(void);
+
+/// 服务进程守护实例（由 trollvncmanager 注入，供 service.* 能力访问属性与方法）
+@property(nonatomic, strong, nullable) TRWatchDog *watchdog;
+
+/// 网关连接状态（供 gateway.isConnected 能力查询）
+@property(nonatomic, readonly) BOOL isConnected;
+
+/// 当前重连退避延迟（秒，供 gateway.isConnected 能力查询）
+@property(nonatomic, readonly) NSTimeInterval retryDelay;
+
+/// 设备元数据快照（供 gateway.deviceInfo 能力查询）
+@property(nonatomic, readonly) NSDictionary *deviceInfo;
 
 @end
 

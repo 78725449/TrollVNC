@@ -439,8 +439,6 @@ TrollVNC can connect to an UltraVNC Repeater in Mode II. Both the Server (TrollV
 
 Behavior when reverse is enabled: local VNC port is disabled, HTTP/WebSockets are disabled, and Bonjour/mDNS is disabled.
 
-**Optional**: set `TROLLVNC_REPEATER_RETRY_INTERVAL` (seconds) to wait before exit if the connection fails (useful when a supervisor always restarts the process).
-
 #### C) Viewer (Client)
 
 <img width="383" height="198" alt="uvnc_repeater" src="https://github.com/user-attachments/assets/5f5e86a1-605a-4624-8b8e-27ebe89ce4e3" />

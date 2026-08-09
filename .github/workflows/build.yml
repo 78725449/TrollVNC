@@ -43,25 +43,6 @@ on:
         options:
           - std
           - altcmd
-      reverse_mode:
-        type: choice
-        description: Reverse connection mode
-        required: false
-        default: none
-        options:
-          - none
-          - viewer
-          - repeater
-      reverse_socket:
-        type: string
-        description: Reverse host:port or [ipv6]:port
-        required: false
-        default: ""
-      reverse_repeater_id:
-        type: string
-        description: Repeater ID (numeric)
-        required: false
-        default: ""
 
 env:
   FINALPACKAGE: 1
@@ -118,9 +99,6 @@ jobs:
           TVNC_SCALE: ${{ inputs.scale }}
           TVNC_FRAME_RATE_SPEC: ${{ inputs.frame_rate_spec }}
           TVNC_MODIFIER_MAP: ${{ inputs.modifier_map }}
-          TVNC_REVERSE_MODE: ${{ inputs.reverse_mode }}
-          TVNC_REVERSE_SOCKET: ${{ inputs.reverse_socket }}
-          TVNC_REVERSE_REPEATER_ID: ${{ inputs.reverse_repeater_id }}
           # Fixed values
           TVNC_ENABLED: true
           TVNC_CLIPBOARD_ENABLED: true

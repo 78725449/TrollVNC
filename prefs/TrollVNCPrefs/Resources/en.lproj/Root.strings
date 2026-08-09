@@ -14,8 +14,6 @@
 
 "90° Clockwise" = "90° Clockwise";
 
-"A repeater ID is required for the “UltraVNC Repeater” mode." = "A repeater ID is required for the “UltraVNC Repeater” mode.";
-
 "Absolute path to static web client files. Leave empty to use built-in assets." = "Absolute path to static web client files. Leave empty to use built-in assets.";
 
 "Advanced wheel options: comma-separated key=value (e.g. step=48,coalesce=0.03,accel=1.0). Leave empty to use defaults." = "Advanced wheel options: comma-separated key=value (e.g. step=48,coalesce=0.03,accel=1.0). Leave empty to use defaults.";
@@ -78,8 +76,6 @@
 
 "Enabled" = "Enabled";
 
-"Establish a reverse connection to a listening VNC viewer or repeater without opening a server port. This is useful for bypassing firewalls or NAT." = "Establish a reverse connection to a listening VNC viewer or repeater without opening a server port. This is useful for bypassing firewalls or NAT.";
-
 "Export Certificate…" = "Export Certificate…";
 
 "Frame Rate" = "Frame Rate";
@@ -112,8 +108,6 @@
 
 "Logs key events to syslog for debugging. Do not leave enabled in normal use." = "Logs key events to syslog for debugging. Do not leave enabled in normal use.";
 
-"Made with ♥ by OwnGoal Studio" = "Made with ♥ by OwnGoal Studio";
-
 "Match iOS natural scroll direction for mouse wheel/trackpad; disable for traditional desktop direction." = "Match iOS natural scroll direction for mouse wheel/trackpad; disable for traditional desktop direction.";
 
 "Max concurrent client encodes before dropping new frames. 0 = never drop (may increase latency under load)." = "Max concurrent client encodes before dropping new frames. 0 = never drop (may increase latency under load).";
@@ -144,21 +138,13 @@
 
 "Pixels per wheel tick sent to clients. Higher = faster scroll." = "Pixels per wheel tick sent to clients. Higher = faster scroll.";
 
-"Please support our paid works, thank you!" = "Please support our paid works, thank you!";
-
 "Render a cursor on the server for clients that lack a hardware cursor. May slightly reduce performance." = "Render a cursor on the server for clients that lack a hardware cursor. May slightly reduce performance.";
-
-"Repeater" = "Repeater";
-
-"Repeater ID" = "Repeater ID";
 
 "Reset to Defaults" = "Reset to Defaults";
 
 "Respring" = "Respring";
 
 "Respring to Apply Changes" = "Respring to Apply Changes";
-
-"Reverse Connection" = "Reverse Connection";
 
 "Rotate the shared display to follow device orientation changes. “Orientation Offset” applies a fixed rotation for iPad models with non-standard default orientations." = "Rotate the shared display to follow device orientation changes. “Orientation Offset” applies a fixed rotation for iPad models with non-standard default orientations.";
 
@@ -214,17 +200,11 @@
 
 "TrollVNC" = "TrollVNC";
 
-"UltraVNC Repeater" = "UltraVNC Repeater";
-
 "View Logs" = "View Logs";
-
-"View Source Code" = "View Source Code";
 
 "View-only" = "View-only";
 
 "View-only Password" = "View-only Password";
-
-"Viewer" = "Viewer";
 
 "VNC TCP port. Default 5901. Valid range 1024–65535." = "VNC TCP port. Default 5901. Valid range 1024–65535.";
 

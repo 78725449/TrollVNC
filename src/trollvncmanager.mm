@@ -229,9 +229,6 @@ int main(int argc, const char *argv[]) {
         ]];
 
         NSMutableDictionary *mEnvs = [[[NSProcessInfo processInfo] environment] mutableCopy];
-        [mEnvs addEntriesFromDictionary:@{
-            @"TROLLVNC_REPEATER_RETRY_INTERVAL" : @"30.0",
-        }];
 
         [gWatchDog setEnvironmentVariables:mEnvs];
         [gWatchDog setWorkingDirectory:[[NSFileManager defaultManager] currentDirectoryPath]];
@@ -293,6 +290,12 @@ int main(int argc, const char *argv[]) {
             return EXIT_FAILURE;
         }
         // Internal farm gateway registration/heartbeat (enabled when GatewayHost/URL is configured)
+        [[TRGatewayClient sharedClient] setRestartHandler:^BOOL{
+            // restart 命令触发 watchdog 重启 trollvncserver 进程
+            return [gWatchDog restart];
+        }];
+        // 注入 watchdog 实例，供 service.* 能力（signal/state/info/isActive/isThrottled/validate）访问
+        [TRGatewayClient sharedClient].watchdog = gWatchDog;
         [[TRGatewayClient sharedClient] start];
     }
 

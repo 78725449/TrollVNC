@@ -26,22 +26,7 @@
 			<key>default</key>
 			<true/>
 		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSEditTextCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>DesktopName</string>
-			<key>label</key>
-			<string>Desktop Name</string>
-			<key>default</key>
-			<string>TrollVNC</string>
-			<key>placeholder</key>
-			<string>Shown to VNC clients</string>
-			<key>keyboard</key>
-			<string>alphabet</string>
-		</dict>
+		
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
@@ -108,76 +93,13 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>连接模式</string>
+			<string>直连参数</string>
 			<key>footerText</key>
-			<string>局域网直连：手机作为 VNC 服务器，客户端主动连接；反向模式：手机主动拨号到服务器（会关闭本地端口/HTTP/Bonjour）。</string>
+			<string>局域网直连：手机作为 VNC 服务器，客户端主动连接；反向连接参数在 App「连接 → 反向连接」页配置。</string>
 		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSLinkListCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>ReverseMode</string>
-			<key>label</key>
-			<string>Mode</string>
-			<key>detail</key>
-			<string>TVNCListItemsController</string>
-			<key>default</key>
-			<string>none</string>
-			<key>shortTitles</key>
-			<array>
-				<string>None</string>
-				<string>Viewer</string>
-				<string>Repeater</string>
-			</array>
-			<key>validTitles</key>
-			<array>
-				<string>None</string>
-				<string>Viewer</string>
-				<string>UltraVNC Repeater</string>
-			</array>
-			<key>validValues</key>
-			<array>
-				<string>none</string>
-				<string>viewer</string>
-				<string>repeater</string>
-			</array>
-			<key>staticTextMessage</key>
-			<string>A repeater ID is required for the “UltraVNC Repeater” mode.</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSEditTextCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>ReverseSocket</string>
-			<key>label</key>
-			<string>Server</string>
-			<key>placeholder</key>
-			<string>server:port</string>
-			<key>noAutoCorrect</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSEditTextCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>ReverseRepeaterID</string>
-			<key>label</key>
-			<string>Repeater ID</string>
-			<key>decimal</key>
-			<true/>
-			<key>isNumeric</key>
-			<true/>
-			<key>noAutoCorrect</key>
-			<true/>
-			<key>placeholder</key>
-			<string>0</string>
-		</dict>
+		
+		
+		
 		<dict>
 			<key>cell</key>
 			<string>PSEditTextCell</string>
@@ -378,6 +300,24 @@
 			<string>Server-Side Cursor</string>
 			<key>default</key>
 			<false/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSEditTextCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>ThumbInterval</string>
+			<key>label</key>
+			<string>卡片墙帧获取间隔(秒)</string>
+			<key>default</key>
+			<integer>5</integer>
+			<key>isNumeric</key>
+			<true/>
+			<key>noAutoCorrect</key>
+			<true/>
+			<key>placeholder</key>
+			<string>5</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -610,30 +550,6 @@
 		</dict>
 		<dict>
 			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>SingleNotifEnabled</string>
-			<key>label</key>
-			<string>Silence Notifications</string>
-			<key>default</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>ClientNotifsEnabled</string>
-			<key>label</key>
-			<string>Connect/Disconnect Notifications</string>
-			<key>default</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>cell</key>
 			<string>PSEditTextCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
@@ -642,13 +558,13 @@
 			<key>label</key>
 			<string>HTTP Port</string>
 			<key>default</key>
-			<integer>0</integer>
+			<integer>5801</integer>
 			<key>isNumeric</key>
 			<true/>
 			<key>noAutoCorrect</key>
 			<true/>
 			<key>placeholder</key>
-			<string>0</string>
+			<string>5801</string>
 		</dict>
 		<dict>
 			<key>cell</key>

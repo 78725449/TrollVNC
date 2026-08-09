@@ -36,10 +36,6 @@
 #import "TVNCUtil.h"
 #import "ZTSelfSignedCertificate.h"
 
-#ifdef THEBOOTSTRAP
-#import "GitHubReleaseUpdater.h"
-#endif
-
 NS_INLINE NSString *GetDefaultRouteInterface(void) {
     static SCDynamicStoreRef (*_SCDynamicStoreCreate)(CFAllocatorRef, CFStringRef, SCDynamicStoreCallBack,
                                                       SCDynamicStoreContext *) = NULL;
@@ -358,12 +354,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
             packageScheme = @"legacy";
         }
 
-        NSString *versionString;
-#ifdef THEBOOTSTRAP
-        versionString = [[GitHubReleaseUpdater shared] currentVersion];
-#else
-        versionString = @PACKAGE_VERSION;
-#endif
+        NSString *versionString = @PACKAGE_VERSION;
 
         NSString *footerText = [NSString
             stringWithFormat:NSLocalizedStringFromTableInBundle(@"TrollVNC (%@) v%@", @"Localizable", self.bundle, nil),
@@ -374,44 +365,12 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 }
 
 - (NSString *)currentStatusText {
-    PSSpecifier *revModeSpec = nil;
-    for (PSSpecifier *sp in _specifiers) {
-        NSString *key = [sp propertyForKey:@"key"];
-        if (!key)
-            continue;
-        if (!revModeSpec && [key isEqualToString:@"ReverseMode"]) {
-            revModeSpec = sp;
-            break;
-        }
-    }
-
-    NSString *revMode = @"none";
-    id revModeVal = revModeSpec ? [self readPreferenceValue:revModeSpec] : nil;
-    if ([revModeVal isKindOfClass:[NSString class]]) {
-        revMode = (NSString *)revModeVal;
-    }
-
-    NSString *text;
-    BOOL isRevModeOn = [revMode caseInsensitiveCompare:@"none"] != NSOrderedSame;
-    if (isRevModeOn) {
-        NSString *modeFormat =
-            NSLocalizedStringFromTableInBundle(@"Reverse Connection: %@", @"Localizable", self.bundle, nil);
-        if ([revMode caseInsensitiveCompare:@"repeater"] == NSOrderedSame) {
-            revMode = NSLocalizedStringFromTableInBundle(@"Repeater", @"Localizable", self.bundle, nil);
-        } else {
-            revMode = NSLocalizedStringFromTableInBundle(@"Viewer", @"Localizable", self.bundle, nil);
-        }
-        text = [NSString stringWithFormat:modeFormat, revMode];
-    } else {
-        // Append current en0 IP on a second line, if available
-        NSString *ip = TVNCGetEn0IPAddress();
-        NSString *ipUnavailable = NSLocalizedStringFromTableInBundle(@"unavailable", @"Localizable", self.bundle, nil);
-        NSString *ipFormat =
-            NSLocalizedStringFromTableInBundle(@"Current IP Address: %@", @"Localizable", self.bundle, nil);
-        text = [NSString stringWithFormat:ipFormat, (ip.length ? ip : ipUnavailable)];
-    }
-
-    return text;
+    // Append current en0 IP on a second line, if available
+    NSString *ip = TVNCGetEn0IPAddress();
+    NSString *ipUnavailable = NSLocalizedStringFromTableInBundle(@"unavailable", @"Localizable", self.bundle, nil);
+    NSString *ipFormat =
+        NSLocalizedStringFromTableInBundle(@"Current IP Address: %@", @"Localizable", self.bundle, nil);
+    return [NSString stringWithFormat:ipFormat, (ip.length ? ip : ipUnavailable)];
 }
 
 - (void)updateFirstGroupAndReload:(BOOL)reload {
@@ -815,20 +774,6 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     [self reloadSpecifiers];
 }
 
-- (void)support {
-    NSURL *url = [NSURL URLWithString:@"https://havoc.app/search/82Flex"];
-    if ([[UIApplication sharedApplication] canOpenURL:url]) {
-        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
-    }
-}
-
-- (void)source {
-    NSURL *url = [NSURL URLWithString:@"https://github.com/OwnGoalStudio/TrollVNC"];
-    if ([[UIApplication sharedApplication] canOpenURL:url]) {
-        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
-    }
-}
-
 #pragma mark - UITableViewDataSource & UITableViewDelegate
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -867,27 +812,6 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 0 && ![self hasManagedConfiguration]) {
-#ifdef THEBOOTSTRAP
-        do {
-            GitHubReleaseUpdater *updater = [GitHubReleaseUpdater shared];
-            if (![updater hasNewerVersionInCache]) {
-                break;
-            }
-
-            GHReleaseInfo *releaseInfo = [updater cachedLatestRelease];
-            if (!releaseInfo) {
-                break;
-            }
-
-            return [NSString stringWithFormat:NSLocalizedStringFromTableInBundle(
-                                                  @"A new version %@ is available! You’re currently using v%@. "
-                                                  @"Download the latest version from Havoc Marketplace.",
-                                                  @"Localizable", self.bundle, nil),
-                                              releaseInfo.tagName, [[GitHubReleaseUpdater shared] currentVersion]];
-        } while (0);
-#endif
-    }
     return [super tableView:tableView titleForFooterInSection:section];
 }
 

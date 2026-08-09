@@ -31,6 +31,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (instancetype)initWithGroups:(NSArray<NSDictionary *> *)groups title:(NSString *)title;
 
+/// 一级菜单直接调用的动作
+- (void)viewLogs;
+- (void)resetDefaults;
+
 @end
 
 NS_ASSUME_NONNULL_END

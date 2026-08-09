@@ -14,8 +14,6 @@
 
 "90° Clockwise" = "顺时针 90°";
 
-"A repeater ID is required for the “UltraVNC Repeater” mode." = "“UltraVNC 中继器” 模式需要一个中继器 ID。";
-
 "Absolute path to static web client files. Leave empty to use built-in assets." = "静态 Web 客户端文件的绝对路径。留空使用内置资源。";
 
 "Advanced wheel options: comma-separated key=value (e.g. step=48,coalesce=0.03,accel=1.0). Leave empty to use defaults." = "高级滚轮选项：以逗号分隔的 key=value（例如 step=48,coalesce=0.03,accel=1.0）。留空使用默认值。";
@@ -78,8 +76,6 @@
 
 "Enabled" = "启用";
 
-"Establish a reverse connection to a listening VNC viewer or repeater without opening a server port. This is useful for bypassing firewalls or NAT." = "建立到监听的 VNC 查看器或中继器的反向连接，而无需打开服务器端口。这对于绕过防火墙或 NAT 非常有用。";
-
 "Export Certificate…" = "导出证书…";
 
 "Frame Rate" = "帧率";
@@ -112,8 +108,6 @@
 
 "Logs key events to syslog for debugging. Do not leave enabled in normal use." = "将按键事件记录到系统日志用于调试。正常使用时不建议长期开启。";
 
-"Made with ♥ by OwnGoal Studio" = "「乌龙工作室」倾情献制";
-
 "Match iOS natural scroll direction for mouse wheel/trackpad; disable for traditional desktop direction." = "使鼠标滚轮/触控板滚动方向与 iOS 的 “自然滚动” 保持一致；关闭则使用传统桌面方向。";
 
 "Max concurrent client encodes before dropping new frames. 0 = never drop (may increase latency under load)." = "丢弃新帧前允许的最大并发编码数。0 表示不丢弃（在高负载下可能增加延迟）。";
@@ -144,21 +138,13 @@
 
 "Pixels per wheel tick sent to clients. Higher = faster scroll." = "每次滚轮事件向客户端发送的像素数。数值越大滚动越快。";
 
-"Please support our paid works, thank you!" = "请支持我们的其他付费作品，谢谢！";
-
 "Render a cursor on the server for clients that lack a hardware cursor. May slightly reduce performance." = "为缺少硬件光标的客户端在服务器端绘制光标。可能略微影响性能。";
-
-"Repeater" = "中继器";
-
-"Repeater ID" = "中继器 ID";
 
 "Reset to Defaults" = "还原为默认值";
 
 "Respring" = "注销";
 
 "Respring to Apply Changes" = "注销以应用更改";
-
-"Reverse Connection" = "反向连接";
 
 "Rotate the shared display to follow device orientation changes. “Orientation Offset” applies a fixed rotation for iPad models with non-standard default orientations." = "跟随设备方向变化旋转共享画面。“方向校正” 可对某些默认方向不常见的 iPad 型号施加固定旋转补偿。";
 
@@ -216,17 +202,11 @@
 
 "TrollVNC" = "TrollVNC";
 
-"UltraVNC Repeater" = "UltraVNC 中继器";
-
 "View Logs" = "查看日志";
-
-"View Source Code" = "查看源代码";
 
 "View-only" = "仅查看";
 
 "View-only Password" = "仅查看密码";
-
-"Viewer" = "查看器";
 
 "VNC TCP port. Default 5901. Valid range 1024–65535." = "VNC TCP 端口。默认 5901。有效范围 1024–65535。";
 

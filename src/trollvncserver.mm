@@ -51,6 +51,7 @@
 #import "PSAssistiveTouchSettingsDetail.h"
 #import "STHIDEventGenerator.h"
 #import "ScreenCapturer.h"
+#import "TRScreenHasher.h"
 
 #define LocalizedString(key, comment, bundle, table)                                                                   \
     (NSLocalizedStringFromTableInBundle((key), (table), (bundle), (comment)) ?: (key))
@@ -124,12 +125,6 @@ static BOOL gBonjourEnabled = YES; // publish _rfb._tcp (and optional _http._tcp
 // TightVNC 1.x file transfer extension (deprecated)
 static BOOL gFileTransferEnabled = NO;
 
-// UltraVNC repeater
-static int gRepeaterMode = 0; // 0: disabled, 1: viewer, 2: repeater
-static char *gRepeaterHost = NULL;
-static int gRepeaterPort = 5500;
-static int gRepeaterId = 12345679;
-
 // User notifications
 static BOOL gUserClientNotifsEnabled = YES;
 static BOOL gUserSingleNotifsEnabled = YES;
@@ -180,10 +175,6 @@ static TVBindHostKind tvClassifyBindHost(NSString *host, in_addr_t *outIPv4, str
     }
 
     return kTVBindHostKindInvalid;
-}
-
-NS_INLINE BOOL isRepeaterEnabled(void) {
-    return gRepeaterMode > 0 && gRepeaterHost != NULL && gRepeaterHost[0] != '\0' && gRepeaterPort > 0;
 }
 
 #pragma mark - Bundle
@@ -357,17 +348,12 @@ static void printUsageAndExit(const char *prog) {
     fprintf(stderr, "Help:\n");
     fprintf(stderr, "  -h         Show this help message\n\n");
 
-    fprintf(stderr, "Reverse Connection:\n");
-    fprintf(stderr, "  %s -reverse host:port [options]\n", prog);
-    fprintf(stderr, "  %s -repeater id host:port [options]\n\n", prog);
-
     fprintf(stderr, "Environment:\n");
     fprintf(
         stderr,
         "  TROLLVNC_PASSWORD                 Classic VNC password (enables VNC auth when set; first 8 chars used)\n");
     fprintf(stderr,
             "  TROLLVNC_VIEWONLY_PASSWORD        View-only password; passwords stored as [full..., view-only...]\n");
-    fprintf(stderr, "  TROLLVNC_REPEATER_RETRY_INTERVAL  Repeater retry interval (default: 0)\n\n");
 
     exit(EXIT_SUCCESS);
 }
@@ -437,6 +423,46 @@ static void parseWheelOptions(const char *spec) {
         }
     }
     free(dup);
+}
+
+/**
+ * 解析 FrameRateSpec 字符串并更新 gFpsMin/gFpsPref/gFpsMax
+ * 支持三种格式：单值"30"、范围"15-30"、完整"min:pref:max"
+ * @param spec FrameRateSpec 字符串（C 字符串，UTF-8）
+ * 注：复用此函数避免初始化与热重载逻辑重复（Phase 4.4）
+ */
+static void parseFrameRateSpec(const char *spec) {
+    if (!spec) return;
+    int minV = 0, prefV = 0, maxV = 0;
+    const char *colon1 = strchr(spec, ':');
+    const char *dash = strchr(spec, '-');
+    if (colon1) {
+        long a = strtol(spec, NULL, 10);
+        const char *p2 = colon1 + 1;
+        const char *colon2 = strchr(p2, ':');
+        if (colon2) {
+            long b = strtol(p2, NULL, 10);
+            long c = strtol(colon2 + 1, NULL, 10);
+            minV = (int)a; prefV = (int)b; maxV = (int)c;
+        }
+    } else if (dash) {
+        long a = strtol(spec, NULL, 10);
+        long b = strtol(dash + 1, NULL, 10);
+        minV = (int)a; prefV = (int)b; maxV = (int)b;
+    } else {
+        long v = strtol(spec, NULL, 10);
+        minV = (int)v; prefV = (int)v; maxV = (int)v;
+    }
+    // 校验与规范化：允许 0..240（0 = 未指定）
+    if (minV < 0) minV = 0;  if (minV > 240) minV = 240;
+    if (prefV < 0) prefV = 0;  if (prefV > 240) prefV = 240;
+    if (maxV < 0) maxV = 0;  if (maxV > 240) maxV = 240;
+    if (minV > 0 && maxV > 0 && minV > maxV) { int tmp = minV; minV = maxV; maxV = tmp; }
+    if (prefV > 0) {
+        if (minV > 0 && prefV < minV) prefV = minV;
+        if (maxV > 0 && prefV > maxV) prefV = maxV;
+    }
+    gFpsMin = minV; gFpsPref = prefV; gFpsMax = maxV;
 }
 
 static void parseDaemonOptions(void) {
@@ -694,63 +720,10 @@ static void parseDaemonOptions(void) {
             gModMapScheme = 0;
     }
 
-    // Frame rate spec (validate and normalize)
+    // Frame rate spec (validate and normalize) — 复用 parseFrameRateSpec（Phase 4.4 统一解析）
     NSString *fpsSpec = [prefs objectForKey:@"FrameRateSpec"];
     if ([fpsSpec isKindOfClass:[NSString class]] && fpsSpec.length > 0) {
-        const char *spec = fpsSpec.UTF8String ?: "";
-        int minV = 0, prefV = 0, maxV = 0;
-        const char *colon1 = strchr(spec, ':');
-        const char *dash = strchr(spec, '-');
-        if (colon1) {
-            long a = strtol(spec, NULL, 10);
-            const char *p2 = colon1 + 1;
-            const char *colon2 = strchr(p2, ':');
-            if (colon2) {
-                long b = strtol(p2, NULL, 10);
-                long c = strtol(colon2 + 1, NULL, 10);
-                minV = (int)a;
-                prefV = (int)b;
-                maxV = (int)c;
-            }
-        } else if (dash) {
-            long a = strtol(spec, NULL, 10);
-            long b = strtol(dash + 1, NULL, 10);
-            minV = (int)a;
-            prefV = (int)b;
-            maxV = (int)b;
-        } else {
-            long v = strtol(spec, NULL, 10);
-            minV = (int)v;
-            prefV = (int)v;
-            maxV = (int)v;
-        }
-        // Normalize & validate: allow 0..240 (0 = unspecified)
-        if (minV < 0)
-            minV = 0;
-        if (minV > 240)
-            minV = 240;
-        if (prefV < 0)
-            prefV = 0;
-        if (prefV > 240)
-            prefV = 240;
-        if (maxV < 0)
-            maxV = 0;
-        if (maxV > 240)
-            maxV = 240;
-        if (minV > 0 && maxV > 0 && minV > maxV) {
-            int tmp = minV;
-            minV = maxV;
-            maxV = tmp;
-        }
-        if (prefV > 0) {
-            if (minV > 0 && prefV < minV)
-                prefV = minV;
-            if (maxV > 0 && prefV > maxV)
-                prefV = maxV;
-        }
-        gFpsMin = minV;
-        gFpsPref = prefV;
-        gFpsMax = maxV;
+        parseFrameRateSpec(fpsSpec.UTF8String ?: "");
     }
 
     // Wheel tuning (advanced)
@@ -785,96 +758,6 @@ static void parseDaemonOptions(void) {
         }
     }
 
-    // Reverse Connection (26.1) from preferences
-    // Expected keys (per Root.plist):
-    //  - ReverseMode: "viewer" (default) | "repeater"
-    //  - ReverseSocket: "host:port" or "[ipv6]:port"
-    //  - ReverseRepeaterID: number id (only used when mode=repeater)
-    NSString *revMode = [prefs objectForKey:@"ReverseMode"];
-    if ([revMode isKindOfClass:[NSString class]]) {
-        if ([revMode caseInsensitiveCompare:@"repeater"] == NSOrderedSame) {
-            gRepeaterMode = 2;
-        } else if ([revMode caseInsensitiveCompare:@"viewer"] == NSOrderedSame) {
-            gRepeaterMode = 1;
-        } else {
-            gRepeaterMode = 0;
-        }
-    }
-    NSString *revSock = [prefs objectForKey:@"ReverseSocket"];
-    if ([revSock isKindOfClass:[NSString class]] && revSock.length > 0) {
-        const char *hp = revSock.UTF8String;
-        const char *hostBegin = hp;
-        const char *hostEnd = NULL;
-        const char *portStr = NULL;
-        if (hp[0] == '[') {
-            const char *rb = strchr(hp, ']');
-            if (rb && rb[1] == ':') {
-                hostBegin = hp + 1;
-                hostEnd = rb;
-                portStr = rb + 2;
-            }
-        } else {
-            const char *colon = strrchr(hp, ':');
-            if (colon && colon != hp && *(colon + 1) != '\0') {
-                hostBegin = hp;
-                hostEnd = colon;
-                portStr = colon + 1;
-            }
-        }
-        if (hostEnd && portStr) {
-            long pv = strtol(portStr, NULL, 10);
-            if (pv > 0 && pv <= 65535) {
-                size_t hostLen = (size_t)(hostEnd - hostBegin);
-                if (hostLen > 0) {
-                    char *hostDup = (char *)malloc(hostLen + 1);
-                    if (hostDup) {
-                        memcpy(hostDup, hostBegin, hostLen);
-                        hostDup[hostLen] = '\0';
-                        if (gRepeaterHost) {
-                            free(gRepeaterHost);
-                            gRepeaterHost = NULL;
-                        }
-                        gRepeaterHost = hostDup;
-                        gRepeaterPort = (int)pv;
-                    }
-                }
-            } else {
-                TVLog(@"-daemon: ReverseSocket port invalid: %ld (ignored)", pv);
-            }
-        } else {
-            TVLog(@"-daemon: ReverseSocket invalid: %@ (expected host:port or [ipv6]:port)", revSock);
-        }
-    } else {
-        // Backward-compat: accept separate ReverseHost/ReversePort if present
-        NSString *revHost = [prefs objectForKey:@"ReverseHost"];
-        if ([revHost isKindOfClass:[NSString class]] && revHost.length > 0) {
-            gRepeaterHost = strdup(revHost.UTF8String);
-        }
-        NSNumber *revPortN = [prefs objectForKey:@"ReversePort"];
-        if ([revPortN isKindOfClass:[NSNumber class]] || [revPortN isKindOfClass:[NSString class]]) {
-            int v = revPortN.intValue;
-            if (v > 0 && v <= 65535) {
-                gRepeaterPort = v;
-            }
-        }
-    }
-    NSNumber *revIdN = [prefs objectForKey:@"ReverseRepeaterID"];
-    if ([revIdN isKindOfClass:[NSNumber class]] || [revIdN isKindOfClass:[NSString class]]) {
-        gRepeaterId = revIdN.intValue;
-    }
-
-    // If reverse connection is configured, override mutually exclusive options here in daemon mode
-    if (isRepeaterEnabled()) {
-        gPort = -1;    // disable local listening
-        gHttpPort = 0; // disable HTTP server
-        if (gHttpDirOverride) {
-            free(gHttpDirOverride);
-            gHttpDirOverride = NULL;
-        }
-        gBonjourEnabled = NO; // disable Bonjour advertisement
-        TVLog(@"-daemon: Reverse enabled -> overriding: port=-1, http=0, bonjour=off");
-    }
-
     // Passwords via environment (leveraging existing setupRfbClassicAuthentication).
     // Classic VNC authentication uses only first 8 chars; truncate here for clarity.
     NSString *fullPwd = [prefs objectForKey:@"FullPassword"];
@@ -891,16 +774,11 @@ static void parseDaemonOptions(void) {
         hasViewPwd = (trunc.length > 0);
     }
 
-    // Single-line summary using NSMutableString; include reverse-connection fields and new options
+    // Single-line summary using NSMutableString
     NSMutableString *cfg = [NSMutableString stringWithFormat:@"-daemon: cfg "];
     [cfg appendFormat:@"name='%@' ", gDesktopName];
     [cfg appendFormat:@"bindHost='%@' ", gBindHost];
     [cfg appendFormat:@"port=%d http=%d ", gPort, gHttpPort];
-
-    // Reverse connection summary
-    const char *revModeStr = isRepeaterEnabled() ? (gRepeaterMode == 2 ? "repeater" : "viewer") : "off";
-    NSString *revHostStr = gRepeaterHost ? [NSString stringWithUTF8String:gRepeaterHost] : nil;
-    [cfg appendFormat:@"reverse=%s host=%@ port=%d id=%d ", revModeStr, revHostStr, gRepeaterPort, gRepeaterId];
 
     // Core feature flags
     [cfg appendFormat:@"viewOnly=%@ clip=%@ keepAlive=%.0fs ", gViewOnly ? @"YES" : @"NO",
@@ -948,163 +826,11 @@ static void parseCLI(int argc, const char *argv[]) {
         return;
     }
 
-    // Pre-scan for Reverse Connection long options (-reverse, -repeater)
-    // Build a filtered argv without these options for getopt handling of the rest.
+    // Prepare argv for getopt
     std::vector<const char *> __filtered;
     __filtered.reserve((size_t)argc);
-    __filtered.push_back(argv[0]);
-
-    BOOL __reverseEnabled = NO;
-    for (int i = 1; i < argc; ++i) {
-        const char *arg = argv[i];
-        if (strcmp(arg, "-reverse") == 0) {
-            if (i + 1 >= argc) {
-                TVPrintError("-reverse requires host:port");
-                exit(EXIT_FAILURE);
-            }
-
-            const char *hp = argv[++i];
-            const char *hostBegin = hp;
-            const char *hostEnd = NULL;
-            const char *portStr = NULL;
-
-            if (hp[0] == '[') {
-                const char *rb = strchr(hp, ']');
-                if (!rb || rb[1] != ':') {
-                    TVPrintError("Invalid -reverse target: %s (expected [host]:port)", hp);
-                    exit(EXIT_FAILURE);
-                }
-
-                hostBegin = hp + 1;
-                hostEnd = rb;
-                portStr = rb + 2;
-            } else {
-                const char *colon = strrchr(hp, ':');
-                if (!colon || colon == hp || *(colon + 1) == '\0') {
-                    TVPrintError("Invalid -reverse target: %s (expected host:port)", hp);
-                    exit(EXIT_FAILURE);
-                }
-
-                hostBegin = hp;
-                hostEnd = colon;
-                portStr = colon + 1;
-            }
-
-            int port = (int)strtol(portStr, NULL, 10);
-            if (port <= 0 || port > 65535) {
-                TVPrintError("Invalid -reverse port: %s", portStr);
-                exit(EXIT_FAILURE);
-            }
-
-            size_t hostLen = (size_t)(hostEnd - hostBegin);
-            if (hostLen == 0) {
-                TVPrintError("Invalid -reverse host (empty)");
-                exit(EXIT_FAILURE);
-            }
-
-            char *hostDup = (char *)malloc(hostLen + 1);
-            if (!hostDup) {
-                TVPrintError("Out of memory");
-                exit(EXIT_FAILURE);
-            }
-
-            memcpy(hostDup, hostBegin, hostLen);
-            hostDup[hostLen] = '\0';
-
-            if (gRepeaterHost) {
-                free(gRepeaterHost);
-                gRepeaterHost = NULL;
-            }
-
-            gRepeaterMode = 1;
-            gRepeaterHost = hostDup;
-            gRepeaterPort = port;
-
-            TVLog(@"CLI: Reverse connection to %@:%d", [NSString stringWithUTF8String:gRepeaterHost], gRepeaterPort);
-
-            __reverseEnabled = YES;
-            continue; // skip adding this arg
-        }
-        if (strcmp(arg, "-repeater") == 0) {
-            if (i + 2 >= argc) {
-                TVPrintError("-repeater requires: id host:port");
-                exit(EXIT_FAILURE);
-            }
-
-            const char *idStr = argv[++i];
-            long repId = strtol(idStr, NULL, 10);
-            if (repId < 0 || repId > INT_MAX) {
-                TVPrintError("Invalid repeater id: %s", idStr);
-                exit(EXIT_FAILURE);
-            }
-
-            const char *hp = argv[++i];
-            const char *hostBegin = hp;
-            const char *hostEnd = NULL;
-            const char *portStr = NULL;
-
-            if (hp[0] == '[') {
-                const char *rb = strchr(hp, ']');
-                if (!rb || rb[1] != ':') {
-                    TVPrintError("Invalid -repeater target: %s (expected [host]:port)", hp);
-                    exit(EXIT_FAILURE);
-                }
-
-                hostBegin = hp + 1;
-                hostEnd = rb;
-                portStr = rb + 2;
-            } else {
-                const char *colon = strrchr(hp, ':');
-                if (!colon || colon == hp || *(colon + 1) == '\0') {
-                    TVPrintError("Invalid -repeater target: %s (expected host:port)", hp);
-                    exit(EXIT_FAILURE);
-                }
-
-                hostBegin = hp;
-                hostEnd = colon;
-                portStr = colon + 1;
-            }
-
-            int port = (int)strtol(portStr, NULL, 10);
-            if (port <= 0 || port > 65535) {
-                TVPrintError("Invalid -repeater port: %s", portStr);
-                exit(EXIT_FAILURE);
-            }
-
-            size_t hostLen = (size_t)(hostEnd - hostBegin);
-            if (hostLen == 0) {
-                TVPrintError("Invalid -repeater host (empty)");
-                exit(EXIT_FAILURE);
-            }
-
-            char *hostDup = (char *)malloc(hostLen + 1);
-            if (!hostDup) {
-                TVPrintError("Out of memory");
-                exit(EXIT_FAILURE);
-            }
-
-            memcpy(hostDup, hostBegin, hostLen);
-            hostDup[hostLen] = '\0';
-
-            if (gRepeaterHost) {
-                free(gRepeaterHost);
-                gRepeaterHost = NULL;
-            }
-
-            gRepeaterMode = 2;
-            gRepeaterId = (int)repId;
-            gRepeaterHost = hostDup;
-            gRepeaterPort = port;
-
-            TVLog(@"CLI: Repeater mode id=%d target=%@:%d", gRepeaterId, [NSString stringWithUTF8String:gRepeaterHost],
-                  gRepeaterPort);
-
-            __reverseEnabled = YES;
-            continue; // skip adding this arg
-        }
-
-        __filtered.push_back(arg);
-    }
+    for (int i = 0; i < argc; ++i)
+        __filtered.push_back(argv[i]);
 
     // Prepare argv for getopt from filtered vector
     int __argc2 = (int)__filtered.size();
@@ -1531,18 +1257,6 @@ static void parseCLI(int argc, const char *argv[]) {
             break;
         }
         }
-    }
-
-    // Reverse connection active -> override conflicting settings
-    if (__reverseEnabled) {
-        gPort = -1;    // disable listening port
-        gHttpPort = 0; // disable HTTP server
-        if (gHttpDirOverride) {
-            free(gHttpDirOverride);
-            gHttpDirOverride = NULL;
-        }
-        gBonjourEnabled = NO; // disable Bonjour when reverse is used
-        TVLog(@"CLI: Reverse enabled -> port=-1, http=0, bonjour=off");
     }
 }
 
@@ -3105,7 +2819,6 @@ typedef struct {
     int lastButtonMask;                // last received pointer button mask from this client
     double wheelAccumPx;               // accumulated scroll in pixels (+down, -up) for this client
     BOOL wheelFlushScheduled;          // whether a flush is pending for this client
-    BOOL isRepeaterClient;             // whether this client is a repeater
     char clientId8[CLIENT_ID_LEN + 1]; // cached 8-char client id (NUL-terminated)
 } TVClientState;
 
@@ -3398,6 +3111,88 @@ static void refreshBonjourTXTRecord(void) {
     [gBonjourService setTXTRecordData:bonjourTXTRecord()];
 }
 
+// 公开访问函数：获取 inflight 编码帧统计（供 sys.stats.inflight 能力调用）
+NSDictionary *tvGetInflightStats(void) {
+    return @{@"current":@(gInflight.load()), @"max":@(gMaxInflightUpdates)};
+}
+
+// 公开访问函数：获取 Bonjour TXT 字典（供 sys.bonjour.txt 能力调用，返回可读字典非 NSData）
+NSDictionary *tvGetBonjourTXT(void) {
+    NSDictionary *raw = [NSNetService dictionaryFromTXTRecordData:bonjourTXTRecord()];
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    for (NSString *key in raw) {
+        NSString *val = [[NSString alloc] initWithData:raw[key] encoding:NSUTF8StringEncoding];
+        if (val) result[key] = val;
+    }
+    return result;
+}
+
+/**
+ * 配置热重载：重新从 NSUserDefaults 读取指定 key 并更新对应 C 全局变量 + 触发副作用
+ * @param key 配置键名（C 字符串，对应 NSUserDefaults key）
+ * @return 0=成功，-1=未知 key，-2=值无效
+ * 注：仅处理 reload=hot 且属于 trollvncserver 管理的 key；Watchdog/HID 属性由调用方直接设置
+ */
+int tvReloadConfigForKey(const char *key) {
+    if (!key) return -1;
+    NSString *k = [NSString stringWithUTF8String:key];
+    NSUserDefaults *p = [NSUserDefaults standardUserDefaults];
+    int rotQ = gRotationQuad.load();
+
+    if ([k isEqualToString:@"Scale"]) {
+        double v = [p doubleForKey:@"Scale"];
+        if (v < 0.1) v = 0.1; if (v > 1.0) v = 1.0;
+        gScale = v;
+        maybeResizeFramebufferForRotation(rotQ); // 重建 framebuffer（gWidth/gHeight 变化）
+        rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
+    } else if ([k isEqualToString:@"FrameRateSpec"]) {
+        // 复用 parseFrameRateSpec（支持 min:pref:max / min-max / 单值三种格式 + 校验）
+        NSString *spec = [p stringForKey:@"FrameRateSpec"];
+        if (spec.length) parseFrameRateSpec(spec.UTF8String ?: "");
+    } else if ([k isEqualToString:@"OrientationSync"]) {
+        gOrientationSyncEnabled = [p boolForKey:@"OrientationSync"];
+    } else if ([k isEqualToString:@"ServerCursor"]) {
+        gCursorEnabled = [p boolForKey:@"ServerCursor"];
+    } else if ([k isEqualToString:@"DeferWindowSec"]) {
+        double v = [p doubleForKey:@"DeferWindowSec"];
+        if (v < 0.0) v = 0.0;
+        gDeferWindowSec = v;
+    } else if ([k isEqualToString:@"MaxInflight"]) {
+        int v = (int)[p integerForKey:@"MaxInflight"];
+        if (v < 1) v = 1;
+        gMaxInflightUpdates = v;
+    } else if ([k isEqualToString:@"KeepAliveSec"]) {
+        double v = [p doubleForKey:@"KeepAliveSec"];
+        if (v > 0.0 && v < 15.0) v = 0.0;
+        if (v > 300.0) v = 300.0;
+        gKeepAliveSec = v;
+        // 重启保活定时器逻辑由 watchdog 管辖，此处仅更新全局值
+    } else if ([k isEqualToString:@"WheelStepPx"]) {
+        double v = [p doubleForKey:@"WheelStepPx"];
+        if (v < 0.0) v = 0.0;
+        gWheelStepPx = v;
+        // 同步更新 max step（与初始化逻辑一致，避免热重载后 max 仍为旧值）
+        gWheelMaxStepPx = fmax(2.0 * gWheelStepPx, 96.0) * 1.0;
+    } else if ([k isEqualToString:@"WheelTuning"]) {
+        // 高级滚轮调优串（如 "step=48,natural=1,coalesce=0.03"），复用 parseWheelOptions
+        NSString *tuning = [p stringForKey:@"WheelTuning"];
+        if (tuning.length) parseWheelOptions(tuning.UTF8String);
+    } else if ([k isEqualToString:@"ModifierMap"]) {
+        // 修饰键映射方案：std(0) / altcmd(1)
+        NSString *m = [p stringForKey:@"ModifierMap"];
+        if ([m isKindOfClass:[NSString class]])
+            gModMapScheme = [m isEqualToString:@"altcmd"] ? 1 : 0;
+    } else if ([k isEqualToString:@"FullscreenThresholdPercent"]) {
+        // 脏区阈值（0=关闭脏区检测，全屏刷新）
+        int v = (int)[p integerForKey:@"FullscreenThresholdPercent"];
+        if (v < 0) v = 0; if (v > 100) v = 100;
+        gFullscreenThresholdPercent = v;
+    } else {
+        return -1; // 未知 key 或非 trollvncserver 管理的 key
+    }
+    return 0;
+}
+
 static void stopBonjour(void) {
     // NSNetService expects interactions on a runloop thread (prefer main).
     if (![NSThread isMainThread]) {
@@ -3545,7 +3340,7 @@ static void tvStopControlSocket(void) {
 }
 
 static void tvStartControlSocketIfNeeded(void) {
-    if (!gTvCtlPort || isRepeaterEnabled())
+    if (!gTvCtlPort)
         return;
     if (gTvCtlAcceptSource)
         return; // already started
@@ -3621,8 +3416,8 @@ static void tvStartControlSocketIfNeeded(void) {
     });
 
     dispatch_resume(gTvCtlAcceptSource);
-    TVLog(@"Control socket listening on 127.0.0.1:%d (daemon=%@, repeater=%@)", gTvCtlPort,
-          gIsDaemonMode ? @"YES" : @"NO", isRepeaterEnabled() ? @"YES" : @"NO");
+    TVLog(@"Control socket listening on 127.0.0.1:%d (daemon=%@)", gTvCtlPort,
+          gIsDaemonMode ? @"YES" : @"NO");
 }
 
 // ---------- Control Protocol Implementation ----------
@@ -3710,6 +3505,45 @@ static void tvCtlBroadcastChanged(void) {
                 [dead addObject:num];
             }
             // Partial write (0 <= n < len): best-effort for 8-byte msg, not fatal
+        }
+        if (dead.count) {
+            for (NSNumber *num in dead) {
+                int fd = [num intValue];
+                (void)close(fd);
+                [gTvCtlSubscribers removeObject:num];
+            }
+        }
+    }
+}
+
+/**
+ * 向所有 46752 订阅者广播任意数据（Phase 11.4：screen.subscribe 推送通道）。
+ * 功能：遍历 gTvCtlSubscribers，向每个 fd 发送 data；清理已断开的 fd。
+ * 参数：data - 要广播的 NSData
+ * 返回值：无
+ */
+static void tvCtlBroadcastToSubscribers(NSData *data) {
+    if (!gTvCtlSubscribers || gTvCtlSubscribers.count == 0 || !data.length)
+        return;
+    const char *bytes = (const char *)data.bytes;
+    size_t len = data.length;
+    NSMutableArray<NSNumber *> *dead = [NSMutableArray array];
+    @synchronized(gTvCtlSubscribers) {
+        for (NSNumber *num in gTvCtlSubscribers) {
+            int fd = [num intValue];
+            ssize_t n;
+        retry_broadcast:
+            n = send(fd, bytes, len, 0);
+            if (n == (ssize_t)len)
+                continue; // success
+            if (n < 0) {
+                if (errno == EINTR)
+                    goto retry_broadcast;
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                    continue; // buffer temporarily full — skip
+                [dead addObject:num]; // truly dead
+            }
+            // Partial write: best-effort, not fatal
         }
         if (dead.count) {
             for (NSNumber *num in dead) {
@@ -3912,6 +3746,113 @@ void tvCtlHandleConnection(int cfd, struct sockaddr_in caddr) {
         tvCtlRemoveSubscriber(cfd, NO);
         const char *ok = "OK\n";
         resp = [NSData dataWithBytes:ok length:strlen(ok)];
+    } else if ([cmd hasPrefix:@"unblock "]) {
+        // 解冻：从临时黑名单移除 host（配合 App 端“解冻”操作）
+        NSArray *ubParts = [cmd componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        NSString *ubHost = ubParts.count >= 2 ? ubParts[1] : @"";
+        BOOL ubRemoved = NO;
+        if (ubHost.length && gBlockedHosts) {
+            @synchronized(gBlockedHosts) {
+                if ([gBlockedHosts containsObject:ubHost]) {
+                    [gBlockedHosts removeObject:ubHost];
+                    ubRemoved = YES;
+                }
+            }
+        }
+        const char *ubRaw = ubRemoved ? "OK\n" : "NOT_FOUND\n";
+        resp = [NSData dataWithBytes:ubRaw length:strlen(ubRaw)];
+    } else if ([cmd isEqualToString:@"blocked.list"]) {
+        // 返回当前黑名单主机列表（每行一个 host，末尾换行）
+        NSMutableString *bl = [NSMutableString string];
+        if (gBlockedHosts) {
+            @synchronized(gBlockedHosts) {
+                for (NSString *h in gBlockedHosts) {
+                    [bl appendFormat:@"%@\n", h];
+                }
+            }
+        }
+        resp = [bl dataUsingEncoding:NSUTF8StringEncoding];
+    } else if ([cmd isEqualToString:@"screen.hash"]) {
+        // Phase 11.4：返回当前屏幕 pHash（16 字符 hex）
+        NSString *hex = [[TRScreenHasher sharedHasher] computeHashHexForCurrentFrame];
+        NSString *line = [NSString stringWithFormat:@"%@\n", hex];
+        resp = [line dataUsingEncoding:NSUTF8StringEncoding];
+    } else if ([cmd hasPrefix:@"screen.diff "]) {
+        // Phase 11.4：与基线哈希比较，返回 distance/changed
+        // 格式：screen.diff <baselineHash> [threshold]
+        NSArray *parts = [cmd componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        NSString *baselineHash = parts.count >= 2 ? parts[1] : @"";
+        NSInteger threshold = parts.count >= 3 ? [parts[2] integerValue] : 0;
+        NSString *currentHex = nil;
+        NSDictionary *result = [[TRScreenHasher sharedHasher] diffWithBaselineHash:baselineHash
+                                                                          threshold:threshold
+                                                                        currentHash:&currentHex];
+        if (result) {
+            NSString *line = [NSString stringWithFormat:@"OK distance=%ld threshold=%ld changed=%d hash=%@\n",
+                              (long)[result[@"distance"] integerValue],
+                              (long)[result[@"threshold"] integerValue],
+                              [result[@"changed"] boolValue] ? 1 : 0,
+                              result[@"currentHash"]];
+            resp = [line dataUsingEncoding:NSUTF8StringEncoding];
+        } else {
+            resp = [@"ERR InvalidBaseline\n" dataUsingEncoding:NSUTF8StringEncoding];
+        }
+    } else if ([cmd hasPrefix:@"screen.waitStable"]) {
+        // Phase 11.4：轮询等待画面稳定
+        // 格式：screen.waitStable [maxMs] [stableMs] [intervalMs] [threshold]
+        NSArray *parts = [cmd componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        NSTimeInterval maxMs = parts.count >= 2 ? [parts[1] doubleValue] : 0;
+        NSTimeInterval stableMs = parts.count >= 3 ? [parts[2] doubleValue] : 0;
+        NSTimeInterval intervalMs = parts.count >= 4 ? [parts[3] doubleValue] : 0;
+        NSInteger threshold = parts.count >= 5 ? [parts[4] integerValue] : 0;
+
+        NSInteger frameCount = 0;
+        NSTimeInterval durationMs = 0;
+        NSString *lastHash = nil;
+        BOOL stable = [[TRScreenHasher sharedHasher] waitStableWithMaxMs:maxMs
+                                                                 stableMs:stableMs
+                                                               intervalMs:intervalMs
+                                                                threshold:threshold
+                                                               frameCount:&frameCount
+                                                               durationMs:&durationMs
+                                                                 lastHash:&lastHash];
+        NSString *line = [NSString stringWithFormat:@"OK stable=%d frames=%ld durationMs=%.0f hash=%@\n",
+                          stable ? 1 : 0, (long)frameCount, durationMs, lastHash ?: @"0"];
+        resp = [line dataUsingEncoding:NSUTF8StringEncoding];
+    } else if ([cmd hasPrefix:@"screen.subscribe"]) {
+        // Phase 11.4：开启/关闭屏幕变化推送
+        // 格式：screen.subscribe on [throttleMs] [minDistance] / screen.subscribe off
+        if ([cmd hasPrefix:@"screen.subscribe on"]) {
+            NSArray *parts = [cmd componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+            NSTimeInterval throttleMs = parts.count >= 3 ? [parts[2] doubleValue] : 0;
+            NSInteger minDistance = parts.count >= 4 ? [parts[3] integerValue] : 0;
+
+            // 添加为 46752 订阅者（复用 clients.subscribe 的推送通道）
+            tvCtlAddSubscriber(cfd);
+            // 开启 pHash 订阅，推送事件通过 46752 订阅通道发送
+            [[TRScreenHasher sharedHasher] subscribeWithEnable:YES
+                                                       throttleMs:throttleMs
+                                                      minDistance:minDistance
+                                                           handler:^(NSString *hash, NSInteger distance, uint64_t timestamp) {
+                NSString *push = [NSString stringWithFormat:@"screen.event hash=%@ distance=%ld ts=%llu\n",
+                                  hash, (long)distance, (unsigned long long)timestamp];
+                NSData *pushData = [push dataUsingEncoding:NSUTF8StringEncoding];
+                tvCtlBroadcastToSubscribers(pushData);
+            }];
+            const char *ok = "OK\n";
+            resp = [NSData dataWithBytes:ok length:strlen(ok)];
+            keepOpen = YES; // 保持连接，接收推送
+        } else if ([cmd hasPrefix:@"screen.subscribe off"]) {
+            [[TRScreenHasher sharedHasher] subscribeWithEnable:NO
+                                                       throttleMs:0
+                                                      minDistance:0
+                                                           handler:nil];
+            tvCtlRemoveSubscriber(cfd, NO);
+            const char *ok = "OK\n";
+            resp = [NSData dataWithBytes:ok length:strlen(ok)];
+        } else {
+            resp = [@"ERR InvalidSubscribeArgs\n" dataUsingEncoding:NSUTF8StringEncoding];
+        }
     } else if ([cmd hasPrefix:@"disconnect "] || [cmd hasPrefix:@"kick "] || [cmd hasPrefix:@"block "]) {
         NSArray *parts = [cmd componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         NSString *cid = parts.count >= 2 ? parts[1] : @"";
@@ -3942,7 +3883,7 @@ void tvCtlHandleConnection(int cfd, struct sockaddr_in caddr) {
 #pragma mark - User Notifications
 
 static void tvPublishUserSingleNotifs(void) {
-    if (!gUserSingleNotifsEnabled || isRepeaterEnabled())
+    if (!gUserSingleNotifsEnabled)
         return;
 
     BulletinManager *mgr = [BulletinManager sharedManager];
@@ -3971,7 +3912,7 @@ static void tvPublishUserSingleNotifs(void) {
 }
 
 static void tvPublishClientConnectedNotif(NSString *host) {
-    if (!gUserClientNotifsEnabled || isRepeaterEnabled() || !host || host.length == 0)
+    if (!gUserClientNotifsEnabled || !host || host.length == 0)
         return;
 
     // Check if host is a loopback address
@@ -4029,10 +3970,8 @@ static BOOL gRestoreAssist = NO;
 static void clientGoneHook(rfbClientPtr cl) {
     // Free per-client state
     TVClientState *st = tvGetClientState(cl);
-    BOOL isRepeaterClient = NO;
     NSString *removeKey = nil;
     if (st) {
-        isRepeaterClient = st->isRepeaterClient;
         if (st->clientId8[0] != '\0') {
             removeKey = [NSString stringWithUTF8String:st->clientId8];
         }
@@ -4093,11 +4032,6 @@ static void clientGoneHook(rfbClientPtr cl) {
 
     // Notify client disconnected
     tvPublishClientDisconnectedNotif(host);
-
-    // Stop the main run loop if this was a repeater client
-    if (isRepeaterClient) {
-        CFRunLoopStop(CFRunLoopGetMain());
-    }
 }
 
 static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
@@ -4760,89 +4694,12 @@ static void setupRfbFileTransferExtension(void) {
 
 static const long cSelectTimeout = 1e4; // 10 ms
 
-// Background event thread for reverse-connection mode
-static pthread_t gRfbEventThread = 0;
-static std::atomic<int> gRfbEventThreadRunning(0);
-
-static void *tvRfbEventThreadMain(void *arg) {
-    (void)arg;
-    for (;;) {
-        if (!gRfbEventThreadRunning.load(std::memory_order_relaxed))
-            break;
-        if (!gScreen)
-            break;
-        rfbProcessEvents(gScreen, cSelectTimeout);
-        if (!rfbIsActive(gScreen))
-            break;
-    }
-    CFRunLoopStop(CFRunLoopGetMain());
-    gRfbEventThreadRunning.store(0, std::memory_order_relaxed);
-    return NULL;
-}
-
-static void tvStartRfbEventThread(void) {
-    if (gRfbEventThreadRunning.exchange(1, std::memory_order_acq_rel))
-        return;
-    int rc = pthread_create(&gRfbEventThread, NULL, tvRfbEventThreadMain, NULL);
-    if (rc != 0) {
-        gRfbEventThreadRunning.store(0, std::memory_order_relaxed);
-        TVPrintError("Failed to create VNC event thread (rc=%d)", rc);
-        exit(EXIT_FAILURE);
-    }
-}
-
-static void tvStopRfbEventThread(void) {
-    if (!gRfbEventThreadRunning.exchange(0, std::memory_order_acq_rel))
-        return;
-    if (gRfbEventThread) {
-        if (!pthread_equal(gRfbEventThread, pthread_self()))
-            pthread_join(gRfbEventThread, NULL);
-        gRfbEventThread = 0;
-    }
-}
-
 static void initializeAndRunRfbServer(void) {
     rfbInitServer(gScreen);
     TVLog(@"VNC server initialized on port %d, %dx%d, name '%@'", gPort, gWidth, gHeight, gDesktopName);
 
-    if (isRepeaterEnabled()) {
-        static CFTimeInterval sRetryInterval = 0.0;
-        const char *envRetryInterval = getenv("TROLLVNC_REPEATER_RETRY_INTERVAL");
-        if (envRetryInterval) {
-            sRetryInterval = atof(envRetryInterval);
-        }
-
-        static rfbClientPtr sClient = NULL;
-        if (gRepeaterMode == 2) {
-            TVLog(@"VNC server running in repeater mode");
-            static NSString *sRepeaterId = [NSString stringWithFormat:@"%d", gRepeaterId];
-            const char *repeaterId = [sRepeaterId UTF8String];
-            sClient = rfbUltraVNCRepeaterMode2Connection(gScreen, gRepeaterHost, gRepeaterPort, repeaterId);
-        } else {
-            TVLog(@"VNC server running in viewer mode");
-            sClient = rfbReverseConnection(gScreen, gRepeaterHost, gRepeaterPort);
-        }
-
-        if (!sClient) {
-            TVPrintError("Failed to establish reverse connection to %s", gRepeaterHost);
-            if (sRetryInterval > 0)
-                CFRunLoopRunInMode(kCFRunLoopDefaultMode, sRetryInterval, false);
-            exit(EXIT_FAILURE);
-        }
-
-        TVClientState *st = tvGetClientState(sClient);
-        if (st) {
-            st->isRepeaterClient = YES;
-        }
-
-        TVLog(@"Reverse connection established to %s", gRepeaterHost);
-
-        // Start background event thread to pump events while in reverse mode
-        tvStartRfbEventThread();
-    } else {
-        // Run VNC in background thread
-        rfbRunEventLoop(gScreen, cSelectTimeout, TRUE);
-    }
+    // Run VNC in background thread
+    rfbRunEventLoop(gScreen, cSelectTimeout, TRUE);
 
     // Start Bonjour advertisement after server is ready
     startBonjour();
@@ -4972,9 +4829,6 @@ static void cleanupAndExit(int code) {
 
     // Stop control socket if any
     tvStopControlSocket();
-
-    // Stop event thread if running
-    tvStopRfbEventThread();
 
     if (gFileTransferRegistered) {
         rfbUnregisterTightVNCFileTransferExtension();

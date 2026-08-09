@@ -1,1 +1,0 @@
-../../app/TrollVNC/TrollVNC/GitHubReleaseUpdater.h

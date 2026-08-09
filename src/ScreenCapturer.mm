@@ -23,6 +23,7 @@
 #import <UIKit/UIGeometry.h>
 #import <UIKit/UIImage.h>
 #import <UIKit/UIScreen.h>
+#import <CoreImage/CoreImage.h>
 #import <mach/mach.h>
 
 #import "Control.h"
@@ -384,6 +385,62 @@ static CFIndex sDirtyFrameCount = 0;
 
 - (void)forceNextFrameUpdate {
     sDirtyFrameCount = 0; // Force next frame to be treated as dirty
+}
+
+/**
+ 同步捕获当前屏幕单帧并返回 CVPixelBufferRef（零拷贝 IOSurface 包装）。
+ 功能：按需将当前屏幕内容渲染到内部 IOSurface，直接包装为 CVPixelBufferRef 返回。
+       跳过 CIImage/UIImage/JPEG 编码链路，供 pHash 等仅需原始像素的场景使用（省 ~8ms）。
+ 参数：无
+ 返回值：CVPixelBufferRef — ARGB 格式像素缓冲区（调用方负责 CVPixelBufferRelease）；失败返回 NULL
+ */
+- (nullable CVPixelBufferRef)captureSingleFrameBuffer CF_RETURNS_RETAINED {
+    // 1. 同步渲染当前屏幕到内部 IOSurface（CARenderServerRenderDisplay，约 20ms）
+    [self renderDisplayToScreenSurface:mScreenSurface];
+
+    // 2. IOSurface → CVPixelBuffer（zero-copy 包装）
+    CVPixelBufferRef pixelBuffer = NULL;
+    NSDictionary *attrs = @{(NSString *)kCVPixelBufferIOSurfacePropertiesKey : @{}};
+    CVReturn cvret = CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, mScreenSurface,
+                                                      (__bridge CFDictionaryRef)attrs, &pixelBuffer);
+    if (cvret != kCVReturnSuccess || !pixelBuffer) {
+        return NULL;
+    }
+    return pixelBuffer;
+}
+
+/**
+ 同步捕获当前屏幕单帧并返回 UIImage。
+ 功能：复用 captureSingleFrameBuffer 获取 CVPixelBuffer，经 CoreImage 转换为 UIImage。
+       不触发系统截图动画、不存入相册（静默截图，供 AI 自动化使用）。
+ 参数：无
+ 返回值：UIImage* — 当前屏幕内容图像；渲染或转换失败时返回 nil
+ */
+- (nullable UIImage *)captureSingleFrameImage {
+    CVPixelBufferRef pixelBuffer = [self captureSingleFrameBuffer];
+    if (!pixelBuffer) {
+        return nil;
+    }
+
+    // CVPixelBuffer → CIImage → CGImage → UIImage（CIImage 自动处理 ARGB 像素格式，避免字节序陷阱）
+    UIImage *image = nil;
+    CIImage *ciImage = [CIImage imageWithCVPixelBuffer:pixelBuffer];
+    if (ciImage) {
+        static CIContext *ciContext;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{ ciContext = [CIContext context]; });
+        CGRect extent = CGRectMake(0, 0,
+                                   CVPixelBufferGetWidth(pixelBuffer),
+                                   CVPixelBufferGetHeight(pixelBuffer));
+        CGImageRef cgImage = [ciContext createCGImage:ciImage fromRect:extent];
+        if (cgImage) {
+            image = [UIImage imageWithCGImage:cgImage];
+            CGImageRelease(cgImage);
+        }
+    }
+
+    CVPixelBufferRelease(pixelBuffer);
+    return image;
 }
 
 #pragma mark - Private Methods

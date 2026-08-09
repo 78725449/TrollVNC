@@ -7,9 +7,6 @@
 /* No comment provided by engineer. */
 "A new version %@ is available! You’re currently using v%@." = "A new version %1$@ is available! You’re currently using v%2$@.";
 
-/* No comment provided by engineer. */
-"A new version %@ is available! You’re currently using v%@. Download the latest version from Havoc Marketplace." = "A new version %1$@ is available! You’re currently using v%2$@. Download the latest version from Havoc Marketplace.";
-
 /* trollvncserver */
 "A VNC client connected from %@." = "A VNC client connected from %@.";
 
@@ -125,9 +122,6 @@
 "Pause Auto Update" = "Pause Auto Update";
 
 /* No comment provided by engineer. */
-"Repeater" = "Repeater";
-
-/* No comment provided by engineer. */
 "Reset" = "Reset";
 
 /* No comment provided by engineer. */
@@ -135,9 +129,6 @@
 
 /* No comment provided by engineer. */
 "Restart" = "Restart";
-
-/* No comment provided by engineer. */
-"Reverse Connection: %@" = "Reverse Connection: %@";
 
 /* No comment provided by engineer. */
 "Skip This Version" = "Skip This Version";
@@ -174,9 +165,6 @@
 
 /* No comment provided by engineer. */
 "View-Only" = "View-Only";
-
-/* No comment provided by engineer. */
-"Viewer" = "Viewer";
 
 /* No comment provided by engineer. */
 "You need to generate a self-signed CA certificate first before exporting it." = "You need to generate a self-signed CA certificate first before exporting it.";

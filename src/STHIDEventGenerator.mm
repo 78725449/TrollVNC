@@ -1619,9 +1619,6 @@ static inline uint32_t hidUsageCodeForCharacter(NSString *key) {
     [self sendMarkerHIDEvent];
 }
 
-- (void)shakeIt {
-}
-
 - (void)releaseEveryKeys {
     for (NSNumber *nsKeyCode in _activeKeyCodes) {
         uint64_t keyCode = [nsKeyCode unsignedLongLongValue];

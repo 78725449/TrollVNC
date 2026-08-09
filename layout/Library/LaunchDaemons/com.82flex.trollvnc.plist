@@ -12,8 +12,6 @@
 	<dict>
 		<key>DISABLE_TWEAKS</key>
 		<string>1</string>
-		<key>TROLLVNC_REPEATER_RETRY_INTERVAL</key>
-		<string>30.0</string>
 	</dict>
 	<key>ExitTimeOut</key>
 	<integer>3</integer>

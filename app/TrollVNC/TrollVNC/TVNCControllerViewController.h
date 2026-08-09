@@ -19,7 +19,9 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// 控制端页（Tab 3，U2 外壳；真实 viewer 为 U4 远期）
+/// 控制端页（Phase 12：Tab 2 卡片墙/详情列表双视图 + 多选批量配置）
+/// 顶部导航：[全选☑] 设备墙 [批量操作] [宫格▾]
+/// 帧获取：RFB 完整连接首帧（替代网关 invoke screenshot 缩略图方案）
 @interface TVNCControllerViewController : UIViewController
 
 @end

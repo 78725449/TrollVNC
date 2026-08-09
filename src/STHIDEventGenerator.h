@@ -117,6 +117,14 @@ __used NS_INLINE void STAccurateSleep(NSTimeInterval seconds) {
 - (void)touchDown:(CGPoint)location touchCount:(NSUInteger)count;
 - (void)liftUp:(CGPoint)location touchCount:(NSUInteger)count;
 
+// 多指异点按下/抬起（locations 为 C 数组，长度需 ≥ touchCount）
+- (void)touchDownAtPoints:(CGPoint *)locations touchCount:(NSUInteger)touchCount;
+- (void)liftUpAtPoints:(CGPoint *)locations touchCount:(NSUInteger)touchCount;
+// 重置触摸状态（发送 HandReset 事件，清除所有触点）
+- (void)dispatchHandResetEvent;
+// 单事件派发（透传 eventInfo 字典构造 IOHIDEvent）
+- (void)dispatchEventWithInfo:(NSDictionary *)eventInfo;
+
 /* MARK: --- Stylus --- */
 
 - (void)stylusDownAtPoint:(CGPoint)location
@@ -265,11 +273,6 @@ __used NS_INLINE void STAccurateSleep(NSTimeInterval seconds) {
 
 - (void)displayBrightnessDecrementDown;
 - (void)displayBrightnessDecrementUp;
-
-/* MARK: --- Accelerometer --- */
-
-// async 2.0
-- (void)shakeIt;
 
 /* MARK: --- Other Consumer Usages --- */
 

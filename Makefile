@@ -28,6 +28,7 @@ trollvncserver_FILES += src/ClipboardManager.mm
 trollvncserver_FILES += src/ScreenCapturer.mm
 trollvncserver_FILES += src/STHIDEventGenerator.mm
 trollvncserver_FILES += src/OhMyJetsam.mm
+trollvncserver_FILES += src/TRScreenHasher.mm
 
 trollvncserver_CFLAGS += -fobjc-arc
 trollvncserver_CFLAGS += -Wno-unknown-warning-option
@@ -103,6 +104,8 @@ trollvncmanager_FILES += src/TRWatchDog.mm
 trollvncmanager_FILES += src/TaskProcess+ObjC.swift
 trollvncmanager_FILES += src/OhMyJetsam.mm
 trollvncmanager_FILES += src/TRGatewayClient.mm
+trollvncmanager_FILES += src/TRCapabilityRegistry.mm
+trollvncmanager_FILES += src/TRTunnelClient.mm
 trollvncmanager_FRAMEWORKS += UIKit
 
 trollvncmanager_CFLAGS += -fobjc-arc
