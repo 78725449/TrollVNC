@@ -107,12 +107,27 @@ trollvncmanager_FILES += src/OhMyJetsam.mm
 trollvncmanager_FILES += src/TRGatewayClient.mm
 trollvncmanager_FILES += src/TRCapabilityRegistry.mm
 trollvncmanager_FILES += src/TRTunnelClient.mm
+# 能力执行依赖（守护进程侧类，Manager 内嵌执行能力时同样需要；与 trollvncserver 为独立二进制，无符号冲突）
+trollvncmanager_FILES += src/BulletinManager.mm
+trollvncmanager_FILES += src/ClipboardManager.mm
+trollvncmanager_FILES += src/STHIDEventGenerator.mm
+trollvncmanager_FILES += src/ScreenCapturer.mm
+# 守护进程桥接函数的 Manager 降级实现（tvGetInflightStats/tvGetBonjourTXT/tvReloadConfigForKey）
+trollvncmanager_FILES += src/TRDaemonBridgeManager.mm
 trollvncmanager_FRAMEWORKS += UIKit
 
 trollvncmanager_CFLAGS += -fobjc-arc
 trollvncmanager_CFLAGS += -Iinclude-spi
 
 trollvncmanager_FRAMEWORKS += Foundation
+trollvncmanager_FRAMEWORKS += CoreGraphics
+trollvncmanager_FRAMEWORKS += CoreImage
+trollvncmanager_FRAMEWORKS += CoreMedia
+trollvncmanager_FRAMEWORKS += CoreVideo
+trollvncmanager_FRAMEWORKS += IOKit
+trollvncmanager_FRAMEWORKS += IOSurface
+trollvncmanager_FRAMEWORKS += QuartzCore
+trollvncmanager_FRAMEWORKS += UserNotifications
 ifeq ($(THEOS_DEVICE_SIMULATOR),1)
 trollvncmanager_CODESIGN_FLAGS += -f -s - --entitlements src/trollvncmanager.entitlements
 else
