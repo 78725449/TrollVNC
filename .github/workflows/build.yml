@@ -139,6 +139,7 @@ jobs:
             ARCHS="arm64" ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO \
             'GCC_PREPROCESSOR_DEFINITIONS=THEBOOTSTRAP=1 THEOS_PACKAGE_SCHEME="bootstrap" PACKAGE_VERSION="3.2-272"' \
             "HEADER_SEARCH_PATHS=$(pwd)/../../include" \
+            "FRAMEWORK_SEARCH_PATHS=$THEOS/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks" \
             build 2>&1 | tee /tmp/tvnc-diag.log
           RC=${PIPESTATUS[0]}
           echo "===== diagnostic exit: $RC ====="
