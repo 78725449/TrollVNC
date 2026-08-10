@@ -601,7 +601,7 @@ static NSString *const kViewerBridgeName = @"viewer";
     }
     req.HTTPBody = bodyData;
     req.timeoutInterval = 6.0;
-    [[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:nil] resume];
+    [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:nil] resume];
 }
 
 /**
