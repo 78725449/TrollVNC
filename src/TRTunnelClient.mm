@@ -76,7 +76,10 @@ static void TRTunnelLog(const char *fmt, ...) {
     uint8_t *_frameBuf;
     size_t _frameBufLen;
     size_t _frameBufCap;
-    BOOL _restartLocal;   // rfb.restart: reset local RFB conn (new control session re-handshake)
+    BOOL _restartLocal;
+    int _localFd;
+    BOOL _startRequested;
+    BOOL _stopRequested;   // rfb.restart: reset local RFB conn (new control session re-handshake)
 }
 @end
 
@@ -245,23 +248,17 @@ static void TRTunnelLog(const char *fmt, ...) {
     TVLog(@"[tunnel] handshake ok, entering passthrough mode");
     _retryDelay = kTunnelMinRetryDelay;
 
-    // 4. 连接本地 RFB server（127.0.0.1:5901）
-    int localFd = [self _connectLocalRfb];
-    if (localFd < 0) {
-        TVLog(@"[tunnel] failed to connect local RFB 127.0.0.1:%d", kLocalRfbPort);
-        close(tunnelFd);
-        return NO;  // 本地 server 未就绪：断开重连，待 server 起来后自动恢复
-    }
-
+    // 4. local RFB connected on demand (rfb.start); standby after handshake
+    _localFd = -1;
     _connected = YES;
-    TRTunnelLog("handshake ok, localFd=%d, entering passthrough", localFd);
+    TRTunnelLog("handshake ok, standby (local RFB on rfb.start)");
 
-    // 5. select 多路复用双向透传
-    BOOL normalExit = [self _passthroughLoop:tunnelFd localFd:localFd];
+    // 5. select passthrough (standby: tunnel only)
+    BOOL normalExit = [self _passthroughLoop:tunnelFd];
 
-    // 6. 清理
+    // 6. cleanup
     _connected = NO;
-    close(localFd);
+    if (_localFd >= 0) { close(_localFd); _localFd = -1; }
     close(tunnelFd);
     [self _resetFrameBuf];
     return normalExit;
@@ -363,38 +360,43 @@ static void TRTunnelLog(const char *fmt, ...) {
  * @param localFd  本地 RFB socket fd
  * @return YES 表示因 stop 正常退出；NO 表示连接异常断开（需重连）
  */
-- (BOOL)_passthroughLoop:(int)tunnelFd localFd:(int)localFd {
+- (BOOL)_passthroughLoop:(int)tunnelFd {
     uint8_t *readBuf = (uint8_t *)malloc(kReadBufSize);
     if (!readBuf) return NO;
     time_t lastPing = time(NULL);
 
     while (_started && ![[NSThread currentThread] isCancelled]) {
-        if (_restartLocal) {
-            _restartLocal = NO;
-            TVLog(@"[tunnel] rfb.restart: reconnecting local RFB");
-            close(localFd);
-            localFd = [self _connectLocalRfb];
-            if (localFd < 0) {
-                TVLog(@"[tunnel] rfb.restart: local RFB reconnect failed");
-                free(readBuf);
-                return NO;
+        // rfb.stop -> close local
+        if (_localFd >= 0 && _stopRequested) {
+            _stopRequested = NO;
+            TRTunnelLog("rfb.stop: closing local RFB fd=%d", _localFd);
+            close(_localFd);
+            _localFd = -1;
+        }
+        // rfb.start -> connect local 5901 (fresh RFB session, handshake bytes reach viewer live)
+        if (_localFd < 0 && _startRequested) {
+            _startRequested = NO;
+            _localFd = [self _connectLocalRfb];
+            TRTunnelLog("rfb.start: local connect -> fd=%d", _localFd);
+            if (_localFd < 0) {
+                TRTunnelLog("rfb.start: local connect failed, keep standby");
             }
         }
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(tunnelFd, &rfds);
-        FD_SET(localFd, &rfds);
-        int maxFd = (tunnelFd > localFd ? tunnelFd : localFd) + 1;
+        int maxFd = tunnelFd;
+        if (_localFd >= 0) { FD_SET(_localFd, &rfds); if (_localFd > maxFd) maxFd = _localFd; }
         struct timeval tv;
         tv.tv_sec = (time_t)kTunnelSelectTimeout;
         tv.tv_usec = 0;
-        int sel = select(maxFd, &rfds, NULL, NULL, &tv);
+        int sel = select(maxFd + 1, &rfds, NULL, NULL, &tv);
         if (sel < 0) {
             free(readBuf);
             return NO;
         }
         if (sel == 0) {
-            // 超时：检查心跳
+            // timeout: heartbeat
             time_t now = time(NULL);
             if (now - lastPing >= (time_t)kTunnelPingInterval) {
                 if (![self _writeFrame:tunnelFd type:kFrameTypePing data:NULL length:0]) {
@@ -405,21 +407,21 @@ static void TRTunnelLog(const char *fmt, ...) {
             }
             continue;
         }
-        // 隧道可读
+        // tunnel readable
         if (FD_ISSET(tunnelFd, &rfds)) {
             ssize_t n = read(tunnelFd, readBuf, kReadBufSize);
             if (n <= 0) { free(readBuf); return NO; }
             [self _appendFrameData:readBuf length:(size_t)n];
             TRTunnelLog("tunnel readable, read %zd bytes, frameBufLen=%zu", n, _frameBufLen);
-            if (![self _processFramesTunnel:tunnelFd localFd:localFd]) {
+            if (![self _processFramesTunnel:tunnelFd]) {
                 TRTunnelLog("processFrames returned NO");
                 free(readBuf);
-                return NO;  // 本地 RFB 写失败，断开重连
+                return NO;
             }
         }
-        // 本地 5901 可读
-        if (FD_ISSET(localFd, &rfds)) {
-            ssize_t n = read(localFd, readBuf, kReadBufSize);
+        // local 5901 readable
+        if (_localFd >= 0 && FD_ISSET(_localFd, &rfds)) {
+            ssize_t n = read(_localFd, readBuf, kReadBufSize);
             if (n <= 0) { free(readBuf); return NO; }
             TRTunnelLog("local readable, read %zd bytes, sending FT_DATA", n);
             if (![self _writeFrame:tunnelFd type:kFrameTypeData data:readBuf length:(size_t)n]) {
@@ -430,7 +432,7 @@ static void TRTunnelLog(const char *fmt, ...) {
         }
     }
     free(readBuf);
-    return YES;  // stop 触发的正常退出
+    return YES;  // stop
 }
 
 #pragma mark - 帧封装/解析
@@ -483,7 +485,7 @@ static void TRTunnelLog(const char *fmt, ...) {
  * @param localFd  本地 RFB fd（DATA 帧 payload 写入此处）
  * @return YES 表示处理正常（可继续）；NO 表示本地 RFB 写失败（需断开重连）
  */
-- (BOOL)_processFramesTunnel:(int)tunnelFd localFd:(int)localFd {
+- (BOOL)_processFramesTunnel:(int)tunnelFd {
     while (_frameBufLen >= kFrameHeaderSize) {
         uint8_t type = _frameBuf[0];
         uint32_t payloadLen = ((uint32_t)_frameBuf[1] << 24) | ((uint32_t)_frameBuf[2] << 16)
@@ -503,8 +505,8 @@ static void TRTunnelLog(const char *fmt, ...) {
                     // 写入本地 RFB（处理部分写）
                     size_t off = 0;
                     while (off < payloadLen) {
-                        ssize_t w = write(localFd, payload + off, payloadLen - off);
-                        TRTunnelLog("DATA payloadLen=%u write local -> %zd (off=%zu)", payloadLen, w, off);
+                        ssize_t w = write(_localFd, payload + off, payloadLen - off);
+                        TRTunnelLog("DATA payloadLen=%u write local fd=%d -> %zd (off=%zu)", payloadLen, _localFd, w, off);
                         if (w <= 0) {
                             TVLog(@"[tunnel] write local RFB failed");
                             TRTunnelLog("write local RFB failed w=%zd errno=%d", w, errno);
@@ -526,11 +528,21 @@ static void TRTunnelLog(const char *fmt, ...) {
                 NSDictionary *cmd = [NSJSONSerialization JSONObjectWithData:
                     [NSData dataWithBytes:payload length:payloadLen] options:0 error:NULL];
                 if (![cmd isKindOfClass:[NSDictionary class]]) break;
-                if ([[cmd objectForKey:@"cmd"] isEqualToString:@"rfb.restart"]) {
-                    // gateway sends on each control-session establish: reset local RFB
-                    // so the new noVNC session re-handshakes (tunnel is single RFB client)
-                    _restartLocal = YES;
-                    NSDictionary *ack0 = @{ @"type": @"ack", @"cmd": @"rfb.restart",
+                if ([[cmd objectForKey:@"cmd"] isEqualToString:@"rfb.start"]) {
+                    // control session starts: connect local 5901 now (fresh RFB handshake)
+                    _startRequested = YES;
+                    NSDictionary *ack0 = @{ @"type": @"ack", @"cmd": @"rfb.start",
+                                            @"id": cmd[@"id"] ?: [NSNull null], @"ok": @YES };
+                    NSData *ackJson0 = [NSJSONSerialization dataWithJSONObject:ack0 options:0 error:NULL];
+                    if (ackJson0) {
+                        [self _writeFrame:tunnelFd type:kFrameTypeCmdAck data:ackJson0.bytes length:ackJson0.length];
+                    }
+                    break;
+                }
+                if ([[cmd objectForKey:@"cmd"] isEqualToString:@"rfb.stop"]) {
+                    // control session ends: close local 5901, back to standby
+                    _stopRequested = YES;
+                    NSDictionary *ack0 = @{ @"type": @"ack", @"cmd": @"rfb.stop",
                                             @"id": cmd[@"id"] ?: [NSNull null], @"ok": @YES };
                     NSData *ackJson0 = [NSJSONSerialization dataWithJSONObject:ack0 options:0 error:NULL];
                     if (ackJson0) {
