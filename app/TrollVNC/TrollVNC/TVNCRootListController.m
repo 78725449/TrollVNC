@@ -18,6 +18,7 @@
 #import <Foundation/Foundation.h>
 #import <Network/Network.h>
 #import <Preferences/PSSpecifier.h>
+#import <Preferences/PSTableCell.h>
 #import <SystemConfiguration/SystemConfiguration.h>
 #import <UIKit/UIKit.h>
 #import <arpa/inet.h>
@@ -354,7 +355,10 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
             packageScheme = @"legacy";
         }
 
-        NSString *versionString = @PACKAGE_VERSION;
+        // PACKAGE_VERSION macro is unreliable under xcodebuild (may expand to an
+        // unquoted token and fail to compile); read the bundle version instead.
+        NSString *versionString =
+            [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"1.0";
 
         NSString *footerText = [NSString
             stringWithFormat:NSLocalizedStringFromTableInBundle(@"TrollVNC (%@) v%@", @"Localizable", self.bundle, nil),

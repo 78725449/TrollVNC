@@ -14,6 +14,7 @@
 - (void)reloadSpecifier:(PSSpecifier *)specifier animated:(BOOL)animated;
 - (void)reloadSpecifiers;
 - (PSSpecifier *)specifierAtIndexPath:(NSIndexPath *)indexPath;
+- (id)cachedCellForSpecifier:(PSSpecifier *)specifier;
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath;
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section;
