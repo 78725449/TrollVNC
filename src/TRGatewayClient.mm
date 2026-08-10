@@ -268,6 +268,10 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 - (void)_defaultsChanged {
     @synchronized(self) {
         _needsReregister = YES;
+        // gateway config went from empty to set: start registration now if not running
+        if (!_started && [self _gatewayHost]) {
+            [self start];
+        }
         _deviceName = nil;  // 允许下次 register 读取新名称
         _vncPort = 0;       // 允许下次 register 读取新端口（deviceId 保持稳定）
     }
