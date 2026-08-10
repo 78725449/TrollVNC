@@ -513,6 +513,7 @@
 				SYSTEM_HEADER_SEARCH_PATHS = (
 					$THEOS/include,
 					$THEOS/vendor/include,
+					"$(SRCROOT)/../../include",
 				);
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -570,6 +571,7 @@
 				SYSTEM_HEADER_SEARCH_PATHS = (
 					$THEOS/include,
 					$THEOS/vendor/include,
+					"$(SRCROOT)/../../include",
 				);
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -749,6 +751,7 @@
 				SYSTEM_HEADER_SEARCH_PATHS = (
 					$THEOS/include,
 					$THEOS/vendor/include,
+					"$(SRCROOT)/../../include",
 				);
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -806,6 +809,7 @@
 				SYSTEM_HEADER_SEARCH_PATHS = (
 					$THEOS/include,
 					$THEOS/vendor/include,
+					"$(SRCROOT)/../../include",
 				);
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",

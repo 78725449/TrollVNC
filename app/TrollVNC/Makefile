@@ -22,7 +22,5 @@ endif
 
 TrollVNC_XCODEFLAGS += OTHER_LDFLAGS="-framework BackgroundTasks -L$(CURDIR)/../../lib -lvncclient -lssl -lcrypto -ljpeg -lturbojpeg -llzo2 -lsasl2 -lz"
 TrollVNC_XCODEFLAGS += HEADER_SEARCH_PATHS="$(CURDIR)/../../include"
-# Preferences/PSRootController.h ??????????? theos SDK ? PrivateFrameworks ????
-TrollVNC_XCODEFLAGS += FRAMEWORK_SEARCH_PATHS="$(THEOS)/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks"
 
 include $(THEOS_MAKE_PATH)/xcodeproj.mk
