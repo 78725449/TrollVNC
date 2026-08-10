@@ -60,6 +60,7 @@ static const NSTimeInterval kHandshakeTimeout = 10.0;      // 握手 ack 超时�
     uint8_t *_frameBuf;
     size_t _frameBufLen;
     size_t _frameBufCap;
+    BOOL _restartLocal;   // rfb.restart: reset local RFB conn (new control session re-handshake)
 }
 @end
 
@@ -350,6 +351,17 @@ static const NSTimeInterval kHandshakeTimeout = 10.0;      // 握手 ack 超时�
     time_t lastPing = time(NULL);
 
     while (_started && ![[NSThread currentThread] isCancelled]) {
+        if (_restartLocal) {
+            _restartLocal = NO;
+            TVLog(@"[tunnel] rfb.restart: reconnecting local RFB");
+            close(localFd);
+            localFd = [self _connectLocalRfb];
+            if (localFd < 0) {
+                TVLog(@"[tunnel] rfb.restart: local RFB reconnect failed");
+                free(readBuf);
+                return NO;
+            }
+        }
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(tunnelFd, &rfds);
@@ -490,6 +502,18 @@ static const NSTimeInterval kHandshakeTimeout = 10.0;      // 握手 ack 超时�
                 NSDictionary *cmd = [NSJSONSerialization JSONObjectWithData:
                     [NSData dataWithBytes:payload length:payloadLen] options:0 error:NULL];
                 if (![cmd isKindOfClass:[NSDictionary class]]) break;
+                if ([[cmd objectForKey:@"cmd"] isEqualToString:@"rfb.restart"]) {
+                    // gateway sends on each control-session establish: reset local RFB
+                    // so the new noVNC session re-handshakes (tunnel is single RFB client)
+                    _restartLocal = YES;
+                    NSDictionary *ack0 = @{ @"type": @"ack", @"cmd": @"rfb.restart",
+                                            @"id": cmd[@"id"] ?: [NSNull null], @"ok": @YES };
+                    NSData *ackJson0 = [NSJSONSerialization dataWithJSONObject:ack0 options:0 error:NULL];
+                    if (ackJson0) {
+                        [self _writeFrame:tunnelFd type:kFrameTypeCmdAck data:ackJson0.bytes length:ackJson0.length];
+                    }
+                    break;
+                }
                 NSDictionary *ack = self.commandHandler ? self.commandHandler(cmd) : nil;
                 if (!ack) {
                     ack = @{ @"type": @"ack",
