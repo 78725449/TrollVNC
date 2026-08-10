@@ -21,5 +21,10 @@ TrollVNC_CODESIGN_FLAGS += -STrollVNC/TrollVNC.entitlements
 endif
 
 TrollVNC_XCODEFLAGS += HEADER_SEARCH_PATHS="$(CURDIR)/../../include"
+# Use the theos iOS 16.5 SDK for the app xcodebuild: Xcode 18.2 SDK links
+# SwiftUICore whose tbd disallows direct app linking (swiftUIKit force-load),
+# while the 16.5 SDK has no SwiftUICore. Appends after theos default
+# "-sdk iphoneos", so this last -sdk wins.
+TrollVNC_XCODEOPTS += -sdk "$(THEOS)/sdks/iPhoneOS16.5.sdk"
 
 include $(THEOS_MAKE_PATH)/xcodeproj.mk
