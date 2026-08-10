@@ -23,10 +23,3 @@ endif
 TrollVNC_XCODEFLAGS += HEADER_SEARCH_PATHS="$(CURDIR)/../../include"
 
 include $(THEOS_MAKE_PATH)/xcodeproj.mk
-
-# Build the app against the theos iOS16.5 SDK: Xcode 18.2 SDK links
-# SwiftUICore whose tbd disallows direct app linking (swiftUIKit force-load),
-# while the 16.5 SDK has no SwiftUICore. Override theos default
-# "_THEOS_INTERNAL_XCODEOPTS = -sdk iphoneos" with a -sdk path (plain make
-# re-assignment after the include wins).
-_THEOS_INTERNAL_XCODEOPTS = -sdk "$(THEOS)/sdks/iPhoneOS16.5.sdk"
