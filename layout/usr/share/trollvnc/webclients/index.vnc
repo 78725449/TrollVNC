@@ -51,27 +51,31 @@
     #bar { display: flex; }
   }
 
-  /* ===== 手机端悬浮按钮 FAB（触屏/窄屏显示） ===== */
+  /* ===== 手机端悬浮信号按钮 FAB（触屏/窄屏显示，WiFi 白底样式） ===== */
   #fab {
     position: fixed;
     right: max(16px, env(safe-area-inset-right));
-    bottom: max(16px, env(safe-area-inset-bottom));
+    top: 25%;                        /* 默认：靠右边，垂直在屏幕高度 1/4 处 */
     width: 56px; height: 56px;
     border-radius: 50%;
-    background: rgba(124, 92, 255, .92);
-    color: #fff;
-    border: none;
-    font: 700 22px system-ui, sans-serif;
-    box-shadow: 0 4px 14px rgba(0, 0, 0, .45);
+    background: #fff;
+    border: 1px solid rgba(0, 0, 0, .12);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, .45);
     z-index: 10;
-    touch-action: none;            /* 拖动时阻止浏览器默认滚动 */
+    touch-action: none;              /* 拖动时阻止浏览器默认滚动 */
     user-select: none; -webkit-user-select: none;
-    cursor: pointer;
+    cursor: grab;
     display: flex; align-items: center; justify-content: center;
-    transition: transform .12s ease, background .12s ease;
   }
-  #fab:active { transform: scale(.94); background: rgba(91, 63, 224, .95); }
-  #fab.dragging { transition: none; }
+  #fab:active { cursor: grabbing; }
+  #fab.dragging { cursor: grabbing; }
+  /* WiFi 信号图标：三段弧（a1 外 / a2 中 / a3 内+点），按连接状态亮起 */
+  #fab .wifi { width: 30px; height: 30px; display: block; }
+  #fab .wifi .arc { fill: #cbd5e1; transition: fill .2s; }   /* 未亮：浅灰 */
+  #fab[data-sig="sig-high"] .wifi .arc { fill: #22c55e; }    /* 已连接：全绿 */
+  #fab[data-sig="sig-mid"] .wifi .arc.a2,
+  #fab[data-sig="sig-mid"] .wifi .arc.a3 { fill: #eab308; }  /* 中格：中弧+点 黄 */
+  #fab[data-sig="sig-low"] .wifi .arc.a3 { fill: #ef4444; }  /* 低格：点 红 */
   @media (min-width: 900px) and (hover: hover) and (pointer: fine) {
     #fab { display: none; }
   }
@@ -113,7 +117,8 @@
 
   /* 横屏手机：FAB 稍小，避免遮挡 */
   @media (max-width: 900px) and (orientation: landscape) and (max-height: 500px) {
-    #fab { width: 48px; height: 48px; font-size: 18px; }
+    #fab { width: 48px; height: 48px; }
+    #fab .wifi { width: 26px; height: 26px; }
   }
 
   /* ===== 剪贴板手动输入浮层（HTTP 环境降级方案） ===== */
@@ -176,8 +181,14 @@
   <button data-op="disc">断开</button>
 </div>
 
-<!-- 手机端悬浮按钮 -->
-<button id="fab" aria-label="操作菜单">≡</button>
+<!-- 手机端悬浮信号按钮（WiFi 白底，拖动调整位置，点击展开操作） -->
+<button id="fab" aria-label="设备信号（拖动调整位置，点击展开操作）">
+  <svg class="wifi" viewBox="0 0 24 24" aria-hidden="true">
+    <path class="arc a1" d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9z" fill="currentColor"/>
+    <path class="arc a2" d="M5 13l2 2c2.76-2.76 7.24-2.76 10 0l2-2C15.14 9.14 8.87 9.14 5 13z" fill="currentColor"/>
+    <path class="arc a3" d="M9 17l3 3 3-3c-1.65-1.66-4.34-1.66-6 0z" fill="currentColor"/>
+  </svg>
+</button>
 <div id="panel" role="menu">
   <button data-op="home"><span>🏠</span><span>Home 键</span></button>
   <button data-op="power"><span>⏻</span><span>电源</span></button>
@@ -218,12 +229,16 @@ import RFB from './novnc/core/rfb.js';
 
   var screen = document.getElementById('screen');
   var hint = document.getElementById('hint');
+  var isConnected = false;   // RFB 是否已建立连接（驱动信号按钮延迟轮询）
+  var sigTimer = null;       // 延迟轮询定时器（每 3s 同源 fetch 测 RTT）
   var rfb = new RFB(screen, url, {});
   rfb.scaleViewport = true;
   rfb.resizeSession = false;
   rfb.showDotCursor = true;
 
   rfb.addEventListener('connect', function () {
+    isConnected = true;
+    startSigPoll();
     hint.textContent = '已连接 ' + host + ':' + port + '（等待首帧…）';
     // 检测是否真的收到画面帧（区分"连上但黑帧"与"连不上"）
     var gotFrame = false;
@@ -235,8 +250,9 @@ import RFB from './novnc/core/rfb.js';
     var fc = setInterval(function () {
       if (fbSize() > 0) {
         gotFrame = true;
-        hint.textContent = '已连接 · 画面接收中';
         clearInterval(fc);
+        // 连接+画面状态已并入信号按钮（绿色 + 延迟 title），隐藏左上角成功提示
+        hint.textContent = '';
       }
     }, 800);
     setTimeout(function () {
@@ -245,10 +261,18 @@ import RFB from './novnc/core/rfb.js';
     }, 5000);
   });
   rfb.addEventListener('disconnect', function (e) {
+    isConnected = false;
+    stopSigPoll();
+    setFabSignal(null, '设备未连接（拖动调整位置，点击展开操作）');
     var msg = (e && e.detail && e.detail.message) ? '：' + e.detail.message : '';
     hint.textContent = '已断开' + msg + '（目标 ' + url + '）';
   });
-  rfb.addEventListener('error', function () { hint.textContent = '连接失败 ' + url; });
+  rfb.addEventListener('error', function () {
+    isConnected = false;
+    stopSigPoll();
+    setFabSignal(null, '连接失败（拖动调整位置，点击展开操作）');
+    hint.textContent = '连接失败 ' + url;
+  });
   rfb.addEventListener('credentialsrequired', function () {
     var p = window.prompt('请输入 VNC 密码：');
     if (p) rfb.sendCredentials({ password: p });
@@ -398,7 +422,52 @@ import RFB from './novnc/core/rfb.js';
     });
   });
 
-  // ===== 悬浮按钮拖动 + 点击展开 =====
+  // ===== 悬浮按钮信号状态 + 拖动 + 点击展开 =====
+
+  /**
+   * 更新 FAB 信号格亮起状态（直连页无网关 ping 通道，以连接状态驱动）
+   * @param {string|null} sig - 'sig-high'/'sig-mid'/'sig-low'，null 表示全灰
+   * @param {string} tip      - 按钮悬浮提示文案
+   * @returns {void}
+   */
+  function setFabSignal(sig, tip) {
+    var f = document.getElementById('fab');
+    if (!f) return;
+    if (sig) f.setAttribute('data-sig', sig); else f.removeAttribute('data-sig');
+    if (tip) f.title = tip;
+  }
+
+  /**
+   * 启动延迟轮询：每 3s 同源 fetch 一个静态文件（caps.js，no-store）测网络往返耗时，
+   * 按与网关控制台一致的阈值驱动信号格（<150ms 满格绿 / <400ms 中黄 / 否则红点）。
+   * 仅在已连接（isConnected）时更新颜色；未连接保持全灰。
+   * @returns {void}
+   */
+  function startSigPoll() {
+    stopSigPoll();
+    var tick = function () {
+      var t0 = performance.now();
+      fetch('./caps.js?t=' + Date.now(), { cache: 'no-store' }).then(function () {
+        if (!isConnected) return;   // 未连接：忽略延迟结果，保持灰
+        var ms = Math.round(performance.now() - t0);
+        setFabSignal(ms < 150 ? 'sig-high' : (ms < 400 ? 'sig-mid' : 'sig-low'),
+                     '已连接 · 延迟 ' + ms + 'ms（拖动调整位置，点击展开操作）');
+      }).catch(function () {
+        if (!isConnected) return;
+        setFabSignal('sig-low', '设备无响应（拖动调整位置，点击展开操作）');
+      });
+    };
+    tick();
+    sigTimer = setInterval(tick, 3000);
+  }
+
+  /**
+   * 停止延迟轮询（断开/连接失败时调用，释放定时器）。
+   * @returns {void}
+   */
+  function stopSigPoll() {
+    if (sigTimer) { clearInterval(sigTimer); sigTimer = null; }
+  }
 
   var fab = document.getElementById('fab');
   var panel = document.getElementById('panel');
@@ -427,24 +496,34 @@ import RFB from './novnc/core/rfb.js';
   }
 
   /**
-   * 计算面板弹出位置（默认在 FAB 上方，空间不足则向下；约束在视口内）
+   * 计算面板弹出位置（优先 FAB 下方、空间不足则上方；始终避开 FAB 区域）。
+   * 按所选方向的可视空间裁剪面板 max-height，超高内容滚动显示，保证不覆盖悬浮按钮。
    * @returns {{left:number, top:number}} 面板左上角坐标（px）
    */
   function computePanelPos() {
     var fr = fab.getBoundingClientRect();
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var gap = 10, pad = 8;
+    // 重置 maxHeight 后测量面板原始尺寸（CSS 默认 70vh 上限）
+    panel.style.maxHeight = '';
     var pw = panel.offsetWidth || 168;
     var ph = panel.offsetHeight || 360;
-    var vw = window.innerWidth, vh = window.innerHeight;
-    var gap = 10;
-    // 水平：默认与 FAB 左对齐，越界右对齐
+    // 可用空间（避开 FAB）：下方空间 / 上方空间，取较大者且不小于 120px
+    var below = vh - fr.bottom - gap - pad;
+    var above = fr.top - gap - pad;
+    var placeBelow = below >= 120 && below >= above;
+    var maxH = placeBelow ? below : above;
+    if (maxH < 120) maxH = Math.min(ph, 120); // 极小空间下限，避免面板过小
+    panel.style.maxHeight = maxH + 'px';
+    var mh = Math.min(ph, maxH);
+    // 垂直：FAB 下方或上方，约束在视口内
+    var top = placeBelow ? fr.bottom + gap : fr.top - gap - mh;
+    if (top < pad) top = pad;
+    if (top + mh > vh - pad) top = vh - mh - pad;
+    // 水平：与 FAB 左对齐，越界右对齐
     var left = fr.left;
-    if (left + pw > vw - 8) left = vw - pw - 8;
-    if (left < 8) left = 8;
-    // 垂直：优先在 FAB 上方
-    var top = fr.top - ph - gap;
-    if (top < 8) top = fr.bottom + gap;       // 上方空间不足 → 向下
-    if (top + ph > vh - 8) top = vh - ph - 8; // 仍越界 → 顶到下边
-    if (top < 8) top = 8;
+    if (left + pw > vw - pad) left = vw - pw - pad;
+    if (left < pad) left = pad;
     return { left: left, top: top };
   }
 

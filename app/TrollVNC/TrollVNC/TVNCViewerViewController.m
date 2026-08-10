@@ -32,7 +32,8 @@ static NSString *const kViewerBridgeName = @"viewer";
 @property(nonatomic, strong) WKWebView *screenView;          // noVNC 画面容器（替代原 UIImageView）
 @property(nonatomic, strong) UIActivityIndicatorView *spinner;
 @property(nonatomic, strong) UILabel *statusLabel;
-@property(nonatomic, strong) UIButton *gearBtn;               // 悬浮 ⚙（可拖动）
+@property(nonatomic, strong) UIButton *gearBtn;               // 悬浮信号按钮（WiFi 白底，可拖动）
+@property(nonatomic, strong) NSTimer *sigTimer;               // 延迟轮询定时器（每 3s ping 网关）
 @property(nonatomic, assign) BOOL gearPlaced;
 
 @property(nonatomic, assign) BOOL connected;                  // RFB 是否已建立连接
@@ -92,6 +93,7 @@ static NSString *const kViewerBridgeName = @"viewer";
     [self.view addSubview:self.statusLabel];
 
     [self setupGearButton];
+    [self startSignalPoll];
 
     [NSLayoutConstraint activateConstraints:@[
         // screenView 全屏铺满
@@ -119,7 +121,7 @@ static NSString *const kViewerBridgeName = @"viewer";
 }
 
 /**
- * 视图布局完成：首次放置悬浮 ⚙ 按钮到右下角。
+ * 视图布局完成：首次放置悬浮信号按钮到右上（靠右边，垂直 1/4 高度）。
  */
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
@@ -128,18 +130,19 @@ static NSString *const kViewerBridgeName = @"viewer";
         CGFloat s = self.gearBtn.bounds.size.width;
         CGRect f = self.gearBtn.frame;
         f.origin.x = self.view.bounds.size.width - s - 16;
-        f.origin.y = self.view.bounds.size.height - s - 56;
+        f.origin.y = MAX(self.view.safeAreaInsets.top + 8, self.view.bounds.size.height * 0.25);
         self.gearBtn.frame = f;
     }
 }
 
 /**
- * 视图即将消失：恢复导航栏显示。
+ * 视图即将消失：恢复导航栏显示并停止延迟轮询。
  * @param animated 是否带动画
  */
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
     [self.navigationController setNavigationBarHidden:NO animated:animated];
+    [self stopSignalPoll];
 }
 
 /**
@@ -357,20 +360,31 @@ static NSString *const kViewerBridgeName = @"viewer";
 #pragma mark - 悬浮 ⚙（可拖动 + 竖排菜单）
 
 /**
- * 创建悬浮 ⚙ 按钮及其拖动手势、能力菜单（FAB 风格）。
+ * 创建悬浮信号按钮（WiFi 白底样式）及其拖动手势、能力菜单。
+ * 与网页端 FAB（网关 8080 / 设备 5801）视觉一致：白色圆底 + 三段 WiFi 弧，
+ * 信号颜色随网关 ping 延迟动态更新；点击（primaryAction）弹出能力菜单。
  * Phase 4.7 数据驱动改造：移除硬编码 ops 数组，改为通过网关 /api/devices/:id/caps
  * 拉取 capMetadata 后异步重建按 category 分组的 UIMenu；首次展示占位菜单（仅"结束控制"）。
  */
 - (void)setupGearButton {
-    CGFloat s = 52;
+    CGFloat s = 56;
     self.gearBtn = [UIButton buttonWithType:UIButtonTypeCustom];
-    [self.gearBtn setImage:[UIImage systemImageNamed:@"gearshape.fill"] forState:UIControlStateNormal];
-    self.gearBtn.tintColor = [UIColor whiteColor];
-    self.gearBtn.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.85];
+    // 默认信号：全灰（尚未 ping）
+    [self.gearBtn setImage:[self wifiIconWithOuter:[self tvncColorWithHex:0xcbd5e1]
+                                            middle:[self tvncColorWithHex:0xcbd5e1]
+                                             inner:[self tvncColorWithHex:0xcbd5e1]]
+                  forState:UIControlStateNormal];
+    self.gearBtn.backgroundColor = [UIColor whiteColor];
     self.gearBtn.layer.cornerRadius = s / 2;
     self.gearBtn.layer.borderWidth = 1;
-    self.gearBtn.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.25].CGColor;
-    self.gearBtn.frame = CGRectMake(self.view.bounds.size.width - s - 16, self.view.bounds.size.height - s - 56, s, s);
+    self.gearBtn.layer.borderColor = [UIColor colorWithWhite:0 alpha:0.12].CGColor;
+    self.gearBtn.layer.shadowColor = [UIColor blackColor].CGColor;
+    self.gearBtn.layer.shadowOpacity = 0.45;
+    self.gearBtn.layer.shadowRadius = 12;
+    self.gearBtn.layer.shadowOffset = CGSizeMake(0, 6);
+    self.gearBtn.clipsToBounds = NO;
+    // 默认位置：靠右边缘，垂直 1/4 高度（viewDidLayoutSubviews 再按安全区修正）
+    self.gearBtn.frame = CGRectMake(self.view.bounds.size.width - s - 16, self.view.bounds.size.height * 0.25, s, s);
     [self.view addSubview:self.gearBtn];
 
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(dragGear:)];
@@ -407,6 +421,142 @@ static NSString *const kViewerBridgeName = @"viewer";
         self.gearBtn.center = c;
         [g setTranslation:CGPointZero inView:self.view];
     }
+}
+
+#pragma mark - 悬浮信号（WiFi 图标 + 网关延迟轮询）
+
+/**
+ * 将 0xRRGGBB 格式的十六进制颜色值转换为 UIColor。
+ * @param hex 十六进制颜色值，如 0x22c55e
+ * @return 对应 UIColor（不透明）
+ */
+- (UIColor *)tvncColorWithHex:(uint32_t)hex {
+    CGFloat r = ((hex >> 16) & 0xFF) / 255.0;
+    CGFloat g = ((hex >> 8) & 0xFF) / 255.0;
+    CGFloat b = (hex & 0xFF) / 255.0;
+    return [UIColor colorWithRed:r green:g blue:b alpha:1.0];
+}
+
+/**
+ * 生成 WiFi 信号图标（三段顶部弧 + 底部小点），各段颜色独立指定。
+ * 与网页端 FAB（网关 8080 / 设备 5801）的 SVG 三段弧视觉一致：
+ *   外弧 a1（大圆环扇区）、中弧 a2（中圆环扇区）、内点 a3（底部三角）。
+ * 按 24×24 逻辑坐标绘制后缩放到 30×30pt。
+ * @param outer  外弧（a1）颜色
+ * @param middle 中弧（a2）颜色
+ * @param inner  内点（a3）颜色
+ * @return 30×30pt 的 WiFi 图标 UIImage（颜色已烘焙，非 template 模式）
+ */
+- (UIImage *)wifiIconWithOuter:(UIColor *)outer middle:(UIColor *)middle inner:(UIColor *)inner {
+    CGFloat scale = 30.0 / 24.0; // SVG viewBox 24 → 30pt
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(30, 30)];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        CGContextSaveGState(ctx.CGContext);
+        CGContextScaleCTM(ctx.CGContext, scale, scale);
+        CGPoint c = CGPointMake(12, 12);
+
+        // 绘制一段顶部环形扇区（外弧 135°→45° 顺时针过 90° 顶点，内弧反向闭合）
+        void (^annularSector)(CGFloat, CGFloat, UIColor *) = ^(CGFloat outerR, CGFloat innerR, UIColor *color) {
+            UIBezierPath *p = [UIBezierPath bezierPath];
+            CGFloat start = M_PI * 3 / 4;   // 135°
+            CGFloat end = M_PI / 4;         // 45°
+            [p addArcWithCenter:c radius:outerR startAngle:start endAngle:end clockwise:YES];
+            [p addArcWithCenter:c radius:innerR startAngle:end endAngle:start clockwise:NO];
+            [p closePath];
+            [color setFill];
+            [p fill];
+        };
+        annularSector(11.0, 8.2, outer);   // a1 外弧
+        annularSector(7.8, 5.2, middle);   // a2 中弧
+        // a3 内点：底部小三角，与 SVG "M9 17l3 3 3-3" 一致
+        UIBezierPath *dot = [UIBezierPath bezierPath];
+        [dot moveToPoint:CGPointMake(9, 17)];
+        [dot addLineToPoint:CGPointMake(15, 17)];
+        [dot addLineToPoint:CGPointMake(12, 20)];
+        [dot closePath];
+        [inner setFill];
+        [dot fill];
+        CGContextRestoreGState(ctx.CGContext);
+    }];
+}
+
+/**
+ * 按延迟毫秒更新悬浮按钮信号颜色（与网页端阈值一致）：
+ *   <150ms 全绿（sig-high）；<400ms 中弧+点 黄（sig-mid）；否则/失败 仅点 红（sig-low）。
+ * @param ms 延迟毫秒；<0 表示请求失败/无响应
+ */
+- (void)applySignalWithLatency:(NSTimeInterval)ms {
+    UIColor *grey  = [self tvncColorWithHex:0xcbd5e1];
+    UIColor *green = [self tvncColorWithHex:0x22c55e];
+    UIColor *yellow= [self tvncColorWithHex:0xeab308];
+    UIColor *red   = [self tvncColorWithHex:0xef4444];
+    UIColor *outer = grey, *middle = grey, *inner = grey;
+    if (ms >= 0 && ms < 150) {
+        outer = middle = inner = green;      // 满格：全绿
+    } else if (ms >= 0 && ms < 400) {
+        middle = inner = yellow;             // 中格：中弧+点 黄，外弧灰
+    } else {
+        inner = red;                         // 低格：仅点 红
+    }
+    [self.gearBtn setImage:[self wifiIconWithOuter:outer middle:middle inner:inner]
+                  forState:UIControlStateNormal];
+}
+
+/**
+ * 通过网关 POST /api/devices/:id/ping 测往返耗时，并刷新信号图标。
+ * 失败或超时按 -1 处理（仅红点）。
+ */
+- (void)pingAndUpdateSignal {
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSString *token = [defaults stringForKey:@"GatewayToken"];
+    NSString *urlStr = [NSString stringWithFormat:@"http://%@:%d/api/devices/%@/ping",
+                       self.host, self.port, self.deviceId];
+    NSURL *url = [NSURL URLWithString:urlStr];
+    if (!url) return;
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    req.HTTPMethod = @"POST";
+    req.timeoutInterval = 4.0;
+    if (token.length) {
+        [req setValue:[NSString stringWithFormat:@"Bearer %@", token] forHTTPHeaderField:@"Authorization"];
+    }
+    NSDate *t0 = [NSDate date];
+    __weak typeof(self) weakSelf = self;
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
+        completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            NSTimeInterval ms = -1;
+            if (!err) {
+                NSHTTPURLResponse *hr = (NSHTTPURLResponse *)resp;
+                if (hr.statusCode == 200) ms = [[NSDate date] timeIntervalSinceDate:t0] * 1000;
+            }
+            [strongSelf applySignalWithLatency:ms];
+        });
+    }];
+    [task resume];
+}
+
+/**
+ * 启动延迟轮询（每 3s 一次，立即先测一次），驱动悬浮按钮信号颜色。
+ * 幂等：已启动时先停止再重启。
+ */
+- (void)startSignalPoll {
+    [self stopSignalPoll];
+    __weak typeof(self) weakSelf = self;
+    self.sigTimer = [NSTimer scheduledTimerWithTimeInterval:3.0 repeats:YES block:^(NSTimer *timer) {
+        typeof(self) strongSelf = weakSelf;
+        [strongSelf pingAndUpdateSignal];
+    }];
+    [self pingAndUpdateSignal];
+}
+
+/**
+ * 停止延迟轮询（退出查看器/析构时调用，释放定时器）。
+ */
+- (void)stopSignalPoll {
+    [self.sigTimer invalidate];
+    self.sigTimer = nil;
 }
 
 #pragma mark - 能力元数据（数据驱动菜单）
