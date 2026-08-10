@@ -19,7 +19,7 @@
 #import "TRMainTabBarController.h"
 #import "TVNCRootListController.h"
 
-#import <Preferences/PSRootController.h>
+#import <UIKit/UIKit.h>
 
 @interface SceneDelegate ()
 
@@ -57,7 +57,7 @@
         self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
     }
     TVNCRootListController *settings = [[TVNCRootListController alloc] init];
-    PSRootController *nav = [[PSRootController alloc] initWithRootViewController:settings];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:settings];
     self.window.rootViewController = nav;
     [self.window makeKeyAndVisible];
 }

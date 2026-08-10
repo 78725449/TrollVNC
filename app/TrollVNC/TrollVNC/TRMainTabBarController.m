@@ -20,7 +20,7 @@
 #import "TVNCControllerViewController.h"
 #import "TVNCRootListController.h"
 
-#import <Preferences/PSRootController.h>
+#import <UIKit/UIKit.h>
 
 @implementation TRMainTabBarController
 
@@ -57,7 +57,7 @@
 
     // Tab 3 设置：TVNCRootListController（配置，降为次要入口，PSRootController 包装）
     TVNCRootListController *settings = [[TVNCRootListController alloc] init];
-    PSRootController *settingsNav = [[PSRootController alloc] initWithRootViewController:settings];
+    UINavigationController *settingsNav = [[UINavigationController alloc] initWithRootViewController:settings];
     settingsNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"设置"
                                                            image:[UIImage systemImageNamed:@"gearshape"]
                                                    selectedImage:[UIImage systemImageNamed:@"gearshape.fill"]
