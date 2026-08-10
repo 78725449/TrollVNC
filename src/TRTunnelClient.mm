@@ -47,6 +47,20 @@ static const size_t kMaxFramePayload    = 16 * 1024 * 1024; // 单帧 payload �
 static const size_t kReadBufSize        = 64 * 1024;       // 单次 read 缓冲（64KB）
 static const NSTimeInterval kHandshakeTimeout = 10.0;      // 握手 ack 超时（秒）
 
+// DIAG: file log for tunnel passthrough debugging (Filza at /tmp)
+static void TRTunnelLog(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    char buf[512];
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    FILE *f = fopen("/tmp/trollvnc-tunnel.log", "a");
+    if (f) {
+        fprintf(f, "[%.0f] %s\n", [[NSDate date] timeIntervalSince1970], buf);
+        fclose(f);
+    }
+}
+
 @interface TRTunnelClient () {
     NSString *_host;           // 网关主机
     NSInteger _port;           // 网关隧道端口（默认 18181）
@@ -207,6 +221,7 @@ static const NSTimeInterval kHandshakeTimeout = 10.0;      // 握手 ack 超时�
         return NO;
     }
     TVLog(@"[tunnel] connected to %@:%ld", _host, (long)_port);
+    TRTunnelLog("tunnel connected %@:%ld", _host, (long)_port);
 
     // 2. 发送 tunnel_hello 握手
     if (![self _sendHandshakeHello:tunnelFd]) {
@@ -237,6 +252,7 @@ static const NSTimeInterval kHandshakeTimeout = 10.0;      // 握手 ack 超时�
     }
 
     _connected = YES;
+    TRTunnelLog("handshake ok, localFd=%d, entering passthrough", localFd);
 
     // 5. select 多路复用双向透传
     BOOL normalExit = [self _passthroughLoop:tunnelFd localFd:localFd];
@@ -392,7 +408,9 @@ static const NSTimeInterval kHandshakeTimeout = 10.0;      // 握手 ack 超时�
             ssize_t n = read(tunnelFd, readBuf, kReadBufSize);
             if (n <= 0) { free(readBuf); return NO; }
             [self _appendFrameData:readBuf length:(size_t)n];
+            TRTunnelLog("tunnel readable, read %zd bytes, frameBufLen=%zu", n, _frameBufLen);
             if (![self _processFramesTunnel:tunnelFd localFd:localFd]) {
+                TRTunnelLog("processFrames returned NO");
                 free(readBuf);
                 return NO;  // 本地 RFB 写失败，断开重连
             }
@@ -401,7 +419,9 @@ static const NSTimeInterval kHandshakeTimeout = 10.0;      // 握手 ack 超时�
         if (FD_ISSET(localFd, &rfds)) {
             ssize_t n = read(localFd, readBuf, kReadBufSize);
             if (n <= 0) { free(readBuf); return NO; }
+            TRTunnelLog("local readable, read %zd bytes, sending FT_DATA", n);
             if (![self _writeFrame:tunnelFd type:kFrameTypeData data:readBuf length:(size_t)n]) {
+                TRTunnelLog("FT_DATA write to tunnel failed");
                 free(readBuf);
                 return NO;
             }
@@ -482,8 +502,10 @@ static const NSTimeInterval kHandshakeTimeout = 10.0;      // 握手 ack 超时�
                     size_t off = 0;
                     while (off < payloadLen) {
                         ssize_t w = write(localFd, payload + off, payloadLen - off);
+                        TRTunnelLog("DATA payloadLen=%u write local -> %zd (off=%zu)", payloadLen, w, off);
                         if (w <= 0) {
                             TVLog(@"[tunnel] write local RFB failed");
+                            TRTunnelLog("write local RFB failed w=%zd errno=%d", w, errno);
                             return NO;
                         }
                         off += (size_t)w;
