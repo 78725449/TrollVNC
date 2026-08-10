@@ -43,7 +43,7 @@
     connectNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"连接"
                                                           image:[UIImage systemImageNamed:@"wifi"]
                                                   selectedImage:[UIImage systemImageNamed:@"wifi"]
-                                                            tag:0];
+                                                            ];
     [self styleNav:connectNav tint:tint];
 
     // Tab 2 控制：TVNCControllerViewController（卡片墙，升为主入口之一）
@@ -52,7 +52,7 @@
     controllerNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"控制"
                                                               image:[UIImage systemImageNamed:@"square.grid.2x2"]
                                                       selectedImage:[UIImage systemImageNamed:@"square.grid.2x2.fill"]
-                                                                tag:1];
+                                                                ];
     [self styleNav:controllerNav tint:tint];
 
     // Tab 3 设置：TVNCRootListController（配置，降为次要入口，PSRootController 包装）
@@ -61,7 +61,7 @@
     settingsNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"设置"
                                                            image:[UIImage systemImageNamed:@"gearshape"]
                                                    selectedImage:[UIImage systemImageNamed:@"gearshape.fill"]
-                                                             tag:2];
+                                                             ];
 
     self.viewControllers = @[ connectNav, controllerNav, settingsNav ];
 }
