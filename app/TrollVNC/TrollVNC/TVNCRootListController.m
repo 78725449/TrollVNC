@@ -32,93 +32,9 @@
 #import <string.h>
 
 #import "StripedTextTableViewController.h"
-#import "TVNCClientListController.h"
 #import "TVNCRootListController.h"
 #import "TVNCUtil.h"
 #import "ZTSelfSignedCertificate.h"
-
-NS_INLINE NSString *GetDefaultRouteInterface(void) {
-    static SCDynamicStoreRef (*_SCDynamicStoreCreate)(CFAllocatorRef, CFStringRef, SCDynamicStoreCallBack,
-                                                      SCDynamicStoreContext *) = NULL;
-    static CFPropertyListRef (*_SCDynamicStoreCopyValue)(SCDynamicStoreRef, CFStringRef) = NULL;
-
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        void *handle =
-            dlopen("/System/Library/Frameworks/SystemConfiguration.framework/SystemConfiguration", RTLD_LAZY);
-        if (handle) {
-            _SCDynamicStoreCreate =
-                (SCDynamicStoreRef (*)(CFAllocatorRef, CFStringRef, SCDynamicStoreCallBack,
-                                       SCDynamicStoreContext *))dlsym(handle, "SCDynamicStoreCreate");
-            _SCDynamicStoreCopyValue =
-                (CFPropertyListRef (*)(SCDynamicStoreRef, CFStringRef))dlsym(handle, "SCDynamicStoreCopyValue");
-        }
-    });
-
-    if (!_SCDynamicStoreCreate || !_SCDynamicStoreCopyValue) {
-        return nil;
-    }
-
-    SCDynamicStoreRef store = _SCDynamicStoreCreate(NULL, CFSTR("RouteInfo"), NULL, NULL);
-    if (!store)
-        return nil;
-
-    NSDictionary *dict =
-        (NSDictionary *)CFBridgingRelease(_SCDynamicStoreCopyValue(store, CFSTR("State:/Network/Global/IPv4")));
-    if (!dict[@"PrimaryInterface"])
-        dict = (NSDictionary *)CFBridgingRelease(_SCDynamicStoreCopyValue(store, CFSTR("State:/Network/Global/IPv6")));
-    CFRelease(store);
-
-    return dict[@"PrimaryInterface"];
-}
-
-// Resolve current IPv4/IPv6 address of interface en0 (Wi‑Fi). Prefer IPv4 if available.
-NS_INLINE NSString *TVNCGetEn0IPAddress(void) {
-    struct ifaddrs *ifaList = NULL;
-    if (getifaddrs(&ifaList) != 0 || !ifaList)
-        return nil;
-
-    NSString *defaultRouteInterface = GetDefaultRouteInterface();
-    const char *defaultRouteIfName = defaultRouteInterface ? [defaultRouteInterface UTF8String] : "en0";
-
-    NSString *ipv4 = nil;
-    NSString *ipv6 = nil;
-    for (struct ifaddrs *ifa = ifaList; ifa; ifa = ifa->ifa_next) {
-        if (!ifa->ifa_addr || !ifa->ifa_name)
-            continue;
-        if (strcmp(ifa->ifa_name, defaultRouteIfName) != 0)
-            continue;
-        if (!(ifa->ifa_flags & IFF_UP) || (ifa->ifa_flags & IFF_LOOPBACK))
-            continue;
-
-        sa_family_t fam = ifa->ifa_addr->sa_family;
-        char buf[INET6_ADDRSTRLEN] = {0};
-        if (fam == AF_INET) {
-            const struct sockaddr_in *sin = (const struct sockaddr_in *)ifa->ifa_addr;
-            if (inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf))) {
-                ipv4 = [NSString stringWithUTF8String:buf];
-            }
-        } else if (fam == AF_INET6) {
-            const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)ifa->ifa_addr;
-            // Skip link-local addresses (fe80::) if possible
-            if (IN6_IS_ADDR_LINKLOCAL(&sin6->sin6_addr)) {
-                char tmp[INET6_ADDRSTRLEN] = {0};
-                if (inet_ntop(AF_INET6, &sin6->sin6_addr, tmp, sizeof(tmp))) {
-                    // Keep as fallback only if no other IPv6 found later
-                    if (!ipv6)
-                        ipv6 = [NSString stringWithUTF8String:tmp];
-                }
-            } else {
-                char tmp[INET6_ADDRSTRLEN] = {0};
-                if (inet_ntop(AF_INET6, &sin6->sin6_addr, tmp, sizeof(tmp))) {
-                    ipv6 = [NSString stringWithUTF8String:tmp];
-                }
-            }
-        }
-    }
-    freeifaddrs(ifaList);
-    return ipv4 ?: ipv6; // prefer IPv4
-}
 
 NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     if (!host)
@@ -151,19 +67,13 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 
 @interface TVNCRootListController () <NSNetServiceBrowserDelegate, NSNetServiceDelegate>
 
-@property(nonatomic, strong) nw_path_monitor_t monitor;
-
 @property(nonatomic, strong) UINotificationFeedbackGenerator *notificationGenerator;
 @property(nonatomic, strong) UIColor *primaryColor;
 @property(nonatomic, copy) NSString *jbrootPath;
 
-@property(nonatomic, strong) PSSpecifier *firstGroupSpecifier;
-@property(nonatomic, strong) PSSpecifier *enabledSpecifier;
 @property(nonatomic, strong) PSSpecifier *certSpecifier;
 @property(nonatomic, strong) PSSpecifier *keysSpecifier;
 @property(nonatomic, strong) PSSpecifier *exportCertSpecifier;
-
-@property(nonatomic, copy) NSString *defaultFooterText;
 @property(nonatomic, strong) NSNetServiceBrowser *gatewayBrowser;
 @property(nonatomic, strong) NSMutableArray<NSNetService *> *gatewayServices;
 @property(nonatomic, assign) BOOL gatewaySearchShown;
@@ -171,9 +81,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 
 @end
 
-@implementation TVNCRootListController {
-    int _notifyToken;
-}
+@implementation TVNCRootListController
 
 #ifdef THEBOOTSTRAP
 @synthesize bundle = _bundle;
@@ -228,9 +136,6 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
             specifiers = [self loadSpecifiersFromPlistName:@"Root" target:self];
         }
 
-        PSSpecifier *firstGroup = [specifiers firstObject];
-        _firstGroupSpecifier = firstGroup;
-
         for (PSSpecifier *specifier in specifiers) {
             NSString *actionName = [specifier propertyForKey:@"action"];
             if ([actionName isEqualToString:@"exportCertificate"]) {
@@ -243,25 +148,13 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
                 _certSpecifier = specifier;
             } else if ([keyName isEqualToString:@"SslKeyFile"]) {
                 _keysSpecifier = specifier;
-            } else if ([keyName isEqualToString:@"Enabled"]) {
-                _enabledSpecifier = specifier;
             }
         }
 
         _specifiers = specifiers;
-        [self updateFirstGroupAndReload:NO];
     }
 
     return _specifiers;
-}
-
-- (void)dealloc {
-    if (_monitor) {
-        nw_path_monitor_cancel(_monitor);
-    }
-    if (_notifyToken) {
-        notify_cancel(_notifyToken);
-    }
 }
 
 // Add Apply button in nav bar
@@ -295,107 +188,11 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
                action:@selector(applyChanges)];
     applyItem.tintColor = _primaryColor;
 
-    UIBarButtonItem *clientsItem = [[UIBarButtonItem alloc]
-        initWithTitle:NSLocalizedStringFromTableInBundle(@"Clients", @"Localizable", self.bundle, nil)
-                style:UIBarButtonItemStylePlain
-               target:self
-               action:@selector(showClients)];
-    clientsItem.tintColor = _primaryColor;
-
-#ifdef THEBOOTSTRAP
-    BOOL isApp = YES;
-#else
-    BOOL isApp = NO;
-#endif
-
-    BOOL isPad = ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad);
-    if (isApp || isPad) {
-        self.navigationItem.leftBarButtonItem = clientsItem;
-        self.navigationItem.rightBarButtonItem = applyItem;
-    } else {
-        self.navigationItem.rightBarButtonItems = @[
-            applyItem,
-            clientsItem,
-        ];
-    }
-
-    self.monitor = nw_path_monitor_create();
-    nw_path_monitor_set_queue(self.monitor, dispatch_get_main_queue());
-
-    __weak typeof(self) weakSelf = self;
-    nw_path_monitor_set_update_handler(self.monitor, ^(nw_path_t _Nonnull path) {
-        [weakSelf updateFirstGroupAndReload:YES];
-    });
-    nw_path_monitor_start(self.monitor);
-
-    notify_register_dispatch(TVNC_NOTIFY_PREFS_CHANGED, &_notifyToken, dispatch_get_main_queue(), ^(int token) {
-        [weakSelf reloadEnabledSpecifier];
-    });
+    self.navigationItem.rightBarButtonItem = applyItem;
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-
-    [self updateFirstGroupAndReload:YES];
-}
-
-- (void)showClients {
-    TVNCClientListController *vc = [[TVNCClientListController alloc] init];
-    vc.bundle = self.bundle;
-    vc.primaryColor = self.primaryColor;
-    vc.notificationGenerator = self.notificationGenerator;
-    UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:vc];
-    [self.navigationController presentViewController:navController animated:YES completion:nil];
-}
-
-- (NSString *)defaultFooterText {
-    if (!_defaultFooterText) {
-        NSString *packageScheme = MYNSSTRINGIFY(THEOS_PACKAGE_SCHEME);
-        if (!packageScheme.length) {
-            packageScheme = @"legacy";
-        }
-
-        // PACKAGE_VERSION macro is unreliable under xcodebuild (may expand to an
-        // unquoted token and fail to compile); read the bundle version instead.
-        NSString *versionString =
-            [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"1.0";
-
-        NSString *footerText = [NSString
-            stringWithFormat:NSLocalizedStringFromTableInBundle(@"SuperPhone (%@) v%@", @"Localizable", self.bundle, nil),
-                             packageScheme, versionString];
-        _defaultFooterText = footerText;
-    }
-    return _defaultFooterText;
-}
-
-- (NSString *)currentStatusText {
-    // Append current en0 IP on a second line, if available
-    NSString *ip = TVNCGetEn0IPAddress();
-    NSString *ipUnavailable = NSLocalizedStringFromTableInBundle(@"unavailable", @"Localizable", self.bundle, nil);
-    NSString *ipFormat =
-        NSLocalizedStringFromTableInBundle(@"Current IP Address: %@", @"Localizable", self.bundle, nil);
-    return [NSString stringWithFormat:ipFormat, (ip.length ? ip : ipUnavailable)];
-}
-
-- (void)updateFirstGroupAndReload:(BOOL)reload {
-    if (!_firstGroupSpecifier) {
-        return;
-    }
-
-    NSString *footerText = [NSString stringWithFormat:@"%@\n%@", [self defaultFooterText], [self currentStatusText]];
-    [_firstGroupSpecifier setProperty:footerText forKey:@"footerText"];
-
-    if (reload) {
-        [self reloadSpecifier:_firstGroupSpecifier animated:NO];
-    }
-}
-
-- (void)reloadEnabledSpecifier {
-    if (!_enabledSpecifier) {
-        return;
-    }
-
-    [self reloadSpecifier:_enabledSpecifier animated:NO];
 }
 
 #pragma mark - Actions
@@ -483,7 +280,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     NSString *message = NSLocalizedStringFromTableInBundle(@"Are you sure you want to restart the VNC service?",
                                                            @"Localizable", self.bundle, nil);
 
-    NSString *fullMessage = [NSString stringWithFormat:@"%@\n%@", message, [self currentStatusText]];
+    NSString *fullMessage = message;
     NSString *cancel = NSLocalizedStringFromTableInBundle(@"Cancel", @"Localizable", self.bundle, nil);
     NSString *restart = NSLocalizedStringFromTableInBundle(@"Restart", @"Localizable", self.bundle, nil);
 

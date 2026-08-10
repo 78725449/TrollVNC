@@ -65,7 +65,6 @@
             @{
                 @"title" : @"直连参数",
                 @"rows" : @[
-                    @{@"type" : @"switch", @"key" : @"Enabled", @"label" : @"服务开关", @"default" : @YES},
                     @{@"type" : @"text", @"key" : @"Port", @"label" : @"TCP 端口", @"default" : @"5901"},
                     @{@"type" : @"text", @"key" : @"BindHost", @"label" : @"绑定地址", @"placeholder" : @"留空 = 所有接口"},
                     @{@"type" : @"switch", @"key" : @"BonjourEnabled", @"label" : @"Bonjour 自动发现", @"default" : @YES},

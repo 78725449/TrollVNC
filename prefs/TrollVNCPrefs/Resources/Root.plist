@@ -10,27 +10,6 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>状态</string>
-			<key>footerText</key>
-			<string>服务开关与设备名称；设备身份 UUID 首次启动自动生成。</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>Enabled</string>
-			<key>label</key>
-			<string>Enabled</string>
-			<key>default</key>
-			<true/>
-		</dict>
-		
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>label</key>
 			<string>网关</string>
 			<key>footerText</key>
 			<string>填写软路由网关地址后，本机将自动注册并保持在线；也可点下方按钮在局域网内搜索。</string>

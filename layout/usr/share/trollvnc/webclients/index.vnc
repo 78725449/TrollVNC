@@ -3,8 +3,9 @@
      连接代码与原始可用版逐字节一致：仅依赖 noVNC core/rfb.js（无额外模块依赖）
      交互方案：
        手机端（触屏/窄屏）：画面全屏 + 一个可拖动悬浮按钮(FAB)，点击展开操作列
-       PC 端（鼠标/宽屏）：右侧固定操作栏（桌面鼠标操作更顺手）
-     操作集：内联默认值；caps.js 仅在可加载时作为增强（失败不影响连接） -->
+       PC 端（鼠标/宽屏）：画面居中，右侧操作栏贴画面右边框（JS 动态定位，见 syncBarPosition）
+     操作集：内联默认值；caps.js 仅在可加载时作为增强（失败不影响连接）
+     状态提示：画布中央浮层（连接中加载动画 / 已连接等待 / 已断开 / 连接失败），收到首帧后隐藏 -->
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -23,17 +24,34 @@
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
   body { display: flex; flex-direction: column; }
   #screen { flex: 1; position: relative; min-height: 0; background: #000; }
-  #screen canvas { position: absolute; left: 0; top: 0; }
-  #hint {
-    position: absolute; left: 8px; top: 8px; z-index: 5;
-    color: #bbb; background: rgba(0,0,0,.6); padding: 4px 10px;
-    border-radius: 12px; font: 12px system-ui, sans-serif; pointer-events: none;
-    max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  /* 不设置 #screen canvas 定位规则：交给 noVNC 内部 flex + margin:auto 自动居中（黑边留白） */
+  /* 中央状态浮层：连接中加载动画 / 已连接等待 / 已断开 / 连接失败（原左上角提示移至画布中心） */
+  #status {
+    position: absolute; inset: 0; z-index: 5;
+    display: none;
+    flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+    background: rgba(0, 0, 0, .5);
+    pointer-events: none; user-select: none; -webkit-user-select: none;
+  }
+  #status.show { display: flex; }
+  #status .spin {
+    display: none;
+    width: 38px; height: 38px; border-radius: 50%;
+    border: 3px solid rgba(255, 255, 255, .18); border-top-color: #7C5CFF;
+    animation: spin .8s linear infinite;
+  }
+  #status.loading .spin { display: block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #statusText {
+    color: #eee; font: 14px/1.5 system-ui, sans-serif;
+    text-align: center; max-width: 86%;
+    word-break: break-all; text-shadow: 0 1px 3px rgba(0, 0, 0, .8);
   }
 
-  /* ===== PC 端侧边栏（鼠标 + 宽屏显示） ===== */
+  /* ===== PC 端操作栏（鼠标 + 宽屏显示）：fixed 脱离 flex 流，运行时定位到画面右边框 ===== */
   #bar {
     display: none;
+    position: fixed; z-index: 6;
     gap: clamp(4px, 1.5vw, 10px); justify-content: flex-start;
     padding: 8px; background: #141414; flex-direction: column;
     overflow-y: auto; -webkit-overflow-scrolling: touch;
@@ -163,7 +181,13 @@
 </style>
 </head>
 <body>
-<div id="screen"><div id="hint">连接中…</div></div>
+<div id="screen">
+  <!-- 中央状态浮层：加载动画在画布中心，收到首帧后隐藏进入画面，断开/失败时居中提示 -->
+  <div id="status" class="status loading show">
+    <div class="spin"></div>
+    <div id="statusText">连接中…</div>
+  </div>
+</div>
 
 <!-- PC 端侧边栏 -->
 <div id="bar">
@@ -228,7 +252,8 @@ import RFB from './novnc/core/rfb.js';
   var url = wsProto + host + ':' + port + '/websockify';
 
   var screen = document.getElementById('screen');
-  var hint = document.getElementById('hint');
+  var status = document.getElementById('status');
+  var statusText = document.getElementById('statusText');
   var isConnected = false;   // RFB 是否已建立连接（驱动信号按钮延迟轮询）
   var sigTimer = null;       // 延迟轮询定时器（每 3s 同源 fetch 测 RTT）
   var rfb = new RFB(screen, url, {});
@@ -236,10 +261,67 @@ import RFB from './novnc/core/rfb.js';
   rfb.resizeSession = false;
   rfb.showDotCursor = true;
 
+  /**
+   * 显示中央状态浮层（连接中/已连接等待/已断开/连接失败）
+   * @param {string} text  - 状态文案
+   * @param {boolean} load - 是否显示加载动画（true=转圈加载）
+   * @returns {void}
+   */
+  function setStatus(text, load) {
+    statusText.textContent = text;
+    status.classList.toggle('loading', !!load);
+    status.classList.add('show');
+  }
+
+  /**
+   * 隐藏中央状态浮层（收到首帧、进入画面时调用）
+   * @returns {void}
+   */
+  function hideStatus() {
+    status.classList.remove('loading', 'show');
+  }
+
+  // ===== PC 端：操作栏跟随画面（noVNC 画布）右边框 =====
+
+  /**
+   * 同步 PC 端操作栏到画布右边框。
+   * 功能：画布由 noVNC 在 #screen 内居中（flex + margin:auto），操作栏以 fixed 脱离
+   *       flex 流，运行时按画布实际 rect 定位到其右缘并匹配其高度（贴画面右边框）。
+   *       画布尚未出尺寸（0×0，如未连接/未收到首帧）时隐藏操作栏，避免错位闪现。
+   * 参数：无
+   * @returns {void}
+   */
+  function syncBarPosition() {
+    var b = document.getElementById('bar');
+    if (!b) return;
+    var cv = screen.querySelector('canvas');
+    if (!cv) {
+      b.style.display = 'none';
+      return;
+    }
+    var r = cv.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) {
+      b.style.display = 'none';
+      return;
+    }
+    b.style.display = '';
+    b.style.left = Math.round(r.right) + 'px';
+    b.style.top = Math.round(r.top) + 'px';
+    b.style.height = Math.round(r.height) + 'px';
+  }
+
+  // 画布尺寸变化（首帧到达 / scaleViewport 缩放 / 窗口尺寸变化）时同步操作栏位置
+  var barCanvas = screen.querySelector('canvas');
+  if (barCanvas && 'ResizeObserver' in window) {
+    new ResizeObserver(function () { syncBarPosition(); }).observe(barCanvas);
+  }
+  window.addEventListener('resize', syncBarPosition);
+  syncBarPosition();
+
   rfb.addEventListener('connect', function () {
     isConnected = true;
     startSigPoll();
-    hint.textContent = '已连接 ' + host + ':' + port + '（等待首帧…）';
+    setStatus('已连接，等待画面…', true);
     // 检测是否真的收到画面帧（区分"连上但黑帧"与"连不上"）
     var gotFrame = false;
     function fbSize() {
@@ -251,13 +333,13 @@ import RFB from './novnc/core/rfb.js';
       if (fbSize() > 0) {
         gotFrame = true;
         clearInterval(fc);
-        // 连接+画面状态已并入信号按钮（绿色 + 延迟 title），隐藏左上角成功提示
-        hint.textContent = '';
+        // 连接成功且收到首帧：隐藏中央状态浮层，进入画面
+        hideStatus();
       }
     }, 800);
     setTimeout(function () {
       clearInterval(fc);
-      if (!gotFrame) hint.textContent = '已连接但未收到画面（锁屏黑帧 / 抓屏异常 / 编码不支持）';
+      if (!gotFrame) setStatus('已连接但未收到画面（锁屏黑帧 / 抓屏异常 / 编码不支持）', false);
     }, 5000);
   });
   rfb.addEventListener('disconnect', function (e) {
@@ -265,13 +347,13 @@ import RFB from './novnc/core/rfb.js';
     stopSigPoll();
     setFabSignal(null, '设备未连接（拖动调整位置，点击展开操作）');
     var msg = (e && e.detail && e.detail.message) ? '：' + e.detail.message : '';
-    hint.textContent = '已断开' + msg + '（目标 ' + url + '）';
+    setStatus('已断开' + msg + '（目标 ' + url + '）', false);
   });
   rfb.addEventListener('error', function () {
     isConnected = false;
     stopSigPoll();
     setFabSignal(null, '连接失败（拖动调整位置，点击展开操作）');
-    hint.textContent = '连接失败 ' + url;
+    setStatus('连接失败 ' + url, false);
   });
   rfb.addEventListener('credentialsrequired', function () {
     var p = window.prompt('请输入 VNC 密码：');
