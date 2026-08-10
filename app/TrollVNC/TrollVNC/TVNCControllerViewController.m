@@ -18,7 +18,6 @@
 #import "TVNCControllerViewController.h"
 #import "TVNCViewerViewController.h"
 #import "TVNCDeviceListCell.h"
-#import "TRWallTileWebView.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -30,8 +29,6 @@ static NSString *const kDefaultsSuite = @"com.82flex.trollvnc";
 static const NSInteger kConsolePort = 8080; // trollvnc-farm FARM_PORT 默认
 /// 视图模式持久化键：0=宫格，1=列表
 static NSString *const kViewModeKey = @"TVNCControllerViewMode";
-/// 宫格列数持久化键：2/3/4/6
-static NSString *const kGridColumnsKey = @"TVNCControllerGridColumns";
 
 /// 紫色主题色（RGB 107/78/255）
 static UIColor *TRPurpleColor(void) {
@@ -48,8 +45,7 @@ static const NSInteger kMaxConcurrentWallConnections = 6;
 @interface TVNCDeviceCardCell : UICollectionViewCell
 @property(nonatomic, strong) UIView *screenArea;
 @property(nonatomic, strong) UIImageView *screenIcon;
-@property(nonatomic, strong) UIImageView *thumbView;
-@property(nonatomic, strong) TRWallTileWebView *wallWebView; ///< 卡片墙实时 RFB 画面（Phase 12.1 WKWebView 改造）
+@property(nonatomic, strong) UIImageView *thumbView; ///< 卡片墙画面（hash 门控拉取的截图，UIImageView 直接显示）
 @property(nonatomic, strong) UILabel *nameLabel;
 @property(nonatomic, strong) UILabel *offlineLabel; ///< 离线设备"最后在线时间"提示
 @property(nonatomic, strong) UIView *dotView;
@@ -61,19 +57,6 @@ static const NSInteger kMaxConcurrentWallConnections = 6;
 @property(nonatomic, copy, nullable) void (^moreTapped)(TVNCDeviceCardCell *cell);
 - (void)configureWithDevice:(NSDictionary *)d thumbnail:(UIImage *)thumb
                    multiMode:(BOOL)multiMode selected:(BOOL)selected;
-/**
- * 启动卡片墙 RFB 连接（隧道优先，直连回退）。
- * @param d 设备数据字典
- * @param gatewayHost 网关地址
- * @param gatewayPort 网关 HTTP 端口
- * @param token 认证 token
- */
-- (void)startWallWebViewWithDevice:(NSDictionary *)d
-                       gatewayHost:(NSString *)gatewayHost
-                       gatewayPort:(NSInteger)gatewayPort
-                             token:(NSString *)token;
-/// 断开卡片墙 RFB 连接并缓存最后帧。
-- (void)stopWallWebView;
 @end
 
 @implementation TVNCDeviceCardCell
@@ -111,12 +94,6 @@ static const NSInteger kMaxConcurrentWallConnections = 6;
         _thumbView.backgroundColor = [UIColor blackColor];
         _thumbView.hidden = YES;
         [_screenArea addSubview:_thumbView];
-
-        // 卡片墙实时 RFB 画面（Phase 12.1 WKWebView 改造）：默认隐藏，start 后显示
-        _wallWebView = [[TRWallTileWebView alloc] initWithFrame:CGRectZero];
-        _wallWebView.translatesAutoresizingMaskIntoConstraints = NO;
-        _wallWebView.hidden = YES;
-        [_screenArea addSubview:_wallWebView];
 
         _offlineLabel = [[UILabel alloc] init];
         _offlineLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -171,11 +148,6 @@ static const NSInteger kMaxConcurrentWallConnections = 6;
             [_thumbView.leadingAnchor constraintEqualToAnchor:_screenArea.leadingAnchor],
             [_thumbView.trailingAnchor constraintEqualToAnchor:_screenArea.trailingAnchor],
             [_thumbView.bottomAnchor constraintEqualToAnchor:_screenArea.bottomAnchor],
-
-            [_wallWebView.topAnchor constraintEqualToAnchor:_screenArea.topAnchor],
-            [_wallWebView.leadingAnchor constraintEqualToAnchor:_screenArea.leadingAnchor],
-            [_wallWebView.trailingAnchor constraintEqualToAnchor:_screenArea.trailingAnchor],
-            [_wallWebView.bottomAnchor constraintEqualToAnchor:_screenArea.bottomAnchor],
 
             [_offlineLabel.leadingAnchor constraintEqualToAnchor:_screenArea.leadingAnchor],
             [_offlineLabel.trailingAnchor constraintEqualToAnchor:_screenArea.trailingAnchor],
@@ -232,19 +204,14 @@ static const NSInteger kMaxConcurrentWallConnections = 6;
         self.offlineLabel.hidden = NO;
         self.thumbView.alpha = 0.4;
         self.screenIcon.alpha = 0.4;
-        [self.wallWebView stop];
-        self.wallWebView.hidden = YES;
     } else {
         self.offlineLabel.hidden = YES;
         self.thumbView.alpha = 1.0;
         self.screenIcon.alpha = 1.0;
     }
 
-    // 实时 RFB 画面：wallWebView 已启动连接时优先显示；其后显示缓存帧 thumbView；否则占位图标
-    if (online && !self.wallWebView.hidden && self.wallWebView.state != TRWallTileStateFailed) {
-        self.thumbView.hidden = YES;
-        self.screenIcon.hidden = YES;
-    } else if (thumb) {
+    // 画面显示：优先缓存帧 thumbView；无帧则占位图标
+    if (thumb) {
         self.thumbView.image = thumb;
         self.thumbView.hidden = NO;
         self.screenIcon.hidden = YES;
@@ -258,51 +225,12 @@ static const NSInteger kMaxConcurrentWallConnections = 6;
     self.checkBox.selected = selected;
 }
 
-/// 启动卡片墙 RFB 连接（隧道优先，直连回退）。
-/// @param d 设备数据字典
-/// @param gatewayHost 网关地址
-/// @param gatewayPort 网关 HTTP 端口
-/// @param token 认证 token
-- (void)startWallWebViewWithDevice:(NSDictionary *)d
-                       gatewayHost:(NSString *)gatewayHost
-                       gatewayPort:(NSInteger)gatewayPort
-                             token:(NSString *)token {
-    if (![d[@"online"] boolValue]) return; // 离线设备不建立 RFB
-    if (self.wallWebView.state == TRWallTileStateConnected ||
-        self.wallWebView.state == TRWallTileStateConnecting) return; // 已连接/连接中不重复
-    NSString *deviceId = d[@"id"];
-    NSString *host = d[@"host"];
-    int port = (int)([d[@"port"] integerValue] ?: 5901);
-    __weak typeof(self) weakSelf = self;
-    self.wallWebView.onStateChange = ^(TRWallTileState state) {
-        typeof(self) strongSelf = weakSelf;
-        if (!strongSelf) return;
-        if (state == TRWallTileStateConnected) {
-            strongSelf.wallWebView.hidden = NO;
-            strongSelf.thumbView.hidden = YES;
-            strongSelf.screenIcon.hidden = YES;
-        } else if (state == TRWallTileStateFailed) {
-            strongSelf.wallWebView.hidden = YES;
-        }
-    };
-    [self.wallWebView startWithDeviceId:deviceId
-                            gatewayHost:gatewayHost
-                            gatewayPort:gatewayPort
-                                  token:token
-                                   host:host
-                                   port:port];
-}
-
-/// 断开卡片墙 RFB 连接并缓存最后帧。
-- (void)stopWallWebView {
-    [self.wallWebView stop];
-    self.wallWebView.hidden = YES;
-}
-
-/// cell 复用前清理：断开可能残留的 RFB 连接，防止跨设备画面串显。
+/// cell 复用前清理画面，防止跨设备截图串显（快照由控制器 snapshotCache 缓存）。
 - (void)prepareForReuse {
     [super prepareForReuse];
-    [self stopWallWebView];
+    self.thumbView.image = nil;
+    self.thumbView.hidden = YES;
+    self.screenIcon.hidden = NO;
 }
 
 @end
@@ -339,15 +267,18 @@ static const NSInteger kMaxConcurrentWallConnections = 6;
 
 // 视图模式
 @property(nonatomic, assign) NSInteger viewMode;       // 0=宫格 1=列表
-@property(nonatomic, assign) NSInteger gridColumns;    // 2/3/4/6
+@property(nonatomic, assign) NSInteger gridColumns;    // 宫格列数（固定 2）
 
 // 多选状态
 @property(nonatomic, assign) BOOL multiMode;                    ///< 是否处于多选模式
 @property(nonatomic, strong) NSMutableSet<NSString *> *selectedDevices; ///< 已勾选设备 ID 集合
 
-// 卡片墙 RFB 连接管理（Phase 12.1 WKWebView 改造）
+// 卡片墙画面获取（hash 门控 + 变化拉图，与 Web 端对齐；无 WKWebView/RFB 持久连接）
 @property(nonatomic, strong) NSMutableDictionary<NSString *, UIImage *> *snapshotCache; ///< 不可见 cell 的缓存帧（deviceId→UIImage）
-@property(nonatomic, assign) NSInteger activeWallConnections;   ///< 当前活跃的卡片墙 RFB 连接数
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSTimer *> *wallTimers;     ///< hash 轮询定时器（deviceId→NSTimer）
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *wallHashCache; ///< 上次屏幕 hash（deviceId→hex）
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *wallBusy;      ///< 轮询防重入标记（deviceId→@YES）
+@property(nonatomic, assign) NSInteger activeWallConnections;   ///< 当前活跃的 hash 轮询设备数（≤并发上限）
 
 @end
 
@@ -364,12 +295,14 @@ static const NSInteger kMaxConcurrentWallConnections = 6;
         _shown = [NSMutableArray array];
         _selectedDevices = [NSMutableSet set];
         _snapshotCache = [NSMutableDictionary dictionary];
+        _wallTimers = [NSMutableDictionary dictionary];
+        _wallHashCache = [NSMutableDictionary dictionary];
+        _wallBusy = [NSMutableDictionary dictionary];
         _activeWallConnections = 0;
 
         NSInteger vm = [_defaults integerForKey:kViewModeKey];
         _viewMode = (vm == 1) ? 1 : 0;
-        NSInteger cols = [_defaults integerForKey:kGridColumnsKey];
-        _gridColumns = (cols == 2 || cols == 3 || cols == 4 || cols == 6) ? cols : 2;
+        _gridColumns = 2; // 宫格固定 2 列（捏合调列数已移除，仅保留宫格/列表两档）
     }
     return self;
 }
@@ -405,24 +338,25 @@ static const NSInteger kMaxConcurrentWallConnections = 6;
                                                                                            target:self
                                                                                            action:@selector(refreshDevices)];
 
-    // 卡片墙 RFB 连接：由 willDisplayCell/didEndDisplayingCell 按可见性管理
-    // 不再使用 libvncclient 首帧抓取 + 定时轮询
-
-    [self applyViewMode];          // 切换初始视图可见性
-    [self refreshDevices];
+    // 卡片墙服务（拉取设备目录 + RFB 连接）不随 App 启动提前运行：
+    // viewDidLoad 仅搭建 UI；首次切换到「控制」Tab 时由 viewWillAppear 触发
+    // refreshDevices 拉取同网关设备，RFB 连接由 willDisplayCell 按可见性管理。
+    [self applyViewMode];          // 切换初始视图可见性（此时无数据，不启动 RFB）
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    // 服务启动时机：仅当切换到「控制」Tab（本页出现）时拉取同网关设备目录；
+    // 右上角刷新按钮可随时重新拉取。切走（viewWillDisappear）时停止全部 hash 轮询。
     [self refreshDevices];
-    // 页面重新出现时恢复可见 cell 的 RFB 连接（viewWillDisappear 时已全部停止）
-    [self startVisibleWallConnections];
+    // 页面重新出现时恢复可见 cell 的 hash 轮询（viewWillDisappear 时已全部停止）
+    [self startVisibleWallPolls];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
-    // 停止所有可见 cell 的 RFB 连接
-    [self stopAllWallConnections];
+    // 停止所有可见 cell 的 hash 轮询
+    [self stopAllWallPolls];
 }
 
 #pragma mark - 顶部导航栏（Phase 12.3 + 12.4）
@@ -716,9 +650,9 @@ static const NSInteger kMaxConcurrentWallConnections = 6;
 /// 应用当前视图模式：宫格显示 collectionView，列表显示 tableView。
 - (void)applyViewMode {
     BOOL grid = (self.viewMode == 0);
-    // 切离宫格视图时停止所有 RFB 连接；切回宫格时恢复可见连接
+    // 切离宫格视图时停止所有 hash 轮询；切回宫格时恢复可见轮询
     if (!grid) {
-        [self stopAllWallConnections];
+        [self stopAllWallPolls];
     }
     self.collectionView.hidden = !grid;
     self.tableView.hidden = grid;
@@ -728,7 +662,7 @@ static const NSInteger kMaxConcurrentWallConnections = 6;
         [self.tableView reloadData];
     }
     if (grid) {
-        [self startVisibleWallConnections];
+        [self startVisibleWallPolls];
     }
 }
 
@@ -760,11 +694,6 @@ static const NSInteger kMaxConcurrentWallConnections = 6;
     [rc addTarget:self action:@selector(refreshDevices) forControlEvents:UIControlEventValueChanged];
     self.collectionView.refreshControl = rc;
 
-    // 双指捏合调整列数（2/3/4/6）
-    UIPinchGestureRecognizer *pinch = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(pinchHandler:)];
-    pinch.delegate = self;
-    [self.collectionView addGestureRecognizer:pinch];
-
     // 长按进入多选模式
     UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(longPressHandler:)];
     longPress.delegate = self;
@@ -772,32 +701,7 @@ static const NSInteger kMaxConcurrentWallConnections = 6;
     [self.collectionView addGestureRecognizer:longPress];
 }
 
-/// 双指捏合手势处理：捏合放大（减少列数）或捏合缩小（增加列数），在 [2,3,4,6] 间切换。
-/// @param pinch 捏合手势
-- (void)pinchHandler:(UIPinchGestureRecognizer *)pinch {
-    if (pinch.state != UIGestureRecognizerStateEnded) return;
-    NSArray<NSNumber *> *steps = @[@2, @3, @4, @6];
-    NSInteger idx = [steps indexOfObjectPassingTest:^BOOL(NSNumber *n, NSUInteger i, BOOL *stop) {
-        return n.integerValue == self.gridColumns;
-    }];
-    if (idx == NSNotFound) idx = 0;
-    if (pinch.scale > 1.1 && idx > 0) {
-        // 放大 → 卡片更大 → 列数减少
-        self.gridColumns = steps[idx - 1].integerValue;
-    } else if (pinch.scale < 0.9 && idx < (NSInteger)steps.count - 1) {
-        // 缩小 → 卡片更小 → 列数增加
-        self.gridColumns = steps[idx + 1].integerValue;
-    } else {
-        return;
-    }
-    [self.defaults setInteger:self.gridColumns forKey:kGridColumnsKey];
-    [self.defaults synchronize];
-    @try {
-        [self.collectionView.collectionViewLayout invalidateLayout];
-    } @catch (NSException *e) {
-        NSLog(@"[TVNC] layout invalidate failed: %@ %@", e.name, e.reason);
-    }
-}
+#pragma mark - 长按多选
 
 /// 长按手势处理：进入多选模式并勾选当前卡片。
 /// @param gr 长按手势
@@ -954,10 +858,18 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
                                    : @"网关返回异常\n请检查网关是否运行";
     } else {
         [self.devices removeAllObjects];
+        // 去重：同一网关返回的设备按 id 仅保留一条（防止重复上报/重复注册产生重复卡片）
+        NSMutableSet<NSString *> *seenIds = [NSMutableSet set];
         for (NSDictionary *d in list) {
             if (![d isKindOfClass:[NSDictionary class]]) continue;
-            if (self.selfDeviceId.length && [d[@"id"] isEqualToString:self.selfDeviceId]) continue;
-            if ([d[@"source"] isEqualToString:@"register"] || d[@"host"]) {
+            NSString *did = d[@"id"];
+            if (!did.length) continue;                      // 无 id 的设备不展示
+            if ([seenIds containsObject:did]) continue;     // 去重
+            [seenIds addObject:did];
+            // 排除自身设备：本机不显示在卡片墙，避免出现"控制自己"
+            if (self.selfDeviceId.length && [did isEqualToString:self.selfDeviceId]) continue;
+            // 仅保留隧道设备（source=register）；直连 host 设备模式已废弃，不再展示
+            if ([d[@"source"] isEqualToString:@"register"]) {
                 [self.devices addObject:d];
             }
         }
@@ -1027,27 +939,26 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
     return CGSizeMake(w, floor(w * ratio));
 }
 
-#pragma mark - 卡片墙 RFB 连接生命周期（Phase 12.1 WKWebView 改造）
+#pragma mark - 卡片墙画面获取（hash 门控 + 变化拉图，与 Web 端对齐；无 RFB 持久连接）
 
-/// 宫格 cell 即将显示：根据可见性启动 RFB 连接（受最大并发数限制）。
+/// 宫格 cell 即将显示：按可见性启动 hash 轮询（受最大并发数限制）。
 - (void)collectionView:(UICollectionView *)collectionView
        willDisplayCell:(UICollectionViewCell *)cell
     forItemAtIndexPath:(NSIndexPath *)ip {
-    if (self.viewMode != 0) return; // 仅宫格视图使用 RFB
+    if (self.viewMode != 0) return; // 仅宫格视图使用
     if (![cell isKindOfClass:[TVNCDeviceCardCell class]]) return;
-    TVNCDeviceCardCell *dc = (TVNCDeviceCardCell *)cell;
     NSDictionary *d = self.shown[ip.row];
     if (![d[@"online"] boolValue]) return;
+    NSString *deviceId = d[@"id"];
+    if (!deviceId.length) return;
+    if (self.wallTimers[deviceId]) return; // 已在轮询
     // 受最大并发数限制：已满则不启动（显示缓存帧）
     if (self.activeWallConnections >= kMaxConcurrentWallConnections) return;
     self.activeWallConnections++;
-    [dc startWallWebViewWithDevice:d
-                       gatewayHost:[self.defaults stringForKey:@"GatewayHost"]
-                       gatewayPort:[self gatewayPort]
-                             token:[self.defaults stringForKey:@"GatewayToken"]];
+    [self startWallPollForDevice:d];
 }
 
-/// 宫格 cell 移出屏幕：断开 RFB 连接，缓存最后帧供不可见占位。
+/// 宫格 cell 移出屏幕：停止 hash 轮询，缓存最后帧供不可见占位。
 - (void)collectionView:(UICollectionView *)collectionView
      didEndDisplayingCell:(UICollectionViewCell *)cell
       forItemAtIndexPath:(NSIndexPath *)ip {
@@ -1055,15 +966,14 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
     TVNCDeviceCardCell *dc = (TVNCDeviceCardCell *)cell;
     NSDictionary *d = (ip.row < self.shown.count) ? self.shown[ip.row] : nil;
     [self cacheSnapshotForCardCell:dc deviceId:d[@"id"]];
-    [dc stopWallWebView];
+    [self stopWallPollForDevice:d[@"id"]];
     if (self.activeWallConnections > 0) self.activeWallConnections--;
 }
 
-/// 列表 cell 即将显示：宫格视图不触发（列表仅显示缓存帧，不建立 RFB）。
+/// 列表 cell 即将显示：列表视图走缓存帧，无需 hash 轮询。
 - (void)tableView:(UITableView *)tableView
        willDisplayCell:(UITableViewCell *)cell
      forRowAtIndexPath:(NSIndexPath *)indexPath {
-    // 列表视图走缓存帧，无需实时 RFB
 }
 
 /// 列表 cell 移出屏幕：缓存最后帧。
@@ -1080,12 +990,12 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
     }
 }
 
-/// 缓存宫格卡片 wallWebView 的最后帧到 snapshotCache。
+/// 缓存宫格卡片最后帧到 snapshotCache（不可见 cell 的占位帧）。
 /// @param cell     卡片 cell
 /// @param deviceId 设备 ID（用于缓存 key）
 - (void)cacheSnapshotForCardCell:(TVNCDeviceCardCell *)cell deviceId:(NSString *)deviceId {
     if (!deviceId.length) return;
-    UIImage *img = [self snapshotFromView:cell.wallWebView];
+    UIImage *img = [self snapshotFromView:cell.thumbView];
     if (img) self.snapshotCache[deviceId] = img;
 }
 
@@ -1100,39 +1010,174 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
     }];
 }
 
-/// 停止所有可见 cell 的 RFB 连接（视图消失时调用）。
-- (void)stopAllWallConnections {
-    NSArray *visible = [self.collectionView indexPathsForVisibleItems];
-    for (NSIndexPath *ip in visible) {
-        UICollectionViewCell *cell = [self.collectionView cellForItemAtIndexPath:ip];
-        if ([cell isKindOfClass:[TVNCDeviceCardCell class]]) {
-            TVNCDeviceCardCell *dc = (TVNCDeviceCardCell *)cell;
-            NSDictionary *d = (ip.row < self.shown.count) ? self.shown[ip.row] : nil;
-            [self cacheSnapshotForCardCell:dc deviceId:d[@"id"]];
-            [dc stopWallWebView];
-        }
+/// 停止所有 hash 轮询（视图消失时调用）。
+- (void)stopAllWallPolls {
+    for (NSString *deviceId in [self.wallTimers allKeys]) {
+        [self stopWallPollForDevice:deviceId];
     }
     self.activeWallConnections = 0;
 }
 
-/// 恢复可见宫格 cell 的 RFB 连接（页面重新出现时调用，受最大并发数限制）。
-- (void)startVisibleWallConnections {
-    if (self.viewMode != 0) return; // 仅宫格视图使用 RFB
+/// 恢复可见宫格 cell 的 hash 轮询（页面重新出现时调用，受最大并发数限制）。
+- (void)startVisibleWallPolls {
+    if (self.viewMode != 0) return; // 仅宫格视图使用
     NSArray *visible = [self.collectionView indexPathsForVisibleItems];
     for (NSIndexPath *ip in visible) {
         if (self.activeWallConnections >= kMaxConcurrentWallConnections) break;
         UICollectionViewCell *cell = [self.collectionView cellForItemAtIndexPath:ip];
         if (![cell isKindOfClass:[TVNCDeviceCardCell class]]) continue;
-        TVNCDeviceCardCell *dc = (TVNCDeviceCardCell *)cell;
         NSDictionary *d = (ip.row < self.shown.count) ? self.shown[ip.row] : nil;
         if (!d || ![d[@"online"] boolValue]) continue;
-        if (dc.wallWebView.state == TRWallTileStateConnected ||
-            dc.wallWebView.state == TRWallTileStateConnecting) continue; // 已连接/连接中跳过
+        NSString *deviceId = d[@"id"];
+        if (!deviceId.length || self.wallTimers[deviceId]) continue; // 已在轮询
         self.activeWallConnections++;
-        [dc startWallWebViewWithDevice:d
-                           gatewayHost:[self.defaults stringForKey:@"GatewayHost"]
-                           gatewayPort:[self gatewayPort]
-                                 token:[self.defaults stringForKey:@"GatewayToken"]];
+        [self startWallPollForDevice:d];
+    }
+}
+
+#pragma mark - hash 门控轮询（screen.hash → 变化才 screenshot）
+
+/// 为设备启动 hash 门控轮询（NSTimer，间隔取设备 ThumbInterval 配置，默认 5s；启动即先拉一帧）。
+/// @param d 设备数据字典
+- (void)startWallPollForDevice:(NSDictionary *)d {
+    NSString *deviceId = d[@"id"];
+    if (!deviceId.length || self.wallTimers[deviceId]) return; // 幂等
+    NSTimeInterval iv = 5.0;
+    id cfg = d[@"configs"];
+    if ([cfg isKindOfClass:[NSDictionary class]]) {
+        id tiv = cfg[@"ThumbInterval"];
+        if (tiv) iv = [tiv doubleValue];
+    }
+    iv = MAX(1.0, iv);
+    NSTimer *timer = [NSTimer timerWithTimeInterval:iv target:self selector:@selector(wallPollTick:) userInfo:deviceId repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
+    self.wallTimers[deviceId] = timer;
+    [timer fire]; // 立即先拉一帧
+}
+
+/// 停止设备的 hash 门控轮询并清除 hash 缓存。
+/// @param deviceId 设备 ID
+- (void)stopWallPollForDevice:(NSString *)deviceId {
+    if (!deviceId.length) return;
+    NSTimer *t = self.wallTimers[deviceId];
+    if (t) {
+        [t invalidate];
+        [self.wallTimers removeObjectForKey:deviceId];
+    }
+    [self.wallHashCache removeObjectForKey:deviceId];
+    [self.wallBusy removeObjectForKey:deviceId];
+}
+
+/// hash 轮询 tick：先取轻量 screen.hash（0.3ms 级 pHash，CPU<1%），
+/// 与上次相同则整轮跳过（静止时零图片流量）；变化才拉 screenshot 渲染新帧。
+/// @param timer 轮询定时器（userInfo = deviceId）
+- (void)wallPollTick:(NSTimer *)timer {
+    NSString *deviceId = timer.userInfo;
+    if (!deviceId.length) return;
+    if ([self.wallBusy[deviceId] boolValue]) return; // 防重入：上次请求未完成跳过本轮
+    self.wallBusy[deviceId] = @YES;
+    __weak typeof(self) weakSelf = self;
+    [self invokeScreenHashForDevice:deviceId completion:^(NSString *hash) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.wallBusy[deviceId] = @NO;
+        if (!hash.length) return; // 取 hash 失败（设备必具备该能力，不静默降级），下一轮重试
+        NSString *last = strongSelf.wallHashCache[deviceId];
+        if (last && [last isEqualToString:hash]) return; // 画面未变化，保持缓存帧
+        strongSelf.wallHashCache[deviceId] = hash;
+        [strongSelf invokeScreenShotForDevice:deviceId completion:^(UIImage *img, NSDictionary *ack) {
+            if (!strongSelf || !img) return;
+            strongSelf.snapshotCache[deviceId] = img;
+            [strongSelf updateVisibleCellForDevice:deviceId image:img];
+        }];
+    }];
+}
+
+/// 通过网关 invoke API 取设备当前屏幕 pHash。
+/// @param deviceId   设备 ID
+/// @param completion 完成回调（main queue），hash 为 16 字符 hex；失败为 nil
+- (void)invokeScreenHashForDevice:(NSString *)deviceId completion:(void (^)(NSString *hash))completion {
+    [self invokeCapAck:@"screen.hash" params:@{} forDevice:deviceId completion:^(NSDictionary *ack) {
+        NSString *hash = ack[@"hash"];
+        if (completion) completion([hash isKindOfClass:[NSString class]] ? hash : nil);
+    }];
+}
+
+/// 通过网关 invoke API 拉取设备截图并解码为 UIImage。
+/// @param deviceId   设备 ID
+/// @param completion 完成回调（main queue），img 为截图；失败为 nil
+- (void)invokeScreenShotForDevice:(NSString *)deviceId completion:(void (^)(UIImage *img, NSDictionary *ack))completion {
+    [self invokeCapAck:@"screenshot" params:@{} forDevice:deviceId completion:^(NSDictionary *ack) {
+        NSString *b64 = ack[@"image"] ?: ack[@"base64"];
+        UIImage *img = nil;
+        if ([b64 isKindOfClass:[NSString class]] && b64.length) {
+            NSData *data = [[NSData alloc] initWithBase64EncodedString:b64 options:0];
+            if (data) img = [UIImage imageWithData:data];
+        }
+        if (completion) completion(img, ack);
+    }];
+}
+
+/// 通用网关 invoke 调用（带 ack 回调，main queue）。
+/// @param capId      能力 ID
+/// @param params     调用参数
+/// @param deviceId   设备 ID
+/// @param completion 完成回调（main queue），ack 为网关返回；失败为 nil
+- (void)invokeCapAck:(NSString *)capId params:(NSDictionary *)params forDevice:(NSString *)deviceId
+          completion:(void (^)(NSDictionary *ack))completion {
+    if (!capId.length || !deviceId.length) { if (completion) completion(nil); return; }
+    NSString *host = [self.defaults stringForKey:@"GatewayHost"];
+    if (!host.length) { if (completion) completion(nil); return; }
+    NSInteger consolePort = [self gatewayPort];
+    NSString *urlStr = [NSString stringWithFormat:@"http://%@:%ld/api/devices/%@/invoke",
+                        host, (long)consolePort, deviceId];
+    NSURL *url = [NSURL URLWithString:urlStr];
+    if (!url) { if (completion) completion(nil); return; }
+    NSDictionary *body = @{@"cap": capId, @"params": params ?: @{}};
+    NSData *bodyData = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
+    if (!bodyData) { if (completion) completion(nil); return; }
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    req.HTTPMethod = @"POST";
+    [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    NSString *token = [self.defaults stringForKey:@"GatewayToken"];
+    if (token.length) {
+        [req setValue:[NSString stringWithFormat:@"Bearer %@", token] forHTTPHeaderField:@"Authorization"];
+    }
+    req.HTTPBody = bodyData;
+    req.timeoutInterval = 6.0;
+    __weak typeof(self) weakSelf = self;
+    [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+        typeof(self) strongSelf = weakSelf;
+        NSDictionary *ack = nil;
+        if (!err && data) {
+            NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            if ([json isKindOfClass:[NSDictionary class]]) {
+                id a = json[@"ack"];
+                if ([a isKindOfClass:[NSDictionary class]]) ack = a;
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (strongSelf && completion) completion(ack);
+        });
+    }] resume];
+}
+
+/// 更新可见 cell 的画面为最新截图（仅宫格视图）。
+/// @param deviceId 设备 ID
+/// @param img      最新截图
+- (void)updateVisibleCellForDevice:(NSString *)deviceId image:(UIImage *)img {
+    NSArray *visible = [self.collectionView indexPathsForVisibleItems];
+    for (NSIndexPath *ip in visible) {
+        NSDictionary *d = (ip.row < self.shown.count) ? self.shown[ip.row] : nil;
+        if (![d[@"id"] isEqualToString:deviceId]) continue;
+        UICollectionViewCell *cell = [self.collectionView cellForItemAtIndexPath:ip];
+        if ([cell isKindOfClass:[TVNCDeviceCardCell class]]) {
+            TVNCDeviceCardCell *dc = (TVNCDeviceCardCell *)cell;
+            dc.thumbView.image = img;
+            dc.thumbView.hidden = NO;
+            dc.screenIcon.hidden = YES;
+        }
+        break;
     }
 }
 
@@ -1205,28 +1250,21 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
 #pragma mark - 进入大屏操控
 
 /// 推入 TVNCViewerViewController 进行大屏操控。
-/// register 来源设备走网关隧道，其余走直连。
+/// 仅隧道设备（source=register）可控制：经网关隧道建立 RFB，直连 host 模式已废弃。
 /// @param d 设备数据字典
 - (void)pushViewerForDevice:(NSDictionary *)d {
     NSString *deviceId = d[@"id"];
     NSString *source = d[@"source"];
-    if ([source isEqualToString:@"register"] && deviceId.length) {
-        NSString *gatewayHost = [self.defaults stringForKey:@"GatewayHost"];
-        NSInteger consolePort = [self.defaults integerForKey:@"TVNCConsolePort"];
-        if (consolePort <= 0) consolePort = kConsolePort;
-        if (gatewayHost.length) {
-            TVNCViewerViewController *viewer = [[TVNCViewerViewController alloc]
-                initWithHost:gatewayHost port:(int)consolePort name:d[@"name"] ?: deviceId];
-            viewer.useGatewayTunnel = YES;
-            viewer.deviceId = deviceId;
-            [self.navigationController pushViewController:viewer animated:YES];
-            return;
-        }
-    }
-    NSString *host = d[@"host"];
-    if (!host.length) return;
-    int port = (int)([d[@"port"] integerValue] ?: 5901);
-    TVNCViewerViewController *viewer = [[TVNCViewerViewController alloc] initWithHost:host port:port name:d[@"name"] ?: host];
+    // 直连 host 设备模式已废弃：须为 register 来源且有 deviceId
+    if (![source isEqualToString:@"register"] || !deviceId.length) return;
+    NSString *gatewayHost = [self.defaults stringForKey:@"GatewayHost"];
+    if (!gatewayHost.length) return;
+    NSInteger consolePort = [self.defaults integerForKey:@"TVNCConsolePort"];
+    if (consolePort <= 0) consolePort = kConsolePort;
+    TVNCViewerViewController *viewer = [[TVNCViewerViewController alloc]
+        initWithHost:gatewayHost port:(int)consolePort name:d[@"name"] ?: deviceId];
+    viewer.useGatewayTunnel = YES;
+    viewer.deviceId = deviceId;
     [self.navigationController pushViewController:viewer animated:YES];
 }
 

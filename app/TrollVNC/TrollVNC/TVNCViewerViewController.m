@@ -20,15 +20,6 @@
 
 #import <WebKit/WebKit.h>
 
-// X11 keysym 常量，供 sendKey 通过 JS 桥接下发到 noVNC
-static const uint32_t kKeysymHome                = 0xff50;      // Home 键
-static const uint32_t kKeysymPowerOff            = 0x1008ff2a;  // 电源键（XF86XK_PowerOff）
-static const uint32_t kKeysymAudioRaiseVolume    = 0x1008ff13;  // 音量+
-static const uint32_t kKeysymAudioLowerVolume    = 0x1008ff11;  // 音量−
-static const uint32_t kKeysymAudioMute           = 0x1008ff12;  // 静音
-static const uint32_t kKeysymMonBrightnessUp     = 0x1008ff03;  // 亮度+
-static const uint32_t kKeysymMonBrightnessDown   = 0x1008ff05;  // 亮度−
-
 // JS 桥接消息名（与 ViewerWeb.html 中 webkit.messageHandlers.viewer 对应）
 static NSString *const kViewerBridgeName = @"viewer";
 
@@ -217,33 +208,24 @@ static NSString *const kViewerBridgeName = @"viewer";
 }
 
 /**
- * 构造 WebSocket URL。
- * Phase 7 隧道模式：useGatewayTunnel=YES 时返回 ws://<网关>:<8080>/ws/vnc/<deviceId>?token=<可选>，
- *   经网关桥接到设备 18181 隧道（跨网络访问）；此时 host/port 为网关地址与 HTTP 端口。
- * 直连模式：按 TrollVNC 约定 RFB 5901 → WS 5801（端口差 100），路径 /websockify（局域网）。
+ * 构造 WebSocket URL（纯隧道，直连模式已废弃）。
+ * 经网关 /ws/vnc/:deviceId 桥接隧道（跨网络）；host=网关地址、port=网关 HTTP 端口。
  * @return WebSocket URL 字符串
  */
 - (NSString *)buildWebSocketURL {
-    // Phase 7：隧道模式通过网关 8080 /ws/vnc/:deviceId 桥接隧道（跨网络）
-    if (self.useGatewayTunnel && self.deviceId.length) {
-        NSString *url = [NSString stringWithFormat:@"ws://%@:%d/ws/vnc/%@",
-                         self.host, self.port, self.deviceId];
-        // 附加 token（如有配置，网关 wss 层校验）
-        NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
-        NSString *token = [defaults stringForKey:@"GatewayToken"];
-        if (token.length) {
-            NSString *encoded = [token stringByAddingPercentEncodingWithAllowedCharacters:
-                [NSCharacterSet URLQueryAllowedCharacterSet]];
-            url = [url stringByAppendingFormat:@"?token=%@", encoded];
-        }
-        return url;
+    // 纯隧道：经网关 8080 /ws/vnc/:deviceId 桥接（直连 host 模式已废弃）
+    NSAssert(self.useGatewayTunnel && self.deviceId.length, @"Viewer 仅支持隧道模式（直连已废弃）");
+    NSString *url = [NSString stringWithFormat:@"ws://%@:%d/ws/vnc/%@",
+                     self.host, self.port, self.deviceId];
+    // 附加 token（如有配置，网关 wss 层校验）
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSString *token = [defaults stringForKey:@"GatewayToken"];
+    if (token.length) {
+        NSString *encoded = [token stringByAddingPercentEncodingWithAllowedCharacters:
+            [NSCharacterSet URLQueryAllowedCharacterSet]];
+        url = [url stringByAppendingFormat:@"?token=%@", encoded];
     }
-    // 直连模式：RFB 端口 5901 → WebSocket 端口 5801（端口差 100），路径 /websockify
-    int wsPort = self.port;
-    if (wsPort >= 5900) {
-        wsPort = wsPort - 100; // 5901(RFB) → 5801(WS)
-    }
-    return [NSString stringWithFormat:@"ws://%@:%d/websockify", self.host, wsPort];
+    return url;
 }
 
 /**
@@ -273,27 +255,6 @@ static NSString *const kViewerBridgeName = @"viewer";
  */
 - (void)disconnectJS {
     [self evalJS:@"disconnect()"];
-}
-
-/**
- * 调用 JS 端 sendKey(keysym, down) 下发一个按键事件。
- * @param keysym X11 keysym 值
- * @param down  YES=按下，NO=释放
- */
-- (void)sendKey:(uint32_t)keysym down:(BOOL)down {
-    NSString *js = [NSString stringWithFormat:@"sendKey(%lu, %@)",
-                    (unsigned long)keysym, down ? @"true" : @"false"];
-    [self evalJS:js];
-}
-
-/**
- * 调用 JS 端 pasteText(text) 向远端写入文本（剪贴板/文本输入）。
- * @param text 待发送文本
- */
-- (void)pasteText:(NSString *)text {
-    NSString *arg = [self jsStringLiteral:text];
-    NSString *js = [NSString stringWithFormat:@"pasteText(%@)", arg];
-    [self evalJS:js];
 }
 
 /**
@@ -452,15 +413,10 @@ static NSString *const kViewerBridgeName = @"viewer";
 
 /**
  * 通过网关 API GET /api/devices/:id/caps 拉取设备能力元数据（capMetadata）。
- * 隧道模式（useGatewayTunnel=YES）下使用 self.host/self.port/deviceId 调用网关；
- * 直连模式下无法调用网关 API，回调以 nil 返回（菜单仅显示"结束控制"）。
+ * 纯隧道：使用 self.host/self.port/deviceId 调用网关（直连模式已废弃）。
  * @param completion 完成回调（main queue），caps 为 capMetadata 数组；失败时为 nil
  */
 - (void)fetchCapMetadata:(void (^)(NSArray<NSDictionary *> *caps))completion {
-    if (!self.useGatewayTunnel || !self.deviceId.length) {
-        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); });
-        return;
-    }
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
     NSString *token = [defaults stringForKey:@"GatewayToken"];
     NSString *urlStr = [NSString stringWithFormat:@"http://%@:%d/api/devices/%@/caps",
@@ -565,25 +521,14 @@ static NSString *const kViewerBridgeName = @"viewer";
 }
 
 /**
- * 调用设备能力。隧道模式走网关 invoke API（POST /api/devices/:id/invoke）；
- * 直连模式回退到本地 keysym 映射（仅已知 hid 能力）或键盘/剪贴板专用流程。
- * @param capId  能力 ID（如 home/power/volup/keyboard/clipboard.paste 等）
- * @param params 调用参数字典（可为 nil，目前未使用）
+ * 调用设备能力（纯隧道，直连模式已废弃）。
+ * 一律走网关 invoke API（POST /api/devices/:id/invoke）。
+ * @param capId  能力 ID（如 home/power/volup/type.text/clipboard.set 等）
+ * @param params 调用参数字典（可为 nil）
  */
 - (void)invokeCap:(NSString *)capId params:(NSDictionary *)params {
     if (!capId.length) return;
-    // 直连模式回退：基于 capId 做本地分发
-    if (!self.useGatewayTunnel || !self.deviceId.length) {
-        NSInteger tag = [self tagForCapId:capId];
-        if (tag >= 1 && tag <= 7) {
-            [self performOp:tag]; // 已知 hid 能力，本地 sendKey
-            return;
-        }
-        if (tag == 8) { [self keyboardTapped]; return; }
-        if (tag == 9) { [self clipboardTapped]; return; }
-        return; // 未知能力，直连模式无法处理
-    }
-    // 隧道模式：走网关 invoke API
+    // 纯隧道：走网关 invoke API
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
     NSString *token = [defaults stringForKey:@"GatewayToken"];
     NSString *urlStr = [NSString stringWithFormat:@"http://%@:%d/api/devices/%@/invoke",
@@ -626,155 +571,6 @@ static NSString *const kViewerBridgeName = @"viewer";
     if (!category.length) return @"其他";
     NSString *t = mapping[category];
     return t.length ? t : category;
-}
-
-/**
- * 能力 ID → 本地整型 tag 映射（用于直连模式回退到 performOp/keyboardTapped/clipboardTapped）。
- * @param capId 能力 ID（home/power/volup/voldn/mute/briup/bridn/keyboard/clipboard）
- * @return 整型 tag（1~9）；未知返回 0
- */
-- (NSInteger)tagForCapId:(NSString *)capId {
-    if (!capId.length) return 0;
-    static NSDictionary *m = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        m = @{
-            @"home":      @1,
-            @"power":     @2,
-            @"volup":     @3,
-            @"voldn":     @4,
-            @"mute":      @5,
-            @"briup":     @6,
-            @"bridn":     @7,
-            @"keyboard":  @8,
-            @"clipboard": @9,
-            @"clipboard.paste": @9,
-        };
-    });
-    NSNumber *n = m[capId];
-    return n ? n.integerValue : 0;
-}
-
-/**
- * 能力菜单点击分发：键盘/剪贴板走专用流程，其余通过 sendKey 下发按键。
- * @param tag 操作标签（见 tagForOp:）
- */
-- (void)menuOpTapped:(NSInteger)tag {
-    if (tag == 8) { // 键盘
-        [self keyboardTapped];
-        return;
-    }
-    if (tag == 9) { // 剪贴板
-        [self clipboardTapped];
-        return;
-    }
-    [self performOp:tag];
-}
-
-#pragma mark - 操作映射
-
-/**
- * 将操作标识字符串映射为整型 tag，便于菜单 handler 引用。
- * @param op 操作标识字符串
- * @return 整型 tag（1~9）
- */
-- (NSInteger)tagForOp:(NSString *)op {
-    if ([op isEqualToString:@"home"]) return 1;
-    if ([op isEqualToString:@"power"]) return 2;
-    if ([op isEqualToString:@"volup"]) return 3;
-    if ([op isEqualToString:@"voldn"]) return 4;
-    if ([op isEqualToString:@"mute"]) return 5;
-    if ([op isEqualToString:@"briup"]) return 6;
-    if ([op isEqualToString:@"bridn"]) return 7;
-    if ([op isEqualToString:@"keyboard"]) return 8;
-    if ([op isEqualToString:@"clipboard"]) return 9;
-    return 0;
-}
-
-/**
- * 根据操作 tag 下发对应 keysym 按键（按下+释放），通过 JS 桥接注入 noVNC。
- * @param op 操作 tag（1=Home 2=电源 3=音量+ 4=音量− 5=静音 6=亮度+ 7=亮度−）
- */
-- (void)performOp:(NSInteger)op {
-    uint32_t keysym = 0;
-    switch (op) {
-        case 1: keysym = kKeysymHome; break;                // Home
-        case 2: keysym = kKeysymPowerOff; break;            // 电源
-        case 3: keysym = kKeysymAudioRaiseVolume; break;    // 音量+
-        case 4: keysym = kKeysymAudioLowerVolume; break;    // 音量−
-        case 5: keysym = kKeysymAudioMute; break;           // 静音
-        case 6: keysym = kKeysymMonBrightnessUp; break;     // 亮度+
-        case 7: keysym = kKeysymMonBrightnessDown; break;   // 亮度−
-        default: return;
-    }
-    [self sendKey:keysym down:YES];
-    [self sendKey:keysym down:NO];
-}
-
-/**
- * 弹出文本输入框，将用户输入作为按键序列发送到设备（v1 仅 ASCII 可见字符）。
- */
-- (void)keyboardTapped {
-    if (!self.connected) return;
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"发送按键文本"
-                                                               message:@"将文本作为按键发送到设备"
-                                                        preferredStyle:UIAlertControllerStyleAlert];
-    [a addTextFieldWithConfigurationHandler:^(UITextField *tf) {
-        tf.placeholder = @"输入要发送的文本";
-        tf.autocorrectionType = UITextAutocorrectionTypeNo;
-    }];
-    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    __weak typeof(self) weakSelf = self;
-    [a addAction:[UIAlertAction actionWithTitle:@"发送" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
-        NSString *text = a.textFields.firstObject.text ?: @"";
-        [weakSelf sendText:text];
-    }]];
-    [self presentViewController:a animated:YES completion:nil];
-}
-
-/**
- * 将文本逐字符作为按键发送（ASCII 0x20~0x7E），通过 JS pasteText 下发。
- * @param text 待发送文本
- */
-- (void)sendText:(NSString *)text {
-    if (!text.length) return;
-    NSMutableString *ascii = [NSMutableString string];
-    for (NSUInteger i = 0; i < text.length; i++) {
-        unichar ch = [text characterAtIndex:i];
-        if (ch < 0x20 || ch > 0x7E) continue; // v1 仅 ASCII 可见字符
-        [ascii appendFormat:@"%C", ch];
-    }
-    if (!ascii.length) return;
-    [self pasteText:ascii];
-}
-
-/**
- * 弹出文本输入框，将内容写入设备剪贴板。
- */
-- (void)clipboardTapped {
-    if (!self.connected) return;
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"写入设备剪贴板"
-                                                               message:nil
-                                                        preferredStyle:UIAlertControllerStyleAlert];
-    [a addTextFieldWithConfigurationHandler:^(UITextField *tf) {
-        tf.placeholder = @"粘贴要写入设备的内容";
-    }];
-    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    __weak typeof(self) weakSelf = self;
-    [a addAction:[UIAlertAction actionWithTitle:@"写入" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
-        NSString *text = a.textFields.firstObject.text ?: @"";
-        [weakSelf sendClipboard:text];
-    }]];
-    [self presentViewController:a animated:YES completion:nil];
-}
-
-/**
- * 通过 JS pasteText 将文本写入远端剪贴板（noVNC clipboardPasteFrom）。
- * @param text 待写入剪贴板的文本
- */
-- (void)sendClipboard:(NSString *)text {
-    if (!text.length) return;
-    [self pasteText:text];
 }
 
 #pragma mark - 资源清理

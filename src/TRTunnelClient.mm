@@ -78,8 +78,6 @@ static void TRTunnelLog(const char *fmt, ...) {
     size_t _frameBufCap;
     BOOL _restartLocal;
     int _localFd;
-    BOOL _startRequested;
-    BOOL _stopRequested;   // rfb.restart: reset local RFB conn (new control session re-handshake)
 }
 @end
 
@@ -366,22 +364,8 @@ static void TRTunnelLog(const char *fmt, ...) {
     time_t lastPing = time(NULL);
 
     while (_started && ![[NSThread currentThread] isCancelled]) {
-        // rfb.stop -> close local
-        if (_localFd >= 0 && _stopRequested) {
-            _stopRequested = NO;
-            TRTunnelLog("rfb.stop: closing local RFB fd=%d", _localFd);
-            close(_localFd);
-            _localFd = -1;
-        }
-        // rfb.start -> connect local 5901 (fresh RFB session, handshake bytes reach viewer live)
-        if (_localFd < 0 && _startRequested) {
-            _startRequested = NO;
-            _localFd = [self _connectLocalRfb];
-            TRTunnelLog("rfb.start: local connect -> fd=%d", _localFd);
-            if (_localFd < 0) {
-                TRTunnelLog("rfb.start: local connect failed, keep standby");
-            }
-        }
+        // rfb.start/stop 已在命令解析处同步执行（关旧 fd/connect 5901 并回 ack），
+        // 此处直接进入 select，避免标记驱动的延迟与重复重建。
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(tunnelFd, &rfds);
@@ -422,7 +406,14 @@ static void TRTunnelLog(const char *fmt, ...) {
         // local 5901 readable
         if (_localFd >= 0 && FD_ISSET(_localFd, &rfds)) {
             ssize_t n = read(_localFd, readBuf, kReadBufSize);
-            if (n <= 0) { free(readBuf); return NO; }
+            if (n <= 0) {
+                // 本地 5901 连接关闭（rfb.stop 或服务端断开）是正常事件：
+                // 仅清理本地 fd 回 standby，绝不能退出隧道（否则隧道重连导致网关 4002 tunnel closed）
+                close(_localFd);
+                _localFd = -1;
+                TRTunnelLog("local RFB closed (EOF), stay standby");
+                continue;
+            }
             TRTunnelLog("local readable, read %zd bytes, sending FT_DATA", n);
             if (![self _writeFrame:tunnelFd type:kFrameTypeData data:readBuf length:(size_t)n]) {
                 TRTunnelLog("FT_DATA write to tunnel failed");
@@ -529,10 +520,16 @@ static void TRTunnelLog(const char *fmt, ...) {
                     [NSData dataWithBytes:payload length:payloadLen] options:0 error:NULL];
                 if (![cmd isKindOfClass:[NSDictionary class]]) break;
                 if ([[cmd objectForKey:@"cmd"] isEqualToString:@"rfb.start"]) {
-                    // control session starts: connect local 5901 now (fresh RFB handshake)
-                    _startRequested = YES;
+                    // 全新 RFB 会话：同步重建本地 5901 连接（先关旧 fd 再 connect），
+                    // ack 携带 connect 结果——网关据此精确放行缓冲的握手字节（替代固定窗口），
+                    // connect 失败时网关显式报错，避免 noVNC 静默黑屏。
+                    if (_localFd >= 0) { close(_localFd); _localFd = -1; }
+                    _localFd = [self _connectLocalRfb];
+                    BOOL ok = (_localFd >= 0);
+                    TRTunnelLog("rfb.start: local connect -> fd=%d", _localFd);
+                    if (!ok) { TVLog(@"[tunnel] rfb.start: local connect failed, keep standby"); }
                     NSDictionary *ack0 = @{ @"type": @"ack", @"cmd": @"rfb.start",
-                                            @"id": cmd[@"id"] ?: [NSNull null], @"ok": @YES };
+                                            @"id": cmd[@"id"] ?: [NSNull null], @"ok": @(ok) };
                     NSData *ackJson0 = [NSJSONSerialization dataWithJSONObject:ack0 options:0 error:NULL];
                     if (ackJson0) {
                         [self _writeFrame:tunnelFd type:kFrameTypeCmdAck data:ackJson0.bytes length:ackJson0.length];
@@ -540,8 +537,12 @@ static void TRTunnelLog(const char *fmt, ...) {
                     break;
                 }
                 if ([[cmd objectForKey:@"cmd"] isEqualToString:@"rfb.stop"]) {
-                    // control session ends: close local 5901, back to standby
-                    _stopRequested = YES;
+                    // 会话结束：同步关闭本地 5901 连接，回 standby
+                    if (_localFd >= 0) {
+                        TRTunnelLog("rfb.stop: closing local RFB fd=%d", _localFd);
+                        close(_localFd);
+                        _localFd = -1;
+                    }
                     NSDictionary *ack0 = @{ @"type": @"ack", @"cmd": @"rfb.stop",
                                             @"id": cmd[@"id"] ?: [NSNull null], @"ok": @YES };
                     NSData *ackJson0 = [NSJSONSerialization dataWithJSONObject:ack0 options:0 error:NULL];

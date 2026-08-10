@@ -60,8 +60,6 @@
 		CC91EF972E6EF165002F5B2A /* TVNCListItemsController.m in Sources */ = {isa = PBXBuildFile; fileRef = CC91EF962E6EF165002F5B2A /* TVNCListItemsController.m */; };
 		7A1B2C3D4E5F60718293A4B7 /* TRMainTabBarController.m in Sources */ = {isa = PBXBuildFile; fileRef = 7A1B2C3D4E5F60718293A4B6 /* TRMainTabBarController.m */; };
 		7A1B2C3D4E5F60718293A4BA /* TVNCDeviceListCell.m in Sources */ = {isa = PBXBuildFile; fileRef = 7A1B2C3D4E5F60718293A4B9 /* TVNCDeviceListCell.m */; };
-		8A1B2C3D4E5F60718293A4C4 /* TRWallTileWebView.m in Sources */ = {isa = PBXBuildFile; fileRef = 8A1B2C3D4E5F60718293A4C2 /* TRWallTileWebView.m */; };
-		8A1B2C3D4E5F60718293A4C5 /* WallTileWeb.html in Resources */ = {isa = PBXBuildFile; fileRef = 8A1B2C3D4E5F60718293A4C3 /* WallTileWeb.html */; };
 		8A1B2C3D4E5F60718293A4D2 /* ViewerWeb.html in Resources */ = {isa = PBXBuildFile; fileRef = 8A1B2C3D4E5F60718293A4D1 /* ViewerWeb.html */; };
 /* End PBXBuildFile section */
 
@@ -128,9 +126,6 @@
 		7A1B2C3D4E5F60718293A4B6 /* TRMainTabBarController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TRMainTabBarController.m; sourceTree = "<group>"; };
 		7A1B2C3D4E5F60718293A4B8 /* TVNCDeviceListCell.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCDeviceListCell.h; sourceTree = "<group>"; };
 		7A1B2C3D4E5F60718293A4B9 /* TVNCDeviceListCell.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCDeviceListCell.m; sourceTree = "<group>"; };
-		8A1B2C3D4E5F60718293A4C1 /* TRWallTileWebView.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TRWallTileWebView.h; sourceTree = "<group>"; };
-		8A1B2C3D4E5F60718293A4C2 /* TRWallTileWebView.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TRWallTileWebView.m; sourceTree = "<group>"; };
-		8A1B2C3D4E5F60718293A4C3 /* WallTileWeb.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = WallTileWeb.html; sourceTree = "<group>"; };
 		8A1B2C3D4E5F60718293A4D1 /* ViewerWeb.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = ViewerWeb.html; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -238,9 +233,6 @@
 				7A1B2C3D4E5F60718293A4B6 /* TRMainTabBarController.m */,
 				7A1B2C3D4E5F60718293A4B8 /* TVNCDeviceListCell.h */,
 				7A1B2C3D4E5F60718293A4B9 /* TVNCDeviceListCell.m */,
-				8A1B2C3D4E5F60718293A4C1 /* TRWallTileWebView.h */,
-				8A1B2C3D4E5F60718293A4C2 /* TRWallTileWebView.m */,
-				8A1B2C3D4E5F60718293A4C3 /* WallTileWeb.html */,
 				8A1B2C3D4E5F60718293A4D1 /* ViewerWeb.html */,
 				BC3BE7A3EF98EE26C2106D02 /* TVNCSettingFormController.h */,
 				74F2A8E3A494173C94F687E3 /* TVNCSettingFormController.m */,
@@ -352,7 +344,6 @@
 				615360AA2E65BEFD00643E64 /* Main.storyboard in Resources */,
 				61C756CE2E65BE6F00B2B371 /* LaunchScreen.storyboard in Resources */,
 				61C756B82E65BDAC00B2B371 /* Assets.xcassets in Resources */,
-				8A1B2C3D4E5F60718293A4C5 /* WallTileWeb.html in Resources */,
 				8A1B2C3D4E5F60718293A4D2 /* ViewerWeb.html in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -364,7 +355,6 @@
 				615401C32EB1180C009FDD6F /* Main.storyboard in Resources */,
 				615401C42EB1180C009FDD6F /* LaunchScreen.storyboard in Resources */,
 				615401C52EB1180C009FDD6F /* Assets.xcassets in Resources */,
-				8A1B2C3D4E5F60718293A4C5 /* WallTileWeb.html in Resources */,
 				8A1B2C3D4E5F60718293A4D2 /* ViewerWeb.html in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -433,7 +423,6 @@
 				A8688B8057413A0EA6A00EC6 /* TVNCControllerViewController.m in Sources */,
 				7A1B2C3D4E5F60718293A4B7 /* TRMainTabBarController.m in Sources */,
 				7A1B2C3D4E5F60718293A4BA /* TVNCDeviceListCell.m in Sources */,
-				8A1B2C3D4E5F60718293A4C4 /* TRWallTileWebView.m in Sources */,
 				00342A5D6EC8F5E00BAD63A9 /* TVNCSettingFormController.m in Sources */,
 				CC483147D1560AF441749858 /* TVNCSettingsViewController.m in Sources */,
 				071F88A7AFEA63ED0B6FC348 /* TVNCViewerViewController.m in Sources */,
