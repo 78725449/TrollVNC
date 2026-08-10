@@ -38,6 +38,8 @@
 		61C756C12E65BDAC00B2B371 /* SceneDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = 61C756AA2E65BDAC00B2B371 /* SceneDelegate.m */; };
 		61C756C22E65BDAC00B2B371 /* StripedTextTableViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = 61C756AC2E65BDAC00B2B371 /* StripedTextTableViewController.m */; };
 		0A1B2C3D4E5F60718293A4C3 /* TRTask.m in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F60718293A4C2 /* TRTask.m */; };
+		0A1B2C3D4E5F60718293A4C6 /* SASLPluginStubs.c in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F60718293A4C5 /* SASLPluginStubs.c */; };
+		0A1B2C3D4E5F60718293A4C7 /* SASLPluginStubs.c in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F60718293A4C5 /* SASLPluginStubs.c */; };
 		61C756C32E65BDAC00B2B371 /* TaskProcess+ObjC.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61C756AD2E65BDAC00B2B371 /* TaskProcess+ObjC.swift */; };
 		61C756C42E65BDAC00B2B371 /* TVNCHotspotManager.m in Sources */ = {isa = PBXBuildFile; fileRef = 61C756B02E65BDAC00B2B371 /* TVNCHotspotManager.m */; };
 		61C756C52E65BDAC00B2B371 /* TVNCRootListController.m in Sources */ = {isa = PBXBuildFile; fileRef = 61C756B22E65BDAC00B2B371 /* TVNCRootListController.m */; };
@@ -83,6 +85,7 @@
 		61C756AC2E65BDAC00B2B371 /* StripedTextTableViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = StripedTextTableViewController.m; sourceTree = "<group>"; };
 		0A1B2C3D4E5F60718293A4C1 /* TRTask.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TRTask.h; sourceTree = "<group>"; };
 		0A1B2C3D4E5F60718293A4C2 /* TRTask.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TRTask.m; sourceTree = "<group>"; };
+		0A1B2C3D4E5F60718293A4C5 /* SASLPluginStubs.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = SASLPluginStubs.c; sourceTree = "<group>"; };
 		61C756AD2E65BDAC00B2B371 /* TaskProcess+ObjC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TaskProcess+ObjC.swift"; sourceTree = "<group>"; };
 		61C756AE2E65BDAC00B2B371 /* TrollVNC.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TrollVNC.entitlements; sourceTree = "<group>"; };
 		61C756AF2E65BDAC00B2B371 /* TVNCHotspotManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCHotspotManager.h; sourceTree = "<group>"; };
@@ -214,6 +217,7 @@
 				61C756AC2E65BDAC00B2B371 /* StripedTextTableViewController.m */,
 				0A1B2C3D4E5F60718293A4C1 /* TRTask.h */,
 				0A1B2C3D4E5F60718293A4C2 /* TRTask.m */,
+				0A1B2C3D4E5F60718293A4C5 /* SASLPluginStubs.c */,
 				61C756AD2E65BDAC00B2B371 /* TaskProcess+ObjC.swift */,
 				CC91EF912E6CA6C5002F5B2A /* TVNCClientCell.h */,
 				CC91EF922E6CA6C5002F5B2A /* TVNCClientCell.m */,
@@ -405,6 +409,7 @@
 				CC8061802E74967500B1AA3E /* DpkgVersion.m in Sources */,
 				61C756C22E65BDAC00B2B371 /* StripedTextTableViewController.m in Sources */,
 				0A1B2C3D4E5F60718293A4C3 /* TRTask.m in Sources */,
+				0A1B2C3D4E5F60718293A4C6 /* SASLPluginStubs.c in Sources */,
 				61C756C42E65BDAC00B2B371 /* TVNCHotspotManager.m in Sources */,
 				CC17D9BB2EC79DA1005C275A /* ZTSelfSignedCertificate.m in Sources */,
 				61C756C52E65BDAC00B2B371 /* TVNCRootListController.m in Sources */,
@@ -434,6 +439,7 @@
 				615401B52EB1180C009FDD6F /* DpkgVersion.m in Sources */,
 				615401B62EB1180C009FDD6F /* StripedTextTableViewController.m in Sources */,
 				0A1B2C3D4E5F60718293A4C4 /* TRTask.m in Sources */,
+				0A1B2C3D4E5F60718293A4C7 /* SASLPluginStubs.c in Sources */,
 				615401B82EB1180C009FDD6F /* TVNCHotspotManager.m in Sources */,
 				CC17D9BA2EC79DA1005C275A /* ZTSelfSignedCertificate.m in Sources */,
 				615401B92EB1180C009FDD6F /* TVNCRootListController.m in Sources */,
