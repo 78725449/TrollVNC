@@ -777,7 +777,7 @@ static UIImage *TVNCFetchThumbnailViaRFB(NSString *host, int port, NSTimeInterva
             UIButton *b = (UIButton *)v;
             BOOL on = (b.tag == self.viewMode);
             if (on) {
-                b.backgroundColor = TRPurpleColor().colorWithAlphaComponent(0.12);
+                b.backgroundColor = [TRPurpleColor() colorWithAlphaComponent:0.12];
                 b.tintColor = TRPurpleColor();
                 [b setTitleColor:TRPurpleColor() forState:UIControlStateNormal];
             } else {
@@ -1375,7 +1375,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
     }
     req.HTTPBody = bodyData;
     req.timeoutInterval = 6.0;
-    [[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:nil] resume];
+    [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:nil] resume];
 }
 
 #pragma mark - 批量配置流程（Phase 12.6）
