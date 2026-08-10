@@ -16,7 +16,7 @@
 */
 
 #import "TVNCServiceCoordinator.h"
-#import "TrollVNC-Swift.h"
+#import "TRTask.h"
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
