@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<!--
+  TrollVNC 卡片墙桥接页面（Phase 12.1 卡片墙 WKWebView 改造）
+  通过 noVNC rfb.js 以 WebSocket 连接远端 VNC，画面渲染到 #screen 容器；
+  仅用于卡片墙实时画面渲染，viewOnly 只读，不发送任何输入事件。
+  与原生侧（TRWallTileWebView）通过以下桥接交互：
+    OC → JS：调用 window.connect(url) / disconnect() / setFrameRate(ms)
+    JS → OC：通过 webkit.messageHandlers.wallTile.postMessage({type, detail}) 上报状态
+  noVNC 资源约定位于同级 ./novnc/ 目录（由打包流程复制到 IPA bundle）。
+-->
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>WallTile</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background: #000;
+            overflow: hidden;
+        }
+        #screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #000;
+        }
+        /* 帧率节流时隐藏 canvas 以降低带宽消耗 */
+        #screen.throttled canvas {
+            display: none !important;
+        }
+    </style>
+
+    <script type="module">
+        // noVNC 资源经打包流程复制到 bundle 的 webclients/ 子目录（见 before-package.sh）
+        import RFB from './webclients/novnc/core/rfb.js';
+
+        let rfb = null;
+        let connecting = false;
+        let frameInterval = 0;     // 帧率节流间隔（ms），0=不限制
+        let frameTimer = null;     // 节流定时器
+        let canvasVisible = true;  // 当前 canvas 可见性
+
+        function report(type, detail) {
+            try {
+                window.webkit.messageHandlers.wallTile.postMessage({ type: type, detail: detail || {} });
+            } catch (e) {}
+        }
+
+        /**
+         * 节流控制：按 frameInterval 定时切换 canvas 可见性。
+         * 间隔内隐藏 canvas 以降低带宽消耗，间隔到期后短暂显示刷新画面。
+         */
+        function updateThrottle() {
+            if (frameTimer) {
+                clearInterval(frameTimer);
+                frameTimer = null;
+            }
+            const screen = document.getElementById('screen');
+            if (frameInterval > 0) {
+                // 启动节流：先显示一次，然后隐藏，等待指定间隔后再次显示
+                screen.classList.remove('throttled');
+                canvasVisible = true;
+                frameTimer = setInterval(function () {
+                    if (canvasVisible) {
+                        screen.classList.add('throttled');
+                        canvasVisible = false;
+                    } else {
+                        screen.classList.remove('throttled');
+                        canvasVisible = true;
+                        // 短暂显示后再次隐藏
+                        setTimeout(function () {
+                            if (frameTimer) {
+                                screen.classList.add('throttled');
+                                canvasVisible = false;
+                            }
+                        }, 100);
+                    }
+                }, frameInterval);
+            } else {
+                screen.classList.remove('throttled');
+                canvasVisible = true;
+            }
+        }
+
+        /**
+         * 建立到 VNC 服务端的 WebSocket 连接（由 OC 注入调用）。
+         * @param {string} url WebSocket 地址
+         */
+        window.connect = function (url) {
+            if (connecting) return;
+            connecting = true;
+            if (rfb) {
+                try { rfb.disconnect(); } catch (e) {}
+                rfb = null;
+            }
+            try {
+                rfb = new RFB(document.getElementById('screen'), url, {});
+                rfb.scaleViewport = true;
+                rfb.resizeSession = false;
+                rfb.viewOnly = true;       // 卡片墙只读，不发送输入
+                rfb.showDotCursor = false;
+                rfb.addEventListener('connect', function () {
+                    connecting = false;
+                    report('connected');
+                });
+                rfb.addEventListener('disconnect', function (e) {
+                    connecting = false;
+                    rfb = null;
+                    report('disconnected', { clean: e.detail.clean });
+                });
+                rfb.addEventListener('securityfailure', function (e) {
+                    connecting = false;
+                    report('failed', { reason: 'security' });
+                });
+            } catch (err) {
+                connecting = false;
+                rfb = null;
+                report('failed', { reason: String(err) });
+            }
+        };
+
+        /**
+         * 主动断开当前连接（由 OC 注入调用）。
+         */
+        window.disconnect = function () {
+            if (rfb) {
+                try { rfb.disconnect(); } catch (e) {}
+                rfb = null;
+            }
+            connecting = false;
+            if (frameTimer) {
+                clearInterval(frameTimer);
+                frameTimer = null;
+            }
+            document.getElementById('screen').classList.remove('throttled');
+        };
+
+        /**
+         * 设置帧率节流间隔（由 OC 注入调用）。
+         * @param {number} ms 间隔毫秒数，0=不限制（实时渲染）
+         */
+        window.setFrameRate = function (ms) {
+            frameInterval = ms > 0 ? ms : 0;
+            updateThrottle();
+        };
+
+        report('ready');
+    </script>
+</head>
+
+<body>
+    <div id="screen">
+        <!-- 远端画面 canvas 将由 noVNC 注入到此容器 -->
+    </div>
+</body>
+</html>

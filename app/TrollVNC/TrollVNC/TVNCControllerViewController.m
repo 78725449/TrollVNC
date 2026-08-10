@@ -18,8 +18,7 @@
 #import "TVNCControllerViewController.h"
 #import "TVNCViewerViewController.h"
 #import "TVNCDeviceListCell.h"
-
-#import <rfb/rfbclient.h>
+#import "TRWallTileWebView.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -39,150 +38,10 @@ static UIColor *TRPurpleColor(void) {
     return [UIColor colorWithRed:(107.0 / 255.0) green:(78.0 / 255.0) blue:(255.0 / 255.0) alpha:1.0];
 }
 
-#pragma mark - TCP 可达性预检（避免 RFB 连接长时间阻塞）
+#pragma mark - 卡片墙 RFB 连接最大并发数
 
-/**
- * 快速 TCP 可达性检查（非阻塞 connect + select 超时）。
- * @param host    目标主机 IPv4 字符串
- * @param port    目标端口
- * @param timeout 超时秒数
- * @return YES 可达；NO 不可达或出错
- */
-static BOOL TVNCTCPReachable(NSString *host, int port, NSTimeInterval timeout) {
-    if (!host.length || port <= 0) return NO;
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) return NO;
-    // 设为非阻塞，配合 select 实现超时控制
-    int flags = fcntl(sock, F_GETFL, 0);
-    fcntl(sock, F_SETFL, flags | O_NONBLOCK);
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons((uint16_t)port);
-    if (inet_pton(AF_INET, host.UTF8String, &addr.sin_addr) != 1) {
-        close(sock);
-        return NO;
-    }
-    int cr = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
-    if (cr < 0 && errno != EINPROGRESS) {
-        close(sock);
-        return NO;
-    }
-    fd_set fdset;
-    FD_ZERO(&fdset);
-    FD_SET(sock, &fdset);
-    struct timeval tv;
-    tv.tv_sec = (time_t)timeout;
-    tv.tv_usec = (suseconds_t)((timeout - (time_t)timeout) * 1000000);
-    int res = select(sock + 1, NULL, &fdset, NULL, &tv);
-    close(sock);
-    return res > 0;
-}
-
-#pragma mark - RFB 首帧抓取（Phase 12.1：恢复 libvncclient 完整连接获取首帧缩略图）
-
-/**
- * libvncclient 帧缓冲分配回调：按服务器返回的宽高分配 frameBuffer。
- * @param client RFB 客户端
- * @return TRUE 分配成功；FALSE 分配失败
- */
-static rfbBool TVNCThumbMallocFrameBuffer(rfbClient *client) {
-    if (client->width <= 0 || client->height <= 0) return FALSE;
-    uint64_t size = (uint64_t)client->width * (uint64_t)client->height * 4;
-    if (client->frameBuffer) {
-        free(client->frameBuffer);
-        client->frameBuffer = NULL;
-    }
-    client->frameBuffer = (uint8_t *)malloc((size_t)size);
-    return client->frameBuffer ? TRUE : FALSE;
-}
-
-/**
- * 将 libvncclient frameBuffer（32 位 BGRA）转换为 UIImage。
- * @param client 已获取首帧的 RFB 客户端
- * @return 转换后的 UIImage；失败返回 nil
- */
-static UIImage *TVNCImageFromFrameBuffer(rfbClient *client) {
-    int w = client->width, h = client->height;
-    if (w <= 0 || h <= 0 || !client->frameBuffer) return nil;
-    int bpp = client->format.bitsPerPixel / 8;
-    if (bpp != 4) return nil; // 仅支持 32 位像素格式
-    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-    CGContextRef ctx = CGBitmapContextCreate(client->frameBuffer, w, h, 8, w * 4, cs,
-                                             kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst);
-    CGImageRef imgRef = ctx ? CGBitmapContextCreateImage(ctx) : NULL;
-    UIImage *img = imgRef ? [UIImage imageWithCGImage:imgRef] : nil;
-    if (imgRef) CGImageRelease(imgRef);
-    if (ctx) CGContextRelease(ctx);
-    if (cs) CGColorSpaceRelease(cs);
-    return img;
-}
-
-/**
- * 通过完整 RFB 连接获取首帧缩略图（旧方法 createRfb 的简化版）。
- * 流程：连接 RFB → 请求非增量首帧 → 等待并处理消息 → 转换 UIImage → 断开连接。
- * @param host       目标主机
- * @param port       RFB 端口（如 5901）
- * @param timeoutSec 等待首帧超时（秒）
- * @return 首帧 UIImage；失败返回 nil
- */
-static UIImage *TVNCFetchThumbnailViaRFB(NSString *host, int port, NSTimeInterval timeoutSec) {
-    if (!host.length || port <= 0) return nil;
-    // 预检 TCP 可达性，避免 RFB 连接长时间阻塞串行队列
-    if (!TVNCTCPReachable(host, port, 2.0)) return nil;
-
-    rfbClient *client = rfbGetClient(8, 3, 4); // 8 位/样本，3 样本，4 字节/像素
-    if (!client) return nil;
-    client->MallocFrameBuffer = TVNCThumbMallocFrameBuffer;
-    client->appData.viewOnly = TRUE;
-    client->appData.shareDesktop = TRUE;
-    client->appData.encodingsString = "raw"; // 缩略图用最简编码，降低 CPU 开销
-    client->appData.forceTrueColour = TRUE;
-    client->appData.requestedDepth = 24;
-    client->serverHost = strdup(host.UTF8String);
-    client->serverPort = port;
-
-    int argc = 1;
-    char *argv0 = strdup("thumb");
-    char *argv[] = { argv0, NULL };
-    rfbBool ok = rfbInitClient(client, &argc, argv);
-    free(argv0);
-    if (!ok) {
-        // rfbInitClient 失败时内部已调用 rfbClientCleanup
-        return nil;
-    }
-
-    // 请求非增量全屏更新（首帧）
-    SendFramebufferUpdateRequest(client, 0, 0, client->width, client->height, FALSE);
-
-    UIImage *result = nil;
-    time_t deadline = time(NULL) + (time_t)timeoutSec;
-    while (time(NULL) < deadline) {
-        int n = WaitForMessage(client, 200000); // 200ms 轮询
-        if (n < 0) break;                       // 连接异常
-        if (n == 0) {
-            if (client->frameBuffer && client->width > 0) {
-                // 已有帧数据即可退出
-                result = TVNCImageFromFrameBuffer(client);
-                if (result) break;
-            }
-            continue;
-        }
-        if (!HandleRFBServerMessage(client)) break;
-        if (client->frameBuffer && client->width > 0 && client->height > 0) {
-            result = TVNCImageFromFrameBuffer(client);
-            if (result) break;
-        }
-    }
-
-    if (client->frameBuffer) {
-        free(client->frameBuffer);
-        client->frameBuffer = NULL;
-    }
-    rfbClientCleanup(client);
-    return result;
-}
+/// 卡片墙最大同时 RFB 连接数
+static const NSInteger kMaxConcurrentWallConnections = 6;
 
 #pragma mark - 设备卡片 Cell（宫格视图，删除 tagLabel，新增多选 checkbox）
 
@@ -190,6 +49,7 @@ static UIImage *TVNCFetchThumbnailViaRFB(NSString *host, int port, NSTimeInterva
 @property(nonatomic, strong) UIView *screenArea;
 @property(nonatomic, strong) UIImageView *screenIcon;
 @property(nonatomic, strong) UIImageView *thumbView;
+@property(nonatomic, strong) TRWallTileWebView *wallWebView; ///< 卡片墙实时 RFB 画面（Phase 12.1 WKWebView 改造）
 @property(nonatomic, strong) UILabel *nameLabel;
 @property(nonatomic, strong) UILabel *offlineLabel; ///< 离线设备"最后在线时间"提示
 @property(nonatomic, strong) UIView *dotView;
@@ -201,6 +61,19 @@ static UIImage *TVNCFetchThumbnailViaRFB(NSString *host, int port, NSTimeInterva
 @property(nonatomic, copy, nullable) void (^moreTapped)(TVNCDeviceCardCell *cell);
 - (void)configureWithDevice:(NSDictionary *)d thumbnail:(UIImage *)thumb
                    multiMode:(BOOL)multiMode selected:(BOOL)selected;
+/**
+ * 启动卡片墙 RFB 连接（隧道优先，直连回退）。
+ * @param d 设备数据字典
+ * @param gatewayHost 网关地址
+ * @param gatewayPort 网关 HTTP 端口
+ * @param token 认证 token
+ */
+- (void)startWallWebViewWithDevice:(NSDictionary *)d
+                       gatewayHost:(NSString *)gatewayHost
+                       gatewayPort:(NSInteger)gatewayPort
+                             token:(NSString *)token;
+/// 断开卡片墙 RFB 连接并缓存最后帧。
+- (void)stopWallWebView;
 @end
 
 @implementation TVNCDeviceCardCell
@@ -238,6 +111,12 @@ static UIImage *TVNCFetchThumbnailViaRFB(NSString *host, int port, NSTimeInterva
         _thumbView.backgroundColor = [UIColor blackColor];
         _thumbView.hidden = YES;
         [_screenArea addSubview:_thumbView];
+
+        // 卡片墙实时 RFB 画面（Phase 12.1 WKWebView 改造）：默认隐藏，start 后显示
+        _wallWebView = [[TRWallTileWebView alloc] initWithFrame:CGRectZero];
+        _wallWebView.translatesAutoresizingMaskIntoConstraints = NO;
+        _wallWebView.hidden = YES;
+        [_screenArea addSubview:_wallWebView];
 
         _offlineLabel = [[UILabel alloc] init];
         _offlineLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -292,6 +171,11 @@ static UIImage *TVNCFetchThumbnailViaRFB(NSString *host, int port, NSTimeInterva
             [_thumbView.leadingAnchor constraintEqualToAnchor:_screenArea.leadingAnchor],
             [_thumbView.trailingAnchor constraintEqualToAnchor:_screenArea.trailingAnchor],
             [_thumbView.bottomAnchor constraintEqualToAnchor:_screenArea.bottomAnchor],
+
+            [_wallWebView.topAnchor constraintEqualToAnchor:_screenArea.topAnchor],
+            [_wallWebView.leadingAnchor constraintEqualToAnchor:_screenArea.leadingAnchor],
+            [_wallWebView.trailingAnchor constraintEqualToAnchor:_screenArea.trailingAnchor],
+            [_wallWebView.bottomAnchor constraintEqualToAnchor:_screenArea.bottomAnchor],
 
             [_offlineLabel.leadingAnchor constraintEqualToAnchor:_screenArea.leadingAnchor],
             [_offlineLabel.trailingAnchor constraintEqualToAnchor:_screenArea.trailingAnchor],
@@ -348,13 +232,19 @@ static UIImage *TVNCFetchThumbnailViaRFB(NSString *host, int port, NSTimeInterva
         self.offlineLabel.hidden = NO;
         self.thumbView.alpha = 0.4;
         self.screenIcon.alpha = 0.4;
+        [self.wallWebView stop];
+        self.wallWebView.hidden = YES;
     } else {
         self.offlineLabel.hidden = YES;
         self.thumbView.alpha = 1.0;
         self.screenIcon.alpha = 1.0;
     }
 
-    if (thumb) {
+    // 实时 RFB 画面：wallWebView 已启动连接时优先显示；其后显示缓存帧 thumbView；否则占位图标
+    if (online && !self.wallWebView.hidden && self.wallWebView.state != TRWallTileStateFailed) {
+        self.thumbView.hidden = YES;
+        self.screenIcon.hidden = YES;
+    } else if (thumb) {
         self.thumbView.image = thumb;
         self.thumbView.hidden = NO;
         self.screenIcon.hidden = YES;
@@ -366,6 +256,53 @@ static UIImage *TVNCFetchThumbnailViaRFB(NSString *host, int port, NSTimeInterva
     // 多选 checkbox
     self.checkBox.hidden = !multiMode;
     self.checkBox.selected = selected;
+}
+
+/// 启动卡片墙 RFB 连接（隧道优先，直连回退）。
+/// @param d 设备数据字典
+/// @param gatewayHost 网关地址
+/// @param gatewayPort 网关 HTTP 端口
+/// @param token 认证 token
+- (void)startWallWebViewWithDevice:(NSDictionary *)d
+                       gatewayHost:(NSString *)gatewayHost
+                       gatewayPort:(NSInteger)gatewayPort
+                             token:(NSString *)token {
+    if (![d[@"online"] boolValue]) return; // 离线设备不建立 RFB
+    if (self.wallWebView.state == TRWallTileStateConnected ||
+        self.wallWebView.state == TRWallTileStateConnecting) return; // 已连接/连接中不重复
+    NSString *deviceId = d[@"id"];
+    NSString *host = d[@"host"];
+    int port = (int)([d[@"port"] integerValue] ?: 5901);
+    __weak typeof(self) weakSelf = self;
+    self.wallWebView.onStateChange = ^(TRWallTileState state) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (state == TRWallTileStateConnected) {
+            strongSelf.wallWebView.hidden = NO;
+            strongSelf.thumbView.hidden = YES;
+            strongSelf.screenIcon.hidden = YES;
+        } else if (state == TRWallTileStateFailed) {
+            strongSelf.wallWebView.hidden = YES;
+        }
+    };
+    [self.wallWebView startWithDeviceId:deviceId
+                            gatewayHost:gatewayHost
+                            gatewayPort:gatewayPort
+                                  token:token
+                                   host:host
+                                   port:port];
+}
+
+/// 断开卡片墙 RFB 连接并缓存最后帧。
+- (void)stopWallWebView {
+    [self.wallWebView stop];
+    self.wallWebView.hidden = YES;
+}
+
+/// cell 复用前清理：断开可能残留的 RFB 连接，防止跨设备画面串显。
+- (void)prepareForReuse {
+    [super prepareForReuse];
+    [self stopWallWebView];
 }
 
 @end
@@ -408,13 +345,9 @@ static UIImage *TVNCFetchThumbnailViaRFB(NSString *host, int port, NSTimeInterva
 @property(nonatomic, assign) BOOL multiMode;                    ///< 是否处于多选模式
 @property(nonatomic, strong) NSMutableSet<NSString *> *selectedDevices; ///< 已勾选设备 ID 集合
 
-// 缩略图缓存（deviceId -> @{img, ts}）
-@property(nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary *> *thumbnailCache;
-@property(nonatomic, strong) dispatch_queue_t thumbnailQueue;
-@property(nonatomic, strong) NSTimer *thumbnailTimer;
-@property(nonatomic, assign) BOOL stopThumbnails;
-/// 缩略图刷新间隔（秒），从设备 configs.ThumbInterval 读取，默认 5.0；作为 RFB 帧渲染频率控制
-@property(nonatomic, assign) NSTimeInterval thumbInterval;
+// 卡片墙 RFB 连接管理（Phase 12.1 WKWebView 改造）
+@property(nonatomic, strong) NSMutableDictionary<NSString *, UIImage *> *snapshotCache; ///< 不可见 cell 的缓存帧（deviceId→UIImage）
+@property(nonatomic, assign) NSInteger activeWallConnections;   ///< 当前活跃的卡片墙 RFB 连接数
 
 @end
 
@@ -429,8 +362,9 @@ static UIImage *TVNCFetchThumbnailViaRFB(NSString *host, int port, NSTimeInterva
         _selfDeviceId = [_defaults stringForKey:@"DeviceUUID"];
         _devices = [NSMutableArray array];
         _shown = [NSMutableArray array];
-        _thumbInterval = 5.0;
         _selectedDevices = [NSMutableSet set];
+        _snapshotCache = [NSMutableDictionary dictionary];
+        _activeWallConnections = 0;
 
         NSInteger vm = [_defaults integerForKey:kViewModeKey];
         _viewMode = (vm == 1) ? 1 : 0;
@@ -471,40 +405,24 @@ static UIImage *TVNCFetchThumbnailViaRFB(NSString *host, int port, NSTimeInterva
                                                                                            target:self
                                                                                            action:@selector(refreshDevices)];
 
-    // 缩略图：RFB 首帧串行抓帧 + 定时刷新
-    self.thumbnailCache = [NSMutableDictionary dictionary];
-    self.thumbnailQueue = dispatch_queue_create("com.82flex.trollvnc.thumbs", DISPATCH_QUEUE_SERIAL);
-    self.stopThumbnails = NO;
-    self.thumbnailTimer = [NSTimer scheduledTimerWithTimeInterval:self.thumbInterval
-                                                           target:self
-                                                         selector:@selector(refreshThumbnails)
-                                                         userInfo:nil
-                                                          repeats:YES];
+    // 卡片墙 RFB 连接：由 willDisplayCell/didEndDisplayingCell 按可见性管理
+    // 不再使用 libvncclient 首帧抓取 + 定时轮询
+
     [self applyViewMode];          // 切换初始视图可见性
     [self refreshDevices];
-    [self refreshThumbnails];
-    [self refreshThumbIntervalFromGateway];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    self.stopThumbnails = NO;
-    if (!self.thumbnailTimer) {
-        self.thumbnailTimer = [NSTimer scheduledTimerWithTimeInterval:self.thumbInterval
-                                                               target:self
-                                                             selector:@selector(refreshThumbnails)
-                                                             userInfo:nil
-                                                              repeats:YES];
-    }
     [self refreshDevices];
-    [self refreshThumbnails];
+    // 页面重新出现时恢复可见 cell 的 RFB 连接（viewWillDisappear 时已全部停止）
+    [self startVisibleWallConnections];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
-    self.stopThumbnails = YES;
-    [self.thumbnailTimer invalidate];
-    self.thumbnailTimer = nil;
+    // 停止所有可见 cell 的 RFB 连接
+    [self stopAllWallConnections];
 }
 
 #pragma mark - 顶部导航栏（Phase 12.3 + 12.4）
@@ -798,12 +716,19 @@ static UIImage *TVNCFetchThumbnailViaRFB(NSString *host, int port, NSTimeInterva
 /// 应用当前视图模式：宫格显示 collectionView，列表显示 tableView。
 - (void)applyViewMode {
     BOOL grid = (self.viewMode == 0);
+    // 切离宫格视图时停止所有 RFB 连接；切回宫格时恢复可见连接
+    if (!grid) {
+        [self stopAllWallConnections];
+    }
     self.collectionView.hidden = !grid;
     self.tableView.hidden = grid;
     if (grid) {
         [self.collectionView reloadData];
     } else {
         [self.tableView reloadData];
+    }
+    if (grid) {
+        [self startVisibleWallConnections];
     }
 }
 
@@ -1041,7 +966,6 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
         }
     }
     [self applyFilter];
-    [self refreshThumbnails];
 }
 
 /// 过滤生成 shown 列表并刷新双视图与空态。
@@ -1076,7 +1000,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
                            cellForItemAtIndexPath:(NSIndexPath *)ip {
     TVNCDeviceCardCell *cell = [collectionView dequeueReusableCellWithReuseIdentifier:@"card" forIndexPath:ip];
     NSDictionary *d = self.shown[ip.row];
-    UIImage *thumb = self.thumbnailCache[d[@"id"]][@"img"];
+    UIImage *thumb = self.snapshotCache[d[@"id"]]; // 使用缓存帧（不可见 cell 的最后帧）
     NSString *did = d[@"id"];
     BOOL selected = did.length && [self.selectedDevices containsObject:did];
     [cell configureWithDevice:d thumbnail:thumb multiMode:self.multiMode selected:selected];
@@ -1101,6 +1025,123 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
     // 竖屏比例（默认）：宽高比 9:16
     CGFloat ratio = 16.0 / 9.0;
     return CGSizeMake(w, floor(w * ratio));
+}
+
+#pragma mark - 卡片墙 RFB 连接生命周期（Phase 12.1 WKWebView 改造）
+
+/// 宫格 cell 即将显示：根据可见性启动 RFB 连接（受最大并发数限制）。
+- (void)collectionView:(UICollectionView *)collectionView
+       willDisplayCell:(UICollectionViewCell *)cell
+    forItemAtIndexPath:(NSIndexPath *)ip {
+    if (self.viewMode != 0) return; // 仅宫格视图使用 RFB
+    if (![cell isKindOfClass:[TVNCDeviceCardCell class]]) return;
+    TVNCDeviceCardCell *dc = (TVNCDeviceCardCell *)cell;
+    NSDictionary *d = self.shown[ip.row];
+    if (![d[@"online"] boolValue]) return;
+    // 受最大并发数限制：已满则不启动（显示缓存帧）
+    if (self.activeWallConnections >= kMaxConcurrentWallConnections) return;
+    self.activeWallConnections++;
+    [dc startWallWebViewWithDevice:d
+                       gatewayHost:[self.defaults stringForKey:@"GatewayHost"]
+                       gatewayPort:[self gatewayPort]
+                             token:[self.defaults stringForKey:@"GatewayToken"]];
+}
+
+/// 宫格 cell 移出屏幕：断开 RFB 连接，缓存最后帧供不可见占位。
+- (void)collectionView:(UICollectionView *)collectionView
+     didEndDisplayingCell:(UICollectionViewCell *)cell
+      forItemAtIndexPath:(NSIndexPath *)ip {
+    if (![cell isKindOfClass:[TVNCDeviceCardCell class]]) return;
+    TVNCDeviceCardCell *dc = (TVNCDeviceCardCell *)cell;
+    NSDictionary *d = (ip.row < self.shown.count) ? self.shown[ip.row] : nil;
+    [self cacheSnapshotForCardCell:dc deviceId:d[@"id"]];
+    [dc stopWallWebView];
+    if (self.activeWallConnections > 0) self.activeWallConnections--;
+}
+
+/// 列表 cell 即将显示：宫格视图不触发（列表仅显示缓存帧，不建立 RFB）。
+- (void)tableView:(UITableView *)tableView
+       willDisplayCell:(UITableViewCell *)cell
+     forRowAtIndexPath:(NSIndexPath *)indexPath {
+    // 列表视图走缓存帧，无需实时 RFB
+}
+
+/// 列表 cell 移出屏幕：缓存最后帧。
+- (void)tableView:(UITableView *)tableView
+     didEndDisplayingCell:(UITableViewCell *)cell
+       forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if ([cell isKindOfClass:[TVNCDeviceListCell class]]) {
+        TVNCDeviceListCell *lc = (TVNCDeviceListCell *)cell;
+        UIImage *img = [self snapshotFromView:lc.thumbView];
+        if (img && indexPath.row < self.shown.count) {
+            NSDictionary *d = self.shown[indexPath.row];
+            if (d[@"id"]) self.snapshotCache[d[@"id"]] = img;
+        }
+    }
+}
+
+/// 缓存宫格卡片 wallWebView 的最后帧到 snapshotCache。
+/// @param cell     卡片 cell
+/// @param deviceId 设备 ID（用于缓存 key）
+- (void)cacheSnapshotForCardCell:(TVNCDeviceCardCell *)cell deviceId:(NSString *)deviceId {
+    if (!deviceId.length) return;
+    UIImage *img = [self snapshotFromView:cell.wallWebView];
+    if (img) self.snapshotCache[deviceId] = img;
+}
+
+/// 从视图截取快照 UIImage。
+/// @param view 目标视图
+/// @return 快照图；失败返回 nil
+- (UIImage *)snapshotFromView:(UIView *)view {
+    if (!view || view.bounds.size.width <= 0 || view.bounds.size.height <= 0) return nil;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:view.bounds.size];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [view drawViewHierarchyInRect:view.bounds afterScreenUpdates:NO];
+    }];
+}
+
+/// 停止所有可见 cell 的 RFB 连接（视图消失时调用）。
+- (void)stopAllWallConnections {
+    NSArray *visible = [self.collectionView indexPathsForVisibleItems];
+    for (NSIndexPath *ip in visible) {
+        UICollectionViewCell *cell = [self.collectionView cellForItemAtIndexPath:ip];
+        if ([cell isKindOfClass:[TVNCDeviceCardCell class]]) {
+            TVNCDeviceCardCell *dc = (TVNCDeviceCardCell *)cell;
+            NSDictionary *d = (ip.row < self.shown.count) ? self.shown[ip.row] : nil;
+            [self cacheSnapshotForCardCell:dc deviceId:d[@"id"]];
+            [dc stopWallWebView];
+        }
+    }
+    self.activeWallConnections = 0;
+}
+
+/// 恢复可见宫格 cell 的 RFB 连接（页面重新出现时调用，受最大并发数限制）。
+- (void)startVisibleWallConnections {
+    if (self.viewMode != 0) return; // 仅宫格视图使用 RFB
+    NSArray *visible = [self.collectionView indexPathsForVisibleItems];
+    for (NSIndexPath *ip in visible) {
+        if (self.activeWallConnections >= kMaxConcurrentWallConnections) break;
+        UICollectionViewCell *cell = [self.collectionView cellForItemAtIndexPath:ip];
+        if (![cell isKindOfClass:[TVNCDeviceCardCell class]]) continue;
+        TVNCDeviceCardCell *dc = (TVNCDeviceCardCell *)cell;
+        NSDictionary *d = (ip.row < self.shown.count) ? self.shown[ip.row] : nil;
+        if (!d || ![d[@"online"] boolValue]) continue;
+        if (dc.wallWebView.state == TRWallTileStateConnected ||
+            dc.wallWebView.state == TRWallTileStateConnecting) continue; // 已连接/连接中跳过
+        self.activeWallConnections++;
+        [dc startWallWebViewWithDevice:d
+                           gatewayHost:[self.defaults stringForKey:@"GatewayHost"]
+                           gatewayPort:[self gatewayPort]
+                                 token:[self.defaults stringForKey:@"GatewayToken"]];
+    }
+}
+
+/// 从网关配置读取控制台 HTTP 端口。
+/// @return 网关 HTTP 端口
+- (NSInteger)gatewayPort {
+    NSInteger port = [self.defaults integerForKey:@"TVNCConsolePort"];
+    if (port <= 0) port = kConsolePort;
+    return port;
 }
 
 - (void)collectionView:(UICollectionView *)collectionView didSelectItemAtIndexPath:(NSIndexPath *)ip {
@@ -1132,7 +1173,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     TVNCDeviceListCell *cell = [tableView dequeueReusableCellWithIdentifier:@"listCell" forIndexPath:indexPath];
     NSDictionary *d = self.shown[indexPath.row];
-    UIImage *thumb = self.thumbnailCache[d[@"id"]][@"img"];
+    UIImage *thumb = self.snapshotCache[d[@"id"]]; // 使用缓存帧
     NSString *did = d[@"id"];
     BOOL selected = did.length && [self.selectedDevices containsObject:did];
     [cell configureWithDevice:d thumbnail:thumb selected:(self.multiMode && selected)];
@@ -1598,148 +1639,6 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
             }];
         });
     }];
-}
-
-#pragma mark - RFB 缩略图刷新（Phase 12.1）
-
-/// 刷新缩略图：遍历在线设备，用 RFB 连接获取首帧并缓存。
-/// 仅对有 host 字段的直连设备生效；网关注册设备无直连 RFB 端口，跳过。
-- (void)refreshThumbnails {
-    if (self.stopThumbnails || !self.view.window) return;
-    NSMutableArray *tasks = [NSMutableArray array];
-    NSDate *now = [NSDate date];
-    for (NSDictionary *d in self.shown) {
-        if (![d[@"online"] boolValue]) continue;
-        NSString *did = d[@"id"] ?: @"";
-        NSString *host = d[@"host"];
-        if (!did.length || !host.length) continue; // 无 host 的网关隧道设备跳过 RFB
-        NSDictionary *cached = self.thumbnailCache[did];
-        NSDate *ts = cached[@"ts"];
-        if (ts && [now timeIntervalSinceDate:ts] < 8.0) continue; // 8s 内不重复抓
-        [tasks addObject:d];
-    }
-    if (!tasks.count) return;
-
-    __weak typeof(self) weakSelf = self;
-    dispatch_async(self.thumbnailQueue, ^{
-        for (NSDictionary *d in tasks) {
-            if (weakSelf.stopThumbnails) break;
-            NSString *did = d[@"id"];
-            NSString *host = d[@"host"];
-            int port = (int)([d[@"port"] integerValue] ?: 5901);
-            UIImage *img = TVNCFetchThumbnailViaRFB(host, port, 5.0);
-            if (!img) continue;
-            dispatch_async(dispatch_get_main_queue(), ^{
-                typeof(self) strongSelf = weakSelf;
-                if (!strongSelf || strongSelf.stopThumbnails) return;
-                strongSelf.thumbnailCache[did] = @{ @"img" : img, @"ts" : [NSDate date] };
-                [strongSelf reloadCellForDeviceId:did];
-            });
-        }
-    });
-}
-
-/// 刷新指定设备的 cell（宫格与列表同步）。
-/// @param did 设备 ID
-- (void)reloadCellForDeviceId:(NSString *)did {
-    for (NSInteger i = 0; i < (NSInteger)self.shown.count; i++) {
-        if ([self.shown[i][@"id"] isEqualToString:did]) {
-            if (!self.collectionView.hidden) {
-                [self.collectionView reloadItemsAtIndexPaths:@[ [NSIndexPath indexPathForItem:i inSection:0] ]];
-            }
-            if (!self.tableView.hidden) {
-                [self.tableView reloadRowsAtIndexPaths:@[ [NSIndexPath indexPathForRow:i inSection:0] ]
-                                      withRowAnimation:UITableViewRowAnimationNone];
-            }
-            break;
-        }
-    }
-}
-
-#pragma mark - 缩略图刷新间隔（ThumbInterval 作为 RFB 帧渲染频率控制）
-
-/// 异步从网关拉取设备 configs.ThumbInterval，覆盖默认 5 秒间隔并按需重建定时器。
-- (void)refreshThumbIntervalFromGateway {
-    NSString *gatewayHost = [self.defaults stringForKey:@"GatewayHost"];
-    if (!gatewayHost.length) return;
-    NSString *refDeviceId = nil;
-    for (NSDictionary *d in self.shown) {
-        if ([d[@"online"] boolValue] && [d[@"id"] length]) {
-            refDeviceId = d[@"id"];
-            break;
-        }
-    }
-    if (!refDeviceId.length) return;
-
-    __weak typeof(self) weakSelf = self;
-    [self fetchThumbIntervalForDevice:refDeviceId completion:^(NSTimeInterval interval) {
-        typeof(self) strongSelf = weakSelf;
-        if (!strongSelf) return;
-        [strongSelf applyThumbInterval:interval];
-    }];
-}
-
-/// 通过网关 API GET /api/devices/:id/configs 获取设备配置，读取 ThumbInterval 值。
-/// @param deviceId   目标设备 ID
-/// @param completion 完成回调（main queue），interval 为 ThumbInterval；缺失或失败为 5.0
-- (void)fetchThumbIntervalForDevice:(NSString *)deviceId
-                         completion:(void (^)(NSTimeInterval interval))completion {
-    NSString *host = [self.defaults stringForKey:@"GatewayHost"];
-    if (!host.length || !deviceId.length) {
-        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(5.0); });
-        return;
-    }
-    NSInteger consolePort = [self.defaults integerForKey:@"TVNCConsolePort"];
-    if (consolePort <= 0) consolePort = kConsolePort;
-    NSString *urlStr = [NSString stringWithFormat:@"http://%@:%ld/api/devices/%@/configs",
-                       host, (long)consolePort, deviceId];
-    NSURL *url = [NSURL URLWithString:urlStr];
-    if (!url) {
-        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(5.0); });
-        return;
-    }
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-    req.HTTPMethod = @"GET";
-    req.timeoutInterval = 6.0;
-    NSString *token = [self.defaults stringForKey:@"GatewayToken"];
-    if (token.length) {
-        [req setValue:[NSString stringWithFormat:@"Bearer %@", token] forHTTPHeaderField:@"Authorization"];
-    }
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
-                                                                 completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
-        NSTimeInterval interval = 5.0;
-        if (!err && data) {
-            NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-            if ([json isKindOfClass:[NSDictionary class]]) {
-                NSDictionary *configs = json[@"configs"];
-                if ([configs isKindOfClass:[NSDictionary class]]) {
-                    id v = configs[@"ThumbInterval"];
-                    if ([v isKindOfClass:[NSNumber class]]) {
-                        NSTimeInterval parsed = [v doubleValue];
-                        if (parsed > 0 && parsed < 3600) interval = parsed;
-                    }
-                }
-            }
-        }
-        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(interval); });
-    }];
-    [task resume];
-}
-
-/// 应用新的缩略图刷新间隔：与当前值不同则销毁旧定时器并以新间隔重建。
-/// @param interval 新的刷新间隔（秒）
-- (void)applyThumbInterval:(NSTimeInterval)interval {
-    if (interval <= 0) return;
-    if (fabs(interval - self.thumbInterval) < 0.001) return;
-    self.thumbInterval = interval;
-    if (self.thumbnailTimer) {
-        [self.thumbnailTimer invalidate];
-        self.thumbnailTimer = [NSTimer scheduledTimerWithTimeInterval:self.thumbInterval
-                                                               target:self
-                                                             selector:@selector(refreshThumbnails)
-                                                             userInfo:nil
-                                                              repeats:YES];
-    }
 }
 
 @end

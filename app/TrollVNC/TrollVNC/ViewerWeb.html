@@ -38,7 +38,8 @@
 
     <script type="module">
         // 引入 noVNC RFB 核心（ES Module）
-        import RFB from './novnc/core/rfb.js';
+        // noVNC 资源经打包流程复制到 bundle 的 webclients/ 子目录（见 before-package.sh）
+        import RFB from './webclients/novnc/core/rfb.js';
 
         let rfb = null;          // 当前 RFB 连接实例
         let connecting = false;  // 是否正在建立连接（防止重复 connect）
