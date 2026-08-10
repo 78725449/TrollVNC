@@ -20,6 +20,7 @@
 #import <sys/select.h>
 #import <sys/time.h>
 #import <string.h>
+#import <stdlib.h>
 #import <time.h>
 #import <unistd.h>
 
@@ -121,11 +122,20 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 #pragma mark - 配置
 
 - (NSString *)_gatewayHost {
+    // ???????App spawn manager ?? sharedTaskEnvironment ???
+    // ?? manager ? root ?????? App ????? defaults suite?
+    const char *envHost = getenv("TVNC_GATEWAY_HOST");
+    if (envHost && envHost[0]) return [NSString stringWithUTF8String:envHost];
     NSString *host = [_defaults stringForKey:kGatewayHostKey];
     return host.length ? host : nil;
 }
 
 - (NSInteger)_gatewayPort {
+    const char *envPort = getenv("TVNC_GATEWAY_PORT");
+    if (envPort && envPort[0]) {
+        NSInteger p = atoi(envPort);
+        if (p > 0 && p < 65536) return p;
+    }
     NSInteger port = [_defaults integerForKey:kGatewayPortKey];
     return (port > 0 && port < 65536) ? port : 18081;
 }
@@ -135,6 +145,8 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
  * @return token 字符串，未配置返回 nil
  */
 - (NSString *)_gatewayToken {
+    const char *envTok = getenv("TVNC_GATEWAY_TOKEN");
+    if (envTok && envTok[0]) return [NSString stringWithUTF8String:envTok];
     NSString *t = [_defaults stringForKey:@"GatewayToken"];
     return t.length ? t : nil;
 }

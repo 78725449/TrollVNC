@@ -87,6 +87,18 @@ NSString *TVNCDeviceUDID(void) {
         if (languageCode) {
             env[@"TVNC_LANGUAGE_CODE"] = languageCode;
         }
+        // ??????????? trollvncmanager?manager ? root persona ???
+        // ??? App ????? defaults suite???????????TRGatewayClient ?????
+        NSUserDefaults *gwDefaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+        NSString *gwHost = [gwDefaults stringForKey:@"GatewayHost"];
+        if (gwHost.length) {
+            env[@"TVNC_GATEWAY_HOST"] = gwHost;
+            NSInteger gwPort = [gwDefaults integerForKey:@"GatewayPort"];
+            env[@"TVNC_GATEWAY_PORT"] =
+                (gwPort > 0 && gwPort < 65536) ? [NSString stringWithFormat:@"%ld", (long)gwPort] : @"18081";
+            NSString *gwToken = [gwDefaults stringForKey:@"GatewayToken"];
+            if (gwToken.length) env[@"TVNC_GATEWAY_TOKEN"] = gwToken;
+        }
 #if TARGET_IPHONE_SIMULATOR
         [env addEntriesFromDictionary:[[NSProcessInfo processInfo] environment]];
 #endif
