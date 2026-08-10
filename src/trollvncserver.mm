@@ -656,13 +656,16 @@ static void parseDaemonOptions(void) {
     if ([httpPortN isKindOfClass:[NSNumber class]] || [httpPortN isKindOfClass:[NSString class]]) {
         int v = httpPortN.intValue;
         if (v == 0) {
-            gHttpPort = 0; // disabled
+            gHttpPort = 0; // disabled (explicit)
         } else if (v < 0 || v > 65535 || v < 1024) {
-            TVLog(@"-daemon: invalid HTTP Port=%d; using default 0 (disabled)", v);
-            gHttpPort = 0;
+            TVLog(@"-daemon: invalid HTTP Port=%d; using default 5801", v);
+            gHttpPort = 5801;
         } else {
             gHttpPort = v;
         }
+    } else {
+        // ?????????? 5801 HTTP ???????????Root.plist ????????? NSUserDefaults?
+        gHttpPort = 5801;
     }
 
     // Booleans
