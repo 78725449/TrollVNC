@@ -169,7 +169,7 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     // 优先使用设备真实名称（如“张三的 iPhone”），保证注册名/桌面名一致
     NSString *realName = [[UIDevice currentDevice] name];
     NSString *dn = [_defaults stringForKey:kDesktopNameKey];
-    if (dn.length && ![dn isEqualToString:@"TrollVNC"]) {
+    if (dn.length && ![dn isEqualToString:@"SuperPhone"]) {
         _deviceName = dn;
     } else if (realName.length) {
         _deviceName = realName;
@@ -177,7 +177,7 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
         [_defaults setObject:realName forKey:kDesktopNameKey];
         [_defaults synchronize];
     } else {
-        _deviceName = @"TrollVNC";
+        _deviceName = @"SuperPhone";
     }
     return _deviceName;
 }

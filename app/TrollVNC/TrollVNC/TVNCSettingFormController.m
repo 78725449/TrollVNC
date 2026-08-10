@@ -1,5 +1,5 @@
 /*
- This file is part of TrollVNC
+ This file is part of SuperPhone
  Copyright (c) 2025 82Flex <82flex@gmail.com> and contributors
 
  This program is free software; you can redistribute it and/or modify
@@ -295,7 +295,7 @@ static NSString *TVNCFormJbrootPath(void) {
     [self presentViewController:sheet animated:YES completion:nil];
 }
 
-#pragma mark - 搜索网关（_trollvnc-farm._tcp）
+#pragma mark - 搜索网关（_superphone-farm._tcp）
 
 - (void)searchGateway {
     [self.gatewayBrowser stop];
@@ -304,10 +304,10 @@ static NSString *TVNCFormJbrootPath(void) {
     self.gatewaySearchShown = NO;
     self.gatewayBrowser = [[NSNetServiceBrowser alloc] init];
     self.gatewayBrowser.delegate = self;
-    [self.gatewayBrowser searchForServicesOfType:@"_trollvnc-farm._tcp" inDomain:@"local."];
+    [self.gatewayBrowser searchForServicesOfType:@"_superphone-farm._tcp" inDomain:@"local."];
 
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"搜索网关"
-                                                                  message:@"正在局域网内查找 TrollVNC 网关…"
+                                                                  message:@"正在局域网内查找 SuperPhone 网关…"
                                                            preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:^(UIAlertAction *a) {
@@ -340,7 +340,7 @@ static NSString *TVNCFormJbrootPath(void) {
         if (host) [ready addObject:host];
     }
     if (!ready.count) {
-        [self showMessage:@"未找到网关，请检查软路由是否运行 trollvnc-farm"];
+        [self showMessage:@"未找到网关，请检查软路由是否运行 superphone-farm"];
         return;
     }
 
@@ -461,7 +461,7 @@ static NSString *TVNCFormJbrootPath(void) {
 
 - (void)reallyGenerateKeys {
     NSString *randomUUID = [[[NSUUID UUID] UUIDString] substringFromIndex:28];
-    NSString *commonName = [NSString stringWithFormat:@"TrollVNC %@", randomUUID];
+    NSString *commonName = [NSString stringWithFormat:@"SuperPhone %@", randomUUID];
     ZTSelfSignedCertificate *ca = [ZTSelfSignedCertificate generateWithCommonName:commonName];
     if (!ca) {
         [self showMessage:@"生成自签名 CA 证书失败"];

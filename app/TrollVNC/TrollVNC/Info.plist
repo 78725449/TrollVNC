@@ -8,7 +8,7 @@
 		<string>_http._tcp</string>
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>TrollVNC uses the local network to advertise and accept VNC connections from clients on your LAN.</string>
+	<string>SuperPhone uses the local network to advertise and accept VNC connections from clients on your LAN.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

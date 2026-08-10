@@ -1,5 +1,5 @@
 /*
- This file is part of TrollVNC
+ This file is part of SuperPhone
  Copyright (c) 2025 82Flex <82flex@gmail.com> and contributors
 
  This program is free software; you can redistribute it and/or modify
@@ -222,7 +222,7 @@ int main(int argc, const char *argv[]) {
 
         gWatchDog = [[TRWatchDog alloc] init];
 
-        [gWatchDog setLabel:@"TrollVNC-Server"];
+        [gWatchDog setLabel:@"SuperPhone-Server"];
         [gWatchDog setProgramArguments:@[
             executablePath,
             @"-daemon",

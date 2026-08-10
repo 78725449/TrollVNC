@@ -1,4 +1,4 @@
-name: Build TrollVNC
+name: Build SuperPhone
 
 on:
   push:
@@ -14,7 +14,7 @@ on:
         type: string
         description: Desktop name shown to clients
         required: false
-        default: TrollVNC
+        default: SuperPhone
       port:
         type: string
         description: VNC TCP port (1024–65535; default 5901)
@@ -137,7 +137,7 @@ jobs:
             SDKROOT="$THEOS/sdks/iPhoneOS16.5.sdk" \
             -derivedDataPath /tmp/tvnc-diag \
             ARCHS="arm64" ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO \
-            'GCC_PREPROCESSOR_DEFINITIONS=THEBOOTSTRAP=1 THEOS_PACKAGE_SCHEME="bootstrap" PACKAGE_VERSION="3.2-272"' \
+            'GCC_PREPROCESSOR_DEFINITIONS=THEBOOTSTRAP=1 THEOS_PACKAGE_SCHEME="bootstrap" PACKAGE_VERSION="0.0.1"' \
             "HEADER_SEARCH_PATHS=$(pwd)/../../include" \
             "FRAMEWORK_SEARCH_PATHS=$THEOS/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks" \
             build 2>&1 | tee /tmp/tvnc-diag.log

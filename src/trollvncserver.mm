@@ -1,5 +1,5 @@
 /*
- This file is part of TrollVNC
+ This file is part of SuperPhone
  Copyright (c) 2025 82Flex <82flex@gmail.com> and contributors
 
  This program is free software; you can redistribute it and/or modify
@@ -69,7 +69,7 @@ static BOOL gEnabled = YES;
 static int gPort = 5901;
 static int gTvCtlPort = 0;        // port for control connections (0 = disabled)
 static NSString *gBindHost = nil; // optional bind address from CLI/config
-static NSString *gDesktopName = @"TrollVNC";
+static NSString *gDesktopName = @"SuperPhone";
 static BOOL gViewOnly = NO;
 static double gKeepAliveSec = 0.0; // 15..86400
 static BOOL gClipboardEnabled = YES;
@@ -286,7 +286,7 @@ static void printUsageAndExit(const char *prog) {
     static const char *sPackageScheme = MYSTRINGIFY(THEOS_PACKAGE_SCHEME);
     static const char *sPackageVersion = MYSTRINGIFY(PACKAGE_VERSION);
 
-    fprintf(stderr, "TrollVNC (%s) v%s\n", sPackageScheme, sPackageVersion);
+    fprintf(stderr, "SuperPhone (%s) v%s\n", sPackageScheme, sPackageVersion);
     fprintf(stderr, "Usage: %s [-p port] [-n name] [options]\n\n", prog);
 
     fprintf(stderr, "Basic:\n");
@@ -870,7 +870,7 @@ static void parseCLI(int argc, const char *argv[]) {
             break;
         }
         case 'n': {
-            gDesktopName = [NSString stringWithUTF8String:optarg ?: "TrollVNC"];
+            gDesktopName = [NSString stringWithUTF8String:optarg ?: "SuperPhone"];
             TVLog(@"CLI: Desktop name set to '%@'", gDesktopName);
             break;
         }
@@ -3044,7 +3044,7 @@ static NSString *tvBootHash8(void) {
 
 // Compose Bonjour service name as gDesktopName + 8-char boot hash, clamped to 63 bytes
 static NSString *tvBonjourServiceName(NSString *baseName) {
-    NSString *name = baseName ?: @"TrollVNC";
+    NSString *name = baseName ?: @"SuperPhone";
     NSString *suffix = tvBootHash8();
     // mDNS single-label length limit is 63 bytes (UTF-8). We reserve suffix bytes.
     const NSUInteger maxBytes = 63;

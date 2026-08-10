@@ -513,7 +513,7 @@
 				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TrollVNC/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = TrollVNC;
+				INFOPLIST_KEY_CFBundleDisplayName = SuperPhone;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
@@ -542,7 +542,7 @@
 					"-llzo2",
 					"-lsasl2",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 0.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.82flex.TrollVNCApp;
 				PRODUCT_NAME = TrollVNC;
 				SUPPORTED_PLATFORMS = iphoneos;
@@ -584,7 +584,7 @@
 				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TrollVNC/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = TrollVNC;
+				INFOPLIST_KEY_CFBundleDisplayName = SuperPhone;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
@@ -613,7 +613,7 @@
 					"-llzo2",
 					"-lsasl2",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 0.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.82flex.TrollVNCApp;
 				PRODUCT_NAME = TrollVNC;
 				SUPPORTED_PLATFORMS = iphoneos;
@@ -777,7 +777,7 @@
 				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TrollVNC/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = TrollVNC;
+				INFOPLIST_KEY_CFBundleDisplayName = SuperPhone;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
@@ -806,7 +806,7 @@
 					"-llzo2",
 					"-lsasl2",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 0.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.82flex.TrollVNCApp;
 				PRODUCT_NAME = TrollVNC;
 				SUPPORTED_PLATFORMS = iphonesimulator;
@@ -848,7 +848,7 @@
 				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TrollVNC/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = TrollVNC;
+				INFOPLIST_KEY_CFBundleDisplayName = SuperPhone;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
@@ -877,7 +877,7 @@
 					"-llzo2",
 					"-lsasl2",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 0.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.82flex.TrollVNCApp;
 				PRODUCT_NAME = TrollVNC;
 				SUPPORTED_PLATFORMS = iphonesimulator;

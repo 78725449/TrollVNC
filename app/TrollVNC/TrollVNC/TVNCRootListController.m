@@ -1,5 +1,5 @@
 /*
- This file is part of TrollVNC
+ This file is part of SuperPhone
  Copyright (c) 2025 82Flex <82flex@gmail.com> and contributors
 
  This program is free software; you can redistribute it and/or modify
@@ -278,7 +278,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     ]] setMinimumTrackTintColor:_primaryColor];
     [self.view setTintColor:_primaryColor];
 
-    self.navigationItem.backBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"TrollVNC"
+    self.navigationItem.backBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"SuperPhone"
                                                                              style:UIBarButtonItemStylePlain
                                                                             target:nil
                                                                             action:nil];
@@ -361,7 +361,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
             [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"1.0";
 
         NSString *footerText = [NSString
-            stringWithFormat:NSLocalizedStringFromTableInBundle(@"TrollVNC (%@) v%@", @"Localizable", self.bundle, nil),
+            stringWithFormat:NSLocalizedStringFromTableInBundle(@"SuperPhone (%@) v%@", @"Localizable", self.bundle, nil),
                              packageScheme, versionString];
         _defaultFooterText = footerText;
     }
@@ -659,7 +659,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 
 - (void)_reallyGenerateKeys {
     NSString *randomUUID = [[[NSUUID UUID] UUIDString] substringFromIndex:28];
-    NSString *commonName = [NSString stringWithFormat:@"TrollVNC %@", randomUUID];
+    NSString *commonName = [NSString stringWithFormat:@"SuperPhone %@", randomUUID];
 
     ZTSelfSignedCertificate *ca = [ZTSelfSignedCertificate generateWithCommonName:commonName];
     if (!ca) {
@@ -846,10 +846,10 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     self.gatewaySearchShown = NO;
     self.gatewayBrowser = [[NSNetServiceBrowser alloc] init];
     self.gatewayBrowser.delegate = self;
-    [self.gatewayBrowser searchForServicesOfType:@"_trollvnc-farm._tcp" inDomain:@"local."];
+    [self.gatewayBrowser searchForServicesOfType:@"_superphone-farm._tcp" inDomain:@"local."];
 
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"搜索网关"
-                                                                  message:@"正在局域网内查找 TrollVNC 网关…"
+                                                                  message:@"正在局域网内查找 SuperPhone 网关…"
                                                            preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
@@ -885,7 +885,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     }
 
     if (!ready.count) {
-        [self showGatewayMessage:@"未找到网关，请检查软路由是否运行 trollvnc-farm"];
+        [self showGatewayMessage:@"未找到网关，请检查软路由是否运行 superphone-farm"];
         return;
     }
 

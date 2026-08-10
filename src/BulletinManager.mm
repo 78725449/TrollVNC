@@ -1,5 +1,5 @@
 /*
- This file is part of TrollVNC
+ This file is part of SuperPhone
  Copyright (c) 2025 82Flex <82flex@gmail.com> and contributors
 
  This program is free software; you can redistribute it and/or modify
@@ -73,7 +73,7 @@
 #if !TARGET_IPHONE_SIMULATOR
     UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
 
-    content.title = @"TrollVNC";
+    content.title = @"SuperPhone";
     content.body = messageContent;
     content.categoryIdentifier = @BANNER_CATEGORY;
     content.threadIdentifier = mSectionIdentifier;
@@ -108,7 +108,7 @@
 #if !TARGET_IPHONE_SIMULATOR
     UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
 
-    content.title = @"TrollVNC";
+    content.title = @"SuperPhone";
     content.body = messageContent;
     content.categoryIdentifier = @BANNER_CATEGORY;
     content.threadIdentifier = mSectionIdentifier;
