@@ -17,6 +17,8 @@
 #import "TRTunnelClient.h"
 #import "Logging.h"
 
+#import <stdio.h>
+#import <stdarg.h>
 #import <arpa/inet.h>
 #import <netdb.h>
 #import <netinet/in.h>
