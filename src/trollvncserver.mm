@@ -2663,6 +2663,15 @@ static void kbdAddEvent(rfbBool down, rfbKeySym keySym, rfbClientPtr cl) {
 
     // Map common XF86 multimedia/brightness keysyms to iOS HID events
     switch ((unsigned long)keySym) {
+    // XK_Home（0xff50）：iOS 无"桌面 Home"的 Keyboard Page 语义（KeyboardHome 0x4A 无效），
+    // 必须用 Consumer Page 的 Menu（与 invoke 链路 menuPress 一致）才能回桌面。
+    // 修复 5801 直连页 / 任意 RFB 键盘点击 Home 无反应的问题。
+    case XK_Home:
+        if (down)
+            [gen menuDown];
+        else
+            [gen menuUp];
+        return;
     // Brightness Up/Down
     case 0x1008ff02UL: // XF86MonBrightnessUp
         if (down)
