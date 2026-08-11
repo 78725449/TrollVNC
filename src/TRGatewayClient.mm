@@ -172,19 +172,36 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     return _deviceId;
 }
 
-/// 将 DeviceUUID 镜像写入 mobile 用户域 plist（App 可读）。
+/// 将 DeviceUUID 镜像写入 mobile 用户域（App 可读）。
 /// 解决 root/mobile 跨用户 preferences 隔离：root 进程写 /var/root，App（mobile）读 /var/mobile。
-/// 采用「读-改-写」保留 mobile 域既有键值；UUID 未变化时跳过，避免重复写盘。
+/// 双通道：
+///   1. 主通道 - CFPreferencesSetValue 指定 mobile 用户域，经 cfprefsd 管理
+///      （App 的 NSUserDefaults/CFPreferencesCopyAppValue 走同一 cfprefsd 通道，可实时读到；
+///      直接 writeToFile 会绕过 cfprefsd，App 读到的是进程内旧缓存）
+///   2. 回退 - 直接写 /var/mobile/Library/Preferences 文件（兼容非 cfprefsd 读取方）
+/// 写后读回验证，保证任一通道可用。
 /// @param uuid 设备 UUID
 - (void)_mirrorDeviceIdToMobileDomain:(NSString *)uuid {
     if (!uuid.length) return;
+    // 主通道：经 cfprefsd 写 mobile 用户域
+    CFStringRef appID = CFSTR("com.82flex.trollvnc");
+    CFPreferencesSetValue(CFSTR("DeviceUUID"), (__bridge CFStringRef)uuid,
+                          appID, CFSTR("mobile"), kCFPreferencesCurrentHost);
+    CFPreferencesSynchronize(appID, CFSTR("mobile"), kCFPreferencesCurrentHost);
+    CFStringRef v = CFPreferencesCopyValue(CFSTR("DeviceUUID"), appID, CFSTR("mobile"), kCFPreferencesCurrentHost);
+    if (v) {
+        CFRelease(v);
+        TVLog(@"[gw] mirrored DeviceUUID to mobile domain via cfprefsd");
+        return;
+    }
+    // 回退：直接写 mobile 域 plist 文件
     NSString *path = @"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist";
     NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:path];
     if (!prefs) prefs = [NSMutableDictionary dictionary];
     if ([prefs[@"DeviceUUID"] isEqualToString:uuid]) return; // 已一致，跳过
     prefs[@"DeviceUUID"] = uuid;
     [prefs writeToFile:path atomically:YES];
-    TVLog(@"[gw] mirrored DeviceUUID to mobile domain");
+    TVLog(@"[gw] mirrored DeviceUUID to mobile domain (file fallback)");
 }
 
 - (NSString *)_deviceName {

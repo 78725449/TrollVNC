@@ -46,25 +46,36 @@ NS_INLINE NSString *TVNCFormatLastSeen(id raw) {
 
 /// 读取设备端 DeviceUUID（用于卡片墙过滤自身 / 注册状态判定）。
 /// 设备端 trollvncmanager 以 root 运行（TVNCServiceCoordinator spawnService setUserIdentifier:0），
-/// UUID 生成并写入 root 用户 preferences（/var/root/Library/Preferences/com.82flex.trollvnc.plist）。
+/// UUID 生成并写入 root 用户 preferences（/var/root/Library/Preferences/com.82flex.trollvnc.plist），
+/// 并镜像写入 mobile 用户域（经 cfprefsd + 文件双通道，见 TRGatewayClient _mirrorDeviceIdToMobileDomain）。
 /// 读取优先级：
-///   1. root 用户域 plist 文件（权威值，App 有 storage.preferences 时可直接读）
-///   2. mobile 用户域 plist 文件（设备端 TRGatewayClient 生成后镜像写入，兼容 App sandbox 限制）
-///   3. 当前用户域 NSUserDefaults（兼容模拟器/旧版本 mobile 运行）
+///   1. CFPreferencesCopyAppValue（cfprefsd 通道：无 sandbox 文件限制、实时同步，设备端镜像主通道）
+///   2. root 用户域 plist 文件（权威值，App 有 storage.preferences 时可直接读）
+///   3. mobile 用户域 plist 文件（镜像写入，兼容非 cfprefsd 通道）
+///   4. 当前用户域 NSUserDefaults（兼容模拟器/旧版本）
 /// 动态读取（不缓存）以兼容服务未启动时序。
 /// @return 设备 UUID；未生成返回 nil
 NS_INLINE NSString *TVNCReadSelfDeviceId(void) {
-    // 1. root 用户域文件（trollvncmanager 以 root 写入的权威值）
+    // 1. cfprefsd 通道（App 的配置读写走同一通道已验证可用；镜像写后实时可读）
+    //    先强制同步该域缓存，避免读到进程内旧快照（设备端 trollvncmanager 写的是外部新值）
+    CFStringRef appID = CFSTR("com.82flex.trollvnc");
+    CFPreferencesAppSynchronize(appID);
+    CFStringRef cfv = CFPreferencesCopyAppValue(CFSTR("DeviceUUID"), appID);
+    if (cfv) {
+        NSString *s = (CFGetTypeID(cfv) == CFStringGetTypeID()) ? (__bridge_transfer NSString *)cfv : nil;
+        if (s.length) return s;
+    }
+    // 2. root 用户域文件（trollvncmanager 以 root 写入的权威值）
     NSDictionary *rootPrefs = [NSDictionary dictionaryWithContentsOfFile:
         @"/var/root/Library/Preferences/com.82flex.trollvnc.plist"];
     NSString *did = [rootPrefs[@"DeviceUUID"] isKindOfClass:[NSString class]] ? rootPrefs[@"DeviceUUID"] : nil;
     if (did.length) return did;
-    // 2. mobile 用户域文件（设备端镜像写入，绕过 App sandbox 对 /var/root 的读取限制）
+    // 3. mobile 用户域文件（设备端镜像写入，绕过 App sandbox 对 /var/root 的读取限制）
     NSDictionary *mobilePrefs = [NSDictionary dictionaryWithContentsOfFile:
         @"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist"];
     did = [mobilePrefs[@"DeviceUUID"] isKindOfClass:[NSString class]] ? mobilePrefs[@"DeviceUUID"] : nil;
     if (did.length) return did;
-    // 3. 当前用户域 NSUserDefaults（兼容模拟器/旧版 mobile 运行）
+    // 4. 当前用户域 NSUserDefaults（兼容模拟器/旧版 mobile 运行）
     NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
     return [d stringForKey:@"DeviceUUID"];
 }
