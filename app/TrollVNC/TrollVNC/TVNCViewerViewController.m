@@ -35,6 +35,8 @@ static NSString *const kViewerBridgeName = @"viewer";
 @property(nonatomic, strong) UIButton *gearBtn;               // 悬浮信号按钮（WiFi 白底，可拖动）
 @property(nonatomic, strong) NSTimer *sigTimer;               // 延迟轮询定时器（每 3s ping 网关）
 @property(nonatomic, assign) BOOL gearPlaced;
+/// 最近拉取的设备能力元数据（iOS 14 传统 actionSheet 菜单使用；iOS 15+ 由 UIMenu 直接重建）
+@property(nonatomic, strong, nullable) NSArray<NSDictionary *> *lastCaps;
 
 @property(nonatomic, assign) BOOL connected;                  // RFB 是否已建立连接
 @property(nonatomic, assign) BOOL stopRequested;              // 用户已请求退出
@@ -45,6 +47,12 @@ static NSString *const kViewerBridgeName = @"viewer";
  * 显示设备配置面板（Phase 12.8）：push TVNCSettingsViewController 展示完整设置页。
  */
 - (void)showConfigPanel;
+
+/// 记录 Viewer 初始化异常到文件（/tmp/trollvnc-viewer-error.log + Documents/viewer-error.log），
+/// 便于真机无法接 Console 时回传定位。
+/// @param e    捕获的异常
+/// @param step 失败步骤标识
+- (void)logViewerException:(NSException *)e step:(NSString *)step;
 
 @end
 
@@ -79,30 +87,55 @@ static NSString *const kViewerBridgeName = @"viewer";
     self.view.backgroundColor = [UIColor blackColor];
     NSLog(@"[Viewer] viewDidLoad begin host=%@ port=%d deviceId=%@", self.host, self.port, self.deviceId);
 
-    // 防守：大屏控制页初始化任一步抛异常都不闪退，改为提示后返回上一级
-    // （覆盖未捕获 NSException：unrecognized selector / 越界等；分段日志定位到具体失败步骤）
+    // 分步降级：关键步骤（WebView/约束/页面加载）失败才提示返回；
+    // 非关键步骤（悬浮菜单/信号轮询）失败仅降级，不阻断大屏画面。
+    // 每步独立 @try + 分段日志，精确记录失败点。
+
+    // 步骤 1：WebView 容器（关键）
     @try {
         [self setupWebView];
         NSLog(@"[Viewer] setupWebView ok");
+    } @catch (NSException *e) {
+        NSLog(@"[Viewer] setupWebView exception: %@ %@", e.name, e.reason);
+        [self logViewerException:e step:@"setupWebView"];
+        [self failWithMessage:[NSString stringWithFormat:@"大屏控制初始化失败：%@", e.reason]];
+        return;
+    }
 
-        self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleLarge];
-        self.spinner.translatesAutoresizingMaskIntoConstraints = NO;
-        self.spinner.color = [UIColor whiteColor];
-        [self.view addSubview:self.spinner];
-        [self.spinner startAnimating];
+    // 步骤 2：spinner + 状态标签（关键 UI）
+    self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleLarge];
+    self.spinner.translatesAutoresizingMaskIntoConstraints = NO;
+    self.spinner.color = [UIColor whiteColor];
+    [self.view addSubview:self.spinner];
+    [self.spinner startAnimating];
 
-        self.statusLabel = [[UILabel alloc] init];
-        self.statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
-        self.statusLabel.textColor = [UIColor whiteColor];
-        self.statusLabel.font = [UIFont systemFontOfSize:13];
-        self.statusLabel.text = [NSString stringWithFormat:@"连接 %@:%d …", self.host, self.port];
-        [self.view addSubview:self.statusLabel];
+    self.statusLabel = [[UILabel alloc] init];
+    self.statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.statusLabel.textColor = [UIColor whiteColor];
+    self.statusLabel.font = [UIFont systemFontOfSize:13];
+    self.statusLabel.text = [NSString stringWithFormat:@"连接 %@:%d …", self.host, self.port];
+    [self.view addSubview:self.statusLabel];
 
+    // 步骤 3：悬浮菜单按钮（非关键：失败降级为无菜单，画面不受影响）
+    @try {
         [self setupGearButton];
         NSLog(@"[Viewer] setupGearButton ok");
+    } @catch (NSException *e) {
+        NSLog(@"[Viewer] setupGearButton exception: %@ %@ (degraded: no gear menu)", e.name, e.reason);
+        [self logViewerException:e step:@"setupGearButton"];
+    }
+
+    // 步骤 4：信号轮询（非关键）
+    @try {
         [self startSignalPoll];
         NSLog(@"[Viewer] startSignalPoll ok");
+    } @catch (NSException *e) {
+        NSLog(@"[Viewer] startSignalPoll exception: %@ %@ (degraded: no signal poll)", e.name, e.reason);
+        [self logViewerException:e step:@"startSignalPoll"];
+    }
 
+    // 步骤 5：布局约束（关键）
+    @try {
         [NSLayoutConstraint activateConstraints:@[
             // screenView 全屏铺满
             [self.screenView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
@@ -116,12 +149,20 @@ static NSString *const kViewerBridgeName = @"viewer";
             [self.statusLabel.topAnchor constraintEqualToAnchor:self.spinner.bottomAnchor constant:12],
         ]];
         NSLog(@"[Viewer] constraints ok");
+    } @catch (NSException *e) {
+        NSLog(@"[Viewer] constraints exception: %@ %@", e.name, e.reason);
+        [self logViewerException:e step:@"constraints"];
+        [self failWithMessage:[NSString stringWithFormat:@"大屏控制初始化失败：%@", e.reason]];
+        return;
+    }
 
+    // 步骤 6：加载 noVNC 页面（关键）
+    @try {
         [self loadViewerPage];
         NSLog(@"[Viewer] loadViewerPage called");
     } @catch (NSException *e) {
-        NSLog(@"[Viewer] viewDidLoad exception: %@ %@", e.name, e.reason);
-        NSLog(@"[Viewer] %@", e.callStackSymbols);
+        NSLog(@"[Viewer] loadViewerPage exception: %@ %@", e.name, e.reason);
+        [self logViewerException:e step:@"loadViewerPage"];
         [self failWithMessage:[NSString stringWithFormat:@"大屏控制初始化失败：%@", e.reason]];
     }
 }
@@ -421,17 +462,85 @@ static NSString *const kViewerBridgeName = @"viewer";
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(dragGear:)];
     [self.gearBtn addGestureRecognizer:pan];
 
-    // 占位菜单（仅"结束控制"），等待 capMetadata 异步加载后重建为数据驱动菜单
-    [self rebuildGearMenuWithCaps:nil];
-    self.gearBtn.showsMenuAsPrimaryAction = YES;
+    // 菜单体系：iOS 15+ 用 UIMenu（数据驱动）；iOS 14 回退传统 UIAlertController
+    // （规避 iOS 14 上 UIMenu/showsMenuAsPrimaryAction 组合的稳定性问题）
+    if (@available(iOS 15.0, *)) {
+        [self rebuildGearMenuWithCaps:nil];
+        self.gearBtn.showsMenuAsPrimaryAction = YES;
+    } else {
+        [self.gearBtn addTarget:self action:@selector(gearTappedLegacy)
+              forControlEvents:UIControlEventTouchUpInside];
+    }
 
     // 异步拉取设备能力元数据，按 category 分组重建 ⚙ 菜单
+    // （回调内 @try 保护：重建菜单失败不闪退，仅日志记录）
     __weak typeof(self) weakSelf = self;
     [self fetchCapMetadata:^(NSArray<NSDictionary *> *caps) {
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
-        [strongSelf rebuildGearMenuWithCaps:caps];
+        strongSelf.lastCaps = caps;
+        @try {
+            if (@available(iOS 15.0, *)) {
+                [strongSelf rebuildGearMenuWithCaps:caps];
+            }
+        } @catch (NSException *e) {
+            NSLog(@"[Viewer] rebuildGearMenu exception: %@ %@", e.name, e.reason);
+        }
     }];
+}
+
+/**
+ * iOS 14 回退：悬浮按钮点击弹出传统 actionSheet 能力菜单（按 category 分组）。
+ * 替代 UIMenu 体系（iOS 15+），规避 iOS 14 UIMenu 稳定性问题。
+ */
+- (void)gearTappedLegacy {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"控制"
+                                                                    message:nil
+                                                             preferredStyle:UIAlertControllerStyleActionSheet];
+    sheet.popoverPresentationController.sourceView = self.gearBtn;
+    sheet.popoverPresentationController.sourceRect = self.gearBtn.bounds;
+
+    if (self.lastCaps.count) {
+        NSMutableArray<NSString *> *order = [NSMutableArray array];
+        NSMutableDictionary<NSString *, NSMutableArray<NSDictionary *> *> *groups = [NSMutableDictionary dictionary];
+        for (NSDictionary *cap in self.lastCaps) {
+            if (![cap isKindOfClass:[NSDictionary class]]) continue;
+            NSString *cat = cap[@"category"] ?: @"other";
+            if (!groups[cat]) {
+                groups[cat] = [NSMutableArray array];
+                [order addObject:cat];
+            }
+            [groups[cat] addObject:cap];
+        }
+        __weak typeof(self) weakSelf = self;
+        for (NSString *cat in order) {
+            for (NSDictionary *cap in groups[cat]) {
+                NSString *capId = cap[@"id"] ?: @"";
+                id rawTitle = cap[@"title"];
+                NSString *title = [rawTitle isKindOfClass:[NSString class]] && [(NSString *)rawTitle length]
+                                  ? (NSString *)rawTitle : capId;
+                NSString *prefix = [NSString stringWithFormat:@"[%@] ", [self categoryChineseTitle:cat]];
+                [sheet addAction:[UIAlertAction actionWithTitle:[prefix stringByAppendingString:title]
+                                                          style:UIAlertActionStyleDefault
+                                                        handler:^(UIAlertAction *action) {
+                                                            [weakSelf invokeCap:capId params:nil];
+                                                        }]];
+            }
+        }
+    }
+    __weak typeof(self) weakSelf2 = self;
+    [sheet addAction:[UIAlertAction actionWithTitle:@"设备配置"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+                                                [weakSelf2 showConfigPanel];
+                                            }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"结束控制"
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(UIAlertAction *action) {
+                                                [weakSelf2 stopAndExit];
+                                            }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:sheet animated:YES completion:nil];
 }
 
 /**
@@ -775,6 +884,27 @@ static NSString *const kViewerBridgeName = @"viewer";
 }
 
 #pragma mark - 失败/退出
+
+/**
+ * 记录 Viewer 初始化异常到文件（真机无法接 Console 时回传定位）。
+ * @param e    捕获的异常
+ * @param step 失败步骤标识
+ */
+- (void)logViewerException:(NSException *)e step:(NSString *)step {
+    if (!e) return;
+    NSString *log = [NSString stringWithFormat:@"[Viewer] %@ exception: %@\n%@\n%@\n",
+                     step, e.reason ?: e.name,
+                     e.callStackSymbols ? [e.callStackSymbols componentsJoinedByString:@"\n"] : @"",
+                     [NSDate date]];
+    NSData *data = [log dataUsingEncoding:NSUTF8StringEncoding];
+    if (!data) return;
+    [data writeToFile:@"/tmp/trollvnc-viewer-error.log" options:NSDataWritingAtomic error:nil];
+    NSArray *dirs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    if (dirs.count) {
+        [data writeToFile:[dirs[0] stringByAppendingPathComponent:@"viewer-error.log"]
+                  options:NSDataWritingAtomic error:nil];
+    }
+}
 
 /**
  * 连接失败统一处理：停止加载指示器并提示后返回。
