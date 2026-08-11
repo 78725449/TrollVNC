@@ -25,12 +25,39 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 static NSString *const kDefaultsSuite = @"com.82flex.trollvnc";
 /// 视图模式持久化键：0=宫格，1=列表
 static NSString *const kViewModeKey = @"TVNCControllerViewMode";
+
+/// 获取本机 en0 的 IPv4 地址（卡片墙过滤自身设备的 IP 兜底：
+/// 本机 IP 与网关看到的设备注册源 IP 一致，App 侧无需读取设备端 UUID）。
+/// @return IPv4 字符串；未获取到返回 nil
+static NSString *TVNCGetCurrentIPv4(void) {
+    struct ifaddrs *ifaList = NULL;
+    if (getifaddrs(&ifaList) != 0 || !ifaList) return nil;
+    NSString *ip = nil;
+    for (struct ifaddrs *ifa = ifaList; ifa; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_addr || !ifa->ifa_name) continue;
+        if (strcmp(ifa->ifa_name, "en0") != 0) continue;
+        if (!(ifa->ifa_flags & IFF_UP) || (ifa->ifa_flags & IFF_LOOPBACK)) continue;
+        if (ifa->ifa_addr->sa_family != AF_INET) continue;
+        struct sockaddr_in *sin = (struct sockaddr_in *)ifa->ifa_addr;
+        char buf[INET_ADDRSTRLEN] = {0};
+        if (inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf))) {
+            ip = [NSString stringWithUTF8String:buf];
+            break;
+        }
+    }
+    freeifaddrs(ifaList);
+    return ip;
+}
 
 /// 紫色主题色（RGB 107/78/255）
 static UIColor *TRPurpleColor(void) {
@@ -916,8 +943,9 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
     } else {
         [self.devices removeAllObjects];
         // 去重：同一网关返回的设备按 id 仅保留一条（防止重复上报/重复注册产生重复卡片）
-        // 自身设备 id 只读一次（动态读取 root/mobile 域 plist，避免循环内重复文件 I/O）
+        // 自身设备判定：DeviceUUID（权威，读不到时失效）+ 本机 IP（兜底，App 侧零依赖）
         NSString *selfDid = TVNCReadSelfDeviceId();
+        NSString *selfIP = TVNCGetCurrentIPv4();
         NSMutableSet<NSString *> *seenIds = [NSMutableSet set];
         for (NSDictionary *d in list) {
             if (![d isKindOfClass:[NSDictionary class]]) continue;
@@ -926,7 +954,9 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
             if ([seenIds containsObject:did]) continue;     // 去重
             [seenIds addObject:did];
             // 排除自身设备：本机不显示在卡片墙，避免出现"控制自己"
+            // （UUID 权威匹配；IP 兜底：本机 IP == 网关看到的设备注册源 IP，即使读不到 UUID 也能过滤）
             if (selfDid.length && [did isEqualToString:selfDid]) continue;
+            if (selfIP.length && [d[@"host"] isEqualToString:selfIP]) continue;
             // 仅保留隧道设备（source=register）；直连 host 设备模式已废弃，不再展示
             if ([d[@"source"] isEqualToString:@"register"]) {
                 [self.devices addObject:d];
