@@ -16,6 +16,7 @@
 */
 
 #import "TVNCDeviceListCell.h"
+#import "TVNCUtil.h"
 
 /// 紫色主题色（与 TRMainTabBarController 一致）
 static UIColor *TRPurpleColor(void) {
@@ -150,7 +151,7 @@ static UIColor *TRPurpleColor(void) {
         if (ios.length) [parts addObject:[NSString stringWithFormat:@"iOS %@", ios]];
         self.subLabel.text = parts.count ? [parts componentsJoinedByString:@" · "] : @"已连接";
     } else {
-        NSString *lastSeen = d[@"lastSeen"] ?: d[@"lastOnline"] ?: @"";
+        NSString *lastSeen = TVNCFormatLastSeen(d[@"lastSeen"] ?: d[@"lastOnline"]);
         self.subLabel.text = lastSeen.length ? [NSString stringWithFormat:@"最后在线 %@", lastSeen] : @"离线";
     }
 

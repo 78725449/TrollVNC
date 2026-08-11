@@ -20,6 +20,7 @@
 #import "TVNCDeviceListCell.h"
 #import "TVNCGatewayClient.h"
 #import "TVNCAppStore.h"
+#import "TVNCUtil.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -209,7 +210,7 @@ static const NSTimeInterval kSlowPollMax = 15.0;
 
     // 离线设备：画面置灰 + 显示"最后在线时间"
     if (!online) {
-        NSString *lastSeen = d[@"lastSeen"] ?: d[@"lastOnline"] ?: @"";
+        NSString *lastSeen = TVNCFormatLastSeen(d[@"lastSeen"] ?: d[@"lastOnline"]);
         self.offlineLabel.text = lastSeen.length ? [NSString stringWithFormat:@"最后在线 %@", lastSeen] : @"离线";
         self.offlineLabel.hidden = NO;
         self.thumbView.alpha = 0.4;
