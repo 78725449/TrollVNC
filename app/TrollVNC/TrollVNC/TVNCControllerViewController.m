@@ -274,7 +274,6 @@ static const NSTimeInterval kSlowPollMax = 15.0;
 @property(nonatomic, strong) NSMutableArray<NSDictionary *> *devices; // 全部设备
 @property(nonatomic, strong) NSMutableArray<NSDictionary *> *shown;   // 展示用（已过滤自身）
 @property(nonatomic, strong) NSUserDefaults *defaults;
-@property(nonatomic, copy, nullable) NSString *selfDeviceId;
 
 // 视图模式
 @property(nonatomic, assign) NSInteger viewMode;       // 0=宫格 1=列表
@@ -311,7 +310,6 @@ static const NSTimeInterval kSlowPollMax = 15.0;
     self = [super init];
     if (self) {
         _defaults = [[NSUserDefaults alloc] initWithSuiteName:kDefaultsSuite];
-        _selfDeviceId = [_defaults stringForKey:@"DeviceUUID"];
         _devices = [NSMutableArray array];
         _shown = [NSMutableArray array];
         _selectedDevices = [NSMutableSet set];
@@ -926,7 +924,9 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
             if ([seenIds containsObject:did]) continue;     // 去重
             [seenIds addObject:did];
             // 排除自身设备：本机不显示在卡片墙，避免出现"控制自己"
-            if (self.selfDeviceId.length && [did isEqualToString:self.selfDeviceId]) continue;
+            // （动态读取：设备端 UUID 由 root 的 trollvncmanager 写入 root 用户域，见 TVNCReadSelfDeviceId）
+            NSString *selfDid = TVNCReadSelfDeviceId();
+            if (selfDid.length && [did isEqualToString:selfDid]) continue;
             // 仅保留隧道设备（source=register）；直连 host 设备模式已废弃，不再展示
             if ([d[@"source"] isEqualToString:@"register"]) {
                 [self.devices addObject:d];

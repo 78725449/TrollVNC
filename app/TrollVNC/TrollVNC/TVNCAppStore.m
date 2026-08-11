@@ -9,14 +9,10 @@
 
 #import "TVNCAppStore.h"
 #import "TVNCGatewayClient.h"
+#import "TVNCUtil.h"
 
 NSNotificationName const TVNCGatewayStateDidChangeNotification = @"TVNCGatewayStateDidChangeNotification";
 NSNotificationName const TVNCDeviceDirectoryDidUpdateNotification = @"TVNCDeviceDirectoryDidUpdateNotification";
-
-/// 配置 Suite（与全项目一致）
-static NSString *const kStoreDefaultsSuite = @"com.82flex.trollvnc";
-/// 自身设备 ID 配置键（与设备端注册同源）
-static NSString *const kStoreDeviceIdKey = @"DeviceUUID";
 /// 设备目录缓存有效期（秒）：缓存新鲜期内不重复拉取
 static const NSTimeInterval kDirectoryCacheTTL = 60.0;
 /// 结果驱动重试：起始间隔（秒）
@@ -36,8 +32,6 @@ static const NSInteger kRetryMaxCount = 8;
 @property (nonatomic, assign) BOOL fetching;
 /// 重试计数
 @property (nonatomic, assign) NSInteger retryCount;
-/// 自身设备 ID（与设备端注册同源）
-@property (nonatomic, copy, nullable) NSString *selfDeviceId;
 
 @end
 
@@ -56,8 +50,6 @@ static const NSInteger kRetryMaxCount = 8;
     self = [super init];
     if (self) {
         _gatewayState = TVNCGatewayStateIdle;
-        NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kStoreDefaultsSuite];
-        _selfDeviceId = [d stringForKey:kStoreDeviceIdKey];
     }
     return self;
 }
@@ -80,7 +72,8 @@ static const NSInteger kRetryMaxCount = 8;
 }
 
 - (BOOL)isRegistered {
-    NSString *did = self.selfDeviceId;
+    // 动态读取（不缓存）：设备端 trollvncmanager 以 root 生成 UUID 于 root 用户域，见 TVNCReadSelfDeviceId
+    NSString *did = TVNCReadSelfDeviceId();
     if (!did.length) return NO;
     for (NSDictionary *d in self.deviceDirectory) {
         if (![d isKindOfClass:[NSDictionary class]]) continue;

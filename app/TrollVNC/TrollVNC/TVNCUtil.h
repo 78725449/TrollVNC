@@ -43,6 +43,21 @@ NS_INLINE NSString *TVNCFormatLastSeen(id raw) {
     return @"";
 }
 
+/// 读取设备端 DeviceUUID（用于卡片墙过滤自身 / 注册状态判定）。
+/// 设备端 trollvncmanager 以 root 运行（TVNCServiceCoordinator spawnService setUserIdentifier:0），
+/// UUID 生成并写入 root 用户 preferences（/var/root/Library/Preferences/com.82flex.trollvnc.plist），
+/// 本 App（mobile uid 501）经 NSUserDefaults suite 只能读到当前用户域，故优先直接读 root 用户
+/// preferences 文件；回退当前用户域（兼容旧版本/模拟器）。动态读取（不缓存）以兼容服务未启动时序。
+/// @return 设备 UUID；未生成返回 nil
+NS_INLINE NSString *TVNCReadSelfDeviceId(void) {
+    NSDictionary *rootPrefs = [NSDictionary dictionaryWithContentsOfFile:
+        @"/var/root/Library/Preferences/com.82flex.trollvnc.plist"];
+    NSString *did = [rootPrefs[@"DeviceUUID"] isKindOfClass:[NSString class]] ? rootPrefs[@"DeviceUUID"] : nil;
+    if (did.length) return did;
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    return [d stringForKey:@"DeviceUUID"];
+}
+
 // Minimal process enumeration to restart VNC service
 NS_INLINE void TVNCEnumerateProcesses(void (^enumerator)(pid_t pid, NSString *executablePath, BOOL *stop)) {
     static int kMaximumArgumentSize = 0;
