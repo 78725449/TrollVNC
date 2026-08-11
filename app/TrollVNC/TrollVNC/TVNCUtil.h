@@ -60,10 +60,14 @@ NS_INLINE NSString *TVNCReadSelfDeviceId(void) {
     //    先强制同步该域缓存，避免读到进程内旧快照（设备端 trollvncmanager 写的是外部新值）
     CFStringRef appID = CFSTR("com.82flex.trollvnc");
     CFPreferencesAppSynchronize(appID);
-    CFStringRef cfv = CFPreferencesCopyAppValue(CFSTR("DeviceUUID"), appID);
-    if (cfv) {
-        NSString *s = (CFGetTypeID(cfv) == CFStringGetTypeID()) ? (__bridge_transfer NSString *)cfv : nil;
-        if (s.length) return s;
+    CFPropertyListRef plist = CFPreferencesCopyAppValue(CFSTR("DeviceUUID"), appID);
+    if (plist) {
+        if (CFGetTypeID(plist) == CFStringGetTypeID()) {
+            NSString *s = CFBridgingRelease(plist);
+            if (s.length) return s;
+        } else {
+            CFRelease(plist);
+        }
     }
     // 2. root 用户域文件（trollvncmanager 以 root 写入的权威值）
     NSDictionary *rootPrefs = [NSDictionary dictionaryWithContentsOfFile:

@@ -188,7 +188,7 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     CFPreferencesSetValue(CFSTR("DeviceUUID"), (__bridge CFStringRef)uuid,
                           appID, CFSTR("mobile"), kCFPreferencesCurrentHost);
     CFPreferencesSynchronize(appID, CFSTR("mobile"), kCFPreferencesCurrentHost);
-    CFStringRef v = CFPreferencesCopyValue(CFSTR("DeviceUUID"), appID, CFSTR("mobile"), kCFPreferencesCurrentHost);
+    CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("DeviceUUID"), appID, CFSTR("mobile"), kCFPreferencesCurrentHost);
     if (v) {
         CFRelease(v);
         TVLog(@"[gw] mirrored DeviceUUID to mobile domain via cfprefsd");
