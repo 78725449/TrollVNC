@@ -131,6 +131,10 @@
 		7A1B2C3D4E5F60718293A4B8 /* TVNCDeviceListCell.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCDeviceListCell.h; sourceTree = "<group>"; };
 		7A1B2C3D4E5F60718293A4B9 /* TVNCDeviceListCell.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCDeviceListCell.m; sourceTree = "<group>"; };
 		8A1B2C3D4E5F60718293A4D1 /* ViewerWeb.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = ViewerWeb.html; sourceTree = "<group>"; };
+		AA01000000000000000000A5 /* TVNCAppStore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCAppStore.h; sourceTree = "<group>"; };
+		AA01000000000000000000A6 /* TVNCAppStore.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCAppStore.m; sourceTree = "<group>"; };
+		AA01000000000000000000A7 /* TVNCGatewayClient.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TVNCGatewayClient.h; sourceTree = "<group>"; };
+		AA01000000000000000000A8 /* TVNCGatewayClient.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TVNCGatewayClient.m; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */

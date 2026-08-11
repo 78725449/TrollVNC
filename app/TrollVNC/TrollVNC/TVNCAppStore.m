@@ -153,9 +153,10 @@ static const NSInteger kRetryMaxCount = 8;
 
 /// 目录内容是否变化（按设备 id 集合比较，忽略顺序）。
 - (BOOL)isSameDirectory:(NSArray<NSDictionary *> *)newList {
-    NSSet<NSString *> *oldIds = [NSSet setWithArray:[self.deviceDirectory valueForKey:@"id"]];
-    NSSet<NSString *> *newIds = [NSSet setWithArray:[newList valueForKey:@"id"]];
-    return [oldIds isEqual:newIds];
+    NSArray<NSString *> *oldIds = [self.deviceDirectory valueForKey:@"id"];
+    NSSet<NSString *> *oldIdSet = oldIds ? [NSSet setWithArray:oldIds] : [NSSet set];
+    NSSet<NSString *> *newIdSet = newList ? [NSSet setWithArray:[newList valueForKey:@"id"]] : [NSSet set];
+    return [oldIdSet isEqual:newIdSet];
 }
 
 /// 设置状态并仅在变化时发通知。
