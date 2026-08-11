@@ -61,6 +61,10 @@
 		7A1B2C3D4E5F60718293A4B7 /* TRMainTabBarController.m in Sources */ = {isa = PBXBuildFile; fileRef = 7A1B2C3D4E5F60718293A4B6 /* TRMainTabBarController.m */; };
 		7A1B2C3D4E5F60718293A4BA /* TVNCDeviceListCell.m in Sources */ = {isa = PBXBuildFile; fileRef = 7A1B2C3D4E5F60718293A4B9 /* TVNCDeviceListCell.m */; };
 		8A1B2C3D4E5F60718293A4D2 /* ViewerWeb.html in Resources */ = {isa = PBXBuildFile; fileRef = 8A1B2C3D4E5F60718293A4D1 /* ViewerWeb.html */; };
+		AA01000000000000000000A1 /* TVNCAppStore.m in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000A6 /* TVNCAppStore.m */; };
+		AA01000000000000000000A2 /* TVNCAppStore.m in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000A6 /* TVNCAppStore.m */; };
+		AA01000000000000000000A3 /* TVNCGatewayClient.m in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000A8 /* TVNCGatewayClient.m */; };
+		AA01000000000000000000A4 /* TVNCGatewayClient.m in Sources */ = {isa = PBXBuildFile; fileRef = AA01000000000000000000A8 /* TVNCGatewayClient.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -254,6 +258,10 @@
 				61C756B62E65BDAC00B2B371 /* TVNCViewController.m */,
 				CC17D9B82EC79DA1005C275A /* ZTSelfSignedCertificate.h */,
 				CC17D9B92EC79DA1005C275A /* ZTSelfSignedCertificate.m */,
+				AA01000000000000000000A5 /* TVNCAppStore.h */,
+				AA01000000000000000000A6 /* TVNCAppStore.m */,
+				AA01000000000000000000A7 /* TVNCGatewayClient.h */,
+				AA01000000000000000000A8 /* TVNCGatewayClient.m */,
 			);
 			path = TrollVNC;
 			sourceTree = "<group>";
@@ -426,6 +434,8 @@
 				00342A5D6EC8F5E00BAD63A9 /* TVNCSettingFormController.m in Sources */,
 				CC483147D1560AF441749858 /* TVNCSettingsViewController.m in Sources */,
 				071F88A7AFEA63ED0B6FC348 /* TVNCViewerViewController.m in Sources */,
+				AA01000000000000000000A1 /* TVNCAppStore.m in Sources */,
+				AA01000000000000000000A3 /* TVNCGatewayClient.m in Sources */,
 				61B0DD092EB13BEF004CC42B /* TVNCSliderCell.m in Sources */,
 				CC91EF972E6EF165002F5B2A /* TVNCListItemsController.m in Sources */,
 				61C756C62E65BDAC00B2B371 /* TVNCServiceCoordinator.m in Sources */,
@@ -452,6 +462,8 @@
 				61B0DD082EB13BEF004CC42B /* TVNCSliderCell.m in Sources */,
 				615401BB2EB1180C009FDD6F /* TVNCListItemsController.m in Sources */,
 				615401BC2EB1180C009FDD6F /* TVNCServiceCoordinator.m in Sources */,
+				AA01000000000000000000A2 /* TVNCAppStore.m in Sources */,
+				AA01000000000000000000A4 /* TVNCGatewayClient.m in Sources */,
 				615401BD2EB1180C009FDD6F /* TVNCViewController.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

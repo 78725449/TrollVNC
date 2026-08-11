@@ -36,6 +36,9 @@ static const NSTimeInterval kReadTimeout = 5.0;
 static const NSTimeInterval kMinRetryDelay = 2.0;
 static const NSTimeInterval kMaxRetryDelay = 30.0;
 
+/// Phase C：本地 trollvncserver 控制端口（46752），用于 screen.subscribe 画面变化订阅
+static const int kLocalScreenCtlPort = 46752;
+
 // 预置读取：未显式设置时回退 Root.plist 默认值（避免 boolForKey 无法区分“未设置/显式 NO”）
 static BOOL TVNCBoolPref(NSUserDefaults *d, NSString *key, BOOL def) {
     id v = [d objectForKey:key];
@@ -344,20 +347,32 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     // 此处重置标志，允许本次连接的首个 ack 触发 _startTunnel
     _tunnelStarted = NO;
 
+    // Phase C：本地 46752 订阅画面变化（screen.subscribe）→ 变化时经注册通道上报网关 screen_changed
+    int subFd = [self _connectScreenSubscribe];
+    if (subFd >= 0) TVLog(@"[gw] screen.subscribe established (local %d)", kLocalScreenCtlPort);
+
     // 读线程循环：读 ack/任意数据；每 kHelloInterval 发 hello；select 超时检测
     // 命令通道行缓冲：接收网关注册通道下发的 JSON 行（cmd 命令，宪法 7.4）
     char inBuf[1024];
     size_t inLen = 0;
+    char subBuf[1024];
+    size_t subLen = 0;
     time_t lastHello = time(NULL);
     while (_started && ![[NSThread currentThread] isCancelled]) {
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(fd, &rfds);
+        int maxFd = fd;
+        if (subFd >= 0) {
+            FD_SET(subFd, &rfds);
+            maxFd = MAX(maxFd, subFd);
+        }
         struct timeval tv;
         tv.tv_sec = (time_t)kReadTimeout;
         tv.tv_usec = 0;
-        int sel = select(fd + 1, &rfds, NULL, NULL, &tv);
+        int sel = select(maxFd + 1, &rfds, NULL, NULL, &tv);
         if (sel < 0) {
+            if (subFd >= 0) close(subFd);
             close(fd);
             return NO;
         }
@@ -372,6 +387,7 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
             if (rereg) {
                 NSData *fresh = [self _registerData];
                 if (fresh && write(fd, fresh.bytes, fresh.length) < 0) {
+                    if (subFd >= 0) close(subFd);
                     close(fd);
                     return NO;
                 }
@@ -384,33 +400,68 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
             }
             continue;
         }
-        ssize_t n = read(fd, inBuf + inLen, sizeof(inBuf) - inLen - 1);
-        if (n <= 0) {
-            close(fd);
-            return NO;
-        }
-        inLen += (size_t)n;
-        inBuf[inLen] = '\0';
-        // 逐行处理下发的 JSON 消息
-        size_t start = 0;
-        for (size_t i = 0; i < inLen; i++) {
-            if (inBuf[i] == '\n') {
-                inBuf[i] = '\0';
-                [self _handleServerLine:[NSString stringWithUTF8String:inBuf + start] fd:fd];
-                start = i + 1;
+        // 订阅通道：screen.event → 上报网关 screen_changed（变化事件，控制端增量拉图）
+        if (subFd >= 0 && FD_ISSET(subFd, &rfds)) {
+            ssize_t sn = read(subFd, subBuf + subLen, sizeof(subBuf) - subLen - 1);
+            if (sn <= 0) {
+                close(subFd);
+                subFd = -1; // 订阅断开：本连接内不再上报（下轮重连注册时重建）
+                subLen = 0;
+            } else {
+                subLen += (size_t)sn;
+                subBuf[subLen] = '\0';
+                size_t sStart = 0;
+                for (size_t i = 0; i < subLen; i++) {
+                    if (subBuf[i] == '\n') {
+                        subBuf[i] = '\0';
+                        if (strstr(subBuf + sStart, "screen.event") != NULL) {
+                            [self _reportScreenChanged:fd];
+                        }
+                        sStart = i + 1;
+                    }
+                }
+                if (sStart > 0) {
+                    memmove(subBuf, subBuf + sStart, subLen - sStart);
+                    subLen -= sStart;
+                    subBuf[subLen] = '\0';
+                } else if (subLen >= sizeof(subBuf) - 1) {
+                    // 超长无换行数据：丢弃整段，防止阻塞
+                    subLen = 0;
+                    subBuf[0] = '\0';
+                }
             }
         }
-        if (start > 0) {
-            memmove(inBuf, inBuf + start, inLen - start);
-            inLen -= start;
+        if (FD_ISSET(fd, &rfds)) {
+            ssize_t n = read(fd, inBuf + inLen, sizeof(inBuf) - inLen - 1);
+            if (n <= 0) {
+                if (subFd >= 0) close(subFd);
+                close(fd);
+                return NO;
+            }
+            inLen += (size_t)n;
             inBuf[inLen] = '\0';
-        } else if (inLen >= sizeof(inBuf) - 1) {
-            // 超长无换行数据：丢弃整段，防止阻塞
-            inLen = 0;
-            inBuf[0] = '\0';
+            // 逐行处理下发的 JSON 消息
+            size_t start = 0;
+            for (size_t i = 0; i < inLen; i++) {
+                if (inBuf[i] == '\n') {
+                    inBuf[i] = '\0';
+                    [self _handleServerLine:[NSString stringWithUTF8String:inBuf + start] fd:fd];
+                    start = i + 1;
+                }
+            }
+            if (start > 0) {
+                memmove(inBuf, inBuf + start, inLen - start);
+                inLen -= start;
+                inBuf[inLen] = '\0';
+            } else if (inLen >= sizeof(inBuf) - 1) {
+                // 超长无换行数据：丢弃整段，防止阻塞
+                inLen = 0;
+                inBuf[0] = '\0';
+            }
         }
     }
 
+    if (subFd >= 0) close(subFd);
     close(fd);
     return YES;
 }
@@ -565,6 +616,48 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     if (n < 0) {
         // 写失败说明连接已断，read 循环会尽快退出
     }
+}
+
+/**
+ * 建立本地 46752 画面变化订阅（Phase C）。
+ * 连接本机 trollvncserver 控制端口并发送 screen.subscribe on（throttle=150ms、minDistance=8），
+ * 保持连接以持续接收 screen.event 推送（TRScreenHasher 检测到画面变化时由 46752 广播）。
+ * @return 订阅 socket fd；失败返回 -1
+ */
+- (int)_connectScreenSubscribe {
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s < 0) return -1;
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof(a));
+    a.sin_len = sizeof(a);
+    a.sin_family = AF_INET;
+    a.sin_port = htons((uint16_t)kLocalScreenCtlPort);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (connect(s, (struct sockaddr *)&a, sizeof(a)) < 0) {
+        close(s);
+        return -1;
+    }
+    const char *cmd = "screen.subscribe on 150 8\n";
+    if (write(s, cmd, strlen(cmd)) < 0) {
+        close(s);
+        return -1;
+    }
+    return s;
+}
+
+/**
+ * 经注册通道向网关上报告画面变化事件（Phase C）。
+ * 控制端据此做 changedSince 增量查询拉图，替代对每台设备的高频 hash 轮询。
+ * @param regFd 注册通道 socket fd
+ */
+- (void)_reportScreenChanged:(int)regFd {
+    NSDictionary *msg = @{ @"type": @"screen_changed", @"deviceId": [self _deviceId] ?: @"" };
+    NSData *json = [NSJSONSerialization dataWithJSONObject:msg options:0 error:NULL];
+    if (!json) return;
+    NSMutableData *md = [json mutableCopy];
+    const char nl = '\n';
+    [md appendBytes:&nl length:1];
+    write(regFd, md.bytes, md.length);
 }
 
 #pragma mark - Phase 7：隧道客户端

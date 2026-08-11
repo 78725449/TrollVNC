@@ -18,6 +18,8 @@
 #import "TVNCControllerViewController.h"
 #import "TVNCViewerViewController.h"
 #import "TVNCDeviceListCell.h"
+#import "TVNCGatewayClient.h"
+#import "TVNCAppStore.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -26,7 +28,6 @@
 #include <unistd.h>
 
 static NSString *const kDefaultsSuite = @"com.82flex.trollvnc";
-static const NSInteger kConsolePort = 8080; // trollvnc-farm FARM_PORT 默认
 /// 视图模式持久化键：0=宫格，1=列表
 static NSString *const kViewModeKey = @"TVNCControllerViewMode";
 
@@ -39,6 +40,15 @@ static UIColor *TRPurpleColor(void) {
 
 /// 卡片墙最大同时 RFB 连接数
 static const NSInteger kMaxConcurrentWallConnections = 6;
+
+#pragma mark - 卡片墙双速检测（画面变化灵敏 + 静止省流量）
+
+/// 画面变化后的快检间隔（秒）：变化响应更灵敏
+static const NSTimeInterval kFastPollInterval = 1.0;
+/// 静止慢检的基准间隔（秒）：等价 ThumbInterval 默认值
+static const NSTimeInterval kSlowPollBase = 5.0;
+/// 静止慢检的封顶间隔（秒）：超长静止时不再拉长，保证有界
+static const NSTimeInterval kSlowPollMax = 15.0;
 
 #pragma mark - 设备卡片 Cell（宫格视图，删除 tagLabel，新增多选 checkbox）
 
@@ -278,6 +288,16 @@ static const NSInteger kMaxConcurrentWallConnections = 6;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSTimer *> *wallTimers;     ///< hash 轮询定时器（deviceId→NSTimer）
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *wallHashCache; ///< 上次屏幕 hash（deviceId→hex）
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *wallBusy;      ///< 轮询防重入标记（deviceId→@YES）
+/// 双速检测：各设备当前轮询间隔（deviceId→NSTimeInterval，变化重置为快检、静止退避封顶）
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *wallPollInterval;
+/// 双速检测：处于轮询激活状态的设备集合（stop 后异步回调不续排，防切 Tab 残留定时器）
+@property(nonatomic, strong) NSMutableSet<NSString *> *wallPollActive;
+/// Phase C：画面变化增量查询轮询定时器（1.5s，事件驱动主通道）
+@property(nonatomic, strong, nullable) NSTimer *wallChangedTimer;
+/// Phase C：增量查询起点（上次查询时刻）
+@property(nonatomic, strong) NSDate *wallLastChangedSince;
+/// Phase C：增量通道已拉新帧的设备（hash tick 吸收避免重复拉图）
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *wallSkipHash;
 @property(nonatomic, assign) NSInteger activeWallConnections;   ///< 当前活跃的 hash 轮询设备数（≤并发上限）
 
 @end
@@ -298,6 +318,10 @@ static const NSInteger kMaxConcurrentWallConnections = 6;
         _wallTimers = [NSMutableDictionary dictionary];
         _wallHashCache = [NSMutableDictionary dictionary];
         _wallBusy = [NSMutableDictionary dictionary];
+        _wallPollInterval = [NSMutableDictionary dictionary];
+        _wallPollActive = [NSMutableSet set];
+        _wallLastChangedSince = [NSDate date];
+        _wallSkipHash = [NSMutableDictionary dictionary];
         _activeWallConnections = 0;
 
         NSInteger vm = [_defaults integerForKey:kViewModeKey];
@@ -312,11 +336,18 @@ static const NSInteger kMaxConcurrentWallConnections = 6;
     self.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
     self.title = @"设备墙";
 
+    // ---- 控制导航诊断日志：分段输出，崩溃时日志停在最后成功的一步 ----
+    NSLog(@"[CtrlNav] viewDidLoad begin");
     [self setupTopNav];
+    NSLog(@"[CtrlNav] setupTopNav ok");
     [self setupGridView];
+    NSLog(@"[CtrlNav] setupGridView ok");
     [self setupListView];
+    NSLog(@"[CtrlNav] setupListView ok");
     [self setupBottomBatchButton];
+    NSLog(@"[CtrlNav] setupBottomBatchButton ok");
     [self setupLayoutPanel];
+    NSLog(@"[CtrlNav] setupLayoutPanel ok");
 
     self.emptyLabel = [[UILabel alloc] init];
     self.emptyLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -342,21 +373,48 @@ static const NSInteger kMaxConcurrentWallConnections = 6;
     // viewDidLoad 仅搭建 UI；首次切换到「控制」Tab 时由 viewWillAppear 触发
     // refreshDevices 拉取同网关设备，RFB 连接由 willDisplayCell 按可见性管理。
     [self applyViewMode];          // 切换初始视图可见性（此时无数据，不启动 RFB）
+
+    // 设备目录单一数据源：AppStore 拉取完成 → 渲染（页面不直接拉取网关）
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(onDeviceDirectoryUpdated)
+                                                 name:TVNCDeviceDirectoryDidUpdateNotification
+                                               object:nil];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    // 服务启动时机：仅当切换到「控制」Tab（本页出现）时拉取同网关设备目录；
-    // 右上角刷新按钮可随时重新拉取。切走（viewWillDisappear）时停止全部 hash 轮询。
-    [self refreshDevices];
+    NSLog(@"[CtrlNav] viewWillAppear begin (mode=%ld devices=%lu)", (long)self.viewMode, (unsigned long)self.shown.count);
+    // 懒加载共享目录：AppStore 内部按缓存新鲜度决定「复用」或「结果驱动拉取」（首次无缓存必拉）
+    TVNCAppStore *store = [TVNCAppStore sharedStore];
+    [store ensureDeviceDirectory];
+    // 立即用当前共享目录渲染；拉取完成会经 TVNCDeviceDirectoryDidUpdateNotification 再刷新
+    if (store.deviceDirectory.count) {
+        [self handleDevices:store.deviceDirectory error:nil];
+    } else {
+        // 目录尚未就绪（首次拉取中/网关未配置）：显示空态，避免误报「网关返回异常」
+        if (![[TVNCGatewayClient sharedClient] gatewayHost].length) {
+            self.emptyLabel.text = @"未配置网关\n请先在 设置 → 网关 填写网关地址";
+        } else {
+            self.emptyLabel.text = @"正在加载设备…";
+        }
+        [self applyFilter];
+    }
+    NSLog(@"[CtrlNav] handleDevices(shared) done devices=%lu", (unsigned long)store.deviceDirectory.count);
     // 页面重新出现时恢复可见 cell 的 hash 轮询（viewWillDisappear 时已全部停止）
     [self startVisibleWallPolls];
+    NSLog(@"[CtrlNav] startVisibleWallPolls done");
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
+    NSLog(@"[CtrlNav] viewWillDisappear begin");
     // 停止所有可见 cell 的 hash 轮询
     [self stopAllWallPolls];
+    NSLog(@"[CtrlNav] viewWillDisappear end");
 }
 
 #pragma mark - 顶部导航栏（Phase 12.3 + 12.4）
@@ -424,23 +482,38 @@ static const NSInteger kMaxConcurrentWallConnections = 6;
 
 /// 根据当前模式设置批量操作按钮样式。
 /// 浏览模式：紫底白字"批量操作"；多选模式：白底灰字"取消"。
+/// iOS 15+ 使用 UIButtonConfiguration；iOS 14 回退到传统标题/颜色/边框样式
+/// （UIButtonConfiguration 为 iOS 15 引入，部署目标 14.0 下直接调用会 unrecognized selector 闪退）。
 - (void)styleBatchButtonForMode {
-    UIButtonConfiguration *cfg = [UIButtonConfiguration plainButtonConfiguration];
-    cfg.cornerStyle = UIButtonConfigurationCornerStyleMedium;
-    cfg.contentInsets = NSDirectionalEdgeInsetsMake(0, 14, 0, 14);
-    if (self.multiMode) {
-        cfg.title = @"取消";
-        cfg.baseForegroundColor = [UIColor secondaryLabelColor];
-        cfg.background = [UIBackgroundConfiguration clearConfiguration];
-        cfg.background.strokeColor = [UIColor separatorColor];
-        cfg.background.strokeWidth = 1;
+    if (@available(iOS 15.0, *)) {
+        UIButtonConfiguration *cfg = [UIButtonConfiguration plainButtonConfiguration];
+        cfg.cornerStyle = UIButtonConfigurationCornerStyleMedium;
+        cfg.contentInsets = NSDirectionalEdgeInsetsMake(0, 14, 0, 14);
+        if (self.multiMode) {
+            cfg.title = @"取消";
+            cfg.baseForegroundColor = [UIColor secondaryLabelColor];
+            cfg.background = [UIBackgroundConfiguration clearConfiguration];
+            cfg.background.strokeColor = [UIColor separatorColor];
+            cfg.background.strokeWidth = 1;
+        } else {
+            cfg.title = @"批量操作";
+            cfg.baseForegroundColor = [UIColor whiteColor];
+            cfg.background = [UIBackgroundConfiguration clearConfiguration];
+            cfg.background.backgroundColor = TRPurpleColor();
+        }
+        self.batchButton.configuration = cfg;
     } else {
-        cfg.title = @"批量操作";
-        cfg.baseForegroundColor = [UIColor whiteColor];
-        cfg.background = [UIBackgroundConfiguration clearConfiguration];
-        cfg.background.backgroundColor = TRPurpleColor();
+        // iOS 14 回退：不使用 UIButtonConfiguration（iOS 15+ API），改传统属性样式
+        [self.batchButton setTitle:(self.multiMode ? @"取消" : @"批量操作") forState:UIControlStateNormal];
+        [self.batchButton setTitleColor:(self.multiMode ? [UIColor secondaryLabelColor] : [UIColor whiteColor])
+                               forState:UIControlStateNormal];
+        self.batchButton.backgroundColor = self.multiMode ? [UIColor clearColor] : TRPurpleColor();
+        self.batchButton.layer.cornerRadius = 8;
+        self.batchButton.layer.borderWidth = self.multiMode ? 1 : 0;
+        self.batchButton.layer.borderColor = self.multiMode ? [UIColor separatorColor].CGColor
+                                                            : [UIColor clearColor].CGColor;
+        self.batchButton.contentEdgeInsets = UIEdgeInsetsMake(8, 14, 8, 14);
     }
-    self.batchButton.configuration = cfg;
 }
 
 /// 全选按钮点击：浏览模式无操作；多选模式全选/取消全选。
@@ -814,38 +887,23 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
 #pragma mark - 设备目录（网关 /api/devices）
 
 /// 从网关拉取设备目录，过滤自身设备后刷新双视图。
+/// 手动刷新设备目录（右上角按钮/下拉刷新）：强制拉取，经 AppStore 单一数据源更新并广播。
 - (void)refreshDevices {
+    NSLog(@"[CtrlNav] refreshDevices begin");
     [self.collectionView.refreshControl endRefreshing];
-    NSString *host = [self.defaults stringForKey:@"GatewayHost"];
+    NSString *host = [[TVNCGatewayClient sharedClient] gatewayHost];
     if (!host.length) {
         self.emptyLabel.text = @"未配置网关\n请先在 设置 → 网关 填写网关地址";
         [self applyFilter];
         return;
     }
-    NSInteger consolePort = [self.defaults integerForKey:@"TVNCConsolePort"];
-    if (consolePort <= 0) consolePort = kConsolePort;
-    NSString *urlStr = [NSString stringWithFormat:@"http://%@:%ld/api/devices", host, (long)consolePort];
-    NSURL *url = [NSURL URLWithString:urlStr];
-    if (!url) return;
+    [[TVNCAppStore sharedStore] refreshDeviceDirectory];
+}
 
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-    NSString *token = [self.defaults stringForKey:@"GatewayToken"];
-    if (token.length) {
-        [req setValue:[NSString stringWithFormat:@"Bearer %@", token] forHTTPHeaderField:@"Authorization"];
-    }
-    __weak typeof(self) weakSelf = self;
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
-                                                                 completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
-        NSArray *list = nil;
-        if (!err && data) {
-            NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-            if ([json isKindOfClass:[NSDictionary class]]) list = json[@"devices"];
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf handleDevices:list error:err];
-        });
-    }];
-    [task resume];
+/// 设备目录更新通知：消费 AppStore 最新目录渲染（单一数据源，页面不直接拉取网关）。
+- (void)onDeviceDirectoryUpdated {
+    NSLog(@"[CtrlNav] onDeviceDirectoryUpdated devices=%lu", (unsigned long)[TVNCAppStore sharedStore].deviceDirectory.count);
+    [self handleDevices:[TVNCAppStore sharedStore].deviceDirectory error:nil];
 }
 
 /// 处理网关返回的设备列表：过滤自身 deviceId，仅保留已注册或有 host 的设备。
@@ -877,6 +935,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
             self.emptyLabel.text = @"暂无设备\n（仅显示已注册到网关的设备）";
         }
     }
+    NSLog(@"[CtrlNav] handleDevices done devices=%lu", (unsigned long)self.devices.count);
     [self applyFilter];
 }
 
@@ -1029,7 +1088,8 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
         NSDictionary *d = (ip.row < self.shown.count) ? self.shown[ip.row] : nil;
         if (!d || ![d[@"online"] boolValue]) continue;
         NSString *deviceId = d[@"id"];
-        if (!deviceId.length || self.wallTimers[deviceId]) continue; // 已在轮询
+        // 幂等：已在轮询的设备直接跳过，防止 activeWallConnections 虚增导致并发配额耗尽
+        if (!deviceId.length || self.wallTimers[deviceId]) continue;
         self.activeWallConnections++;
         [self startWallPollForDevice:d];
     }
@@ -1037,25 +1097,33 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
 
 #pragma mark - hash 门控轮询（screen.hash → 变化才 screenshot）
 
-/// 为设备启动 hash 门控轮询（NSTimer，间隔取设备 ThumbInterval 配置，默认 5s；启动即先拉一帧）。
+/// 为设备启动 hash 门控轮询（双速检测：初始间隔取设备 ThumbInterval 配置，默认 5s；启动即先拉一帧）。
+/// 单次 timer 链式调度：每轮 tick 完成后按「变化/静止」重排下一次间隔（变化快检 1s、静止退避至 15s）。
 /// @param d 设备数据字典
 - (void)startWallPollForDevice:(NSDictionary *)d {
     NSString *deviceId = d[@"id"];
     if (!deviceId.length || self.wallTimers[deviceId]) return; // 幂等
-    NSTimeInterval iv = 5.0;
+    NSTimeInterval base = 5.0;
     id cfg = d[@"configs"];
     if ([cfg isKindOfClass:[NSDictionary class]]) {
         id tiv = cfg[@"ThumbInterval"];
-        if (tiv) iv = [tiv doubleValue];
+        if (tiv) base = [tiv doubleValue];
     }
-    iv = MAX(1.0, iv);
-    NSTimer *timer = [NSTimer timerWithTimeInterval:iv target:self selector:@selector(wallPollTick:) userInfo:deviceId repeats:YES];
+    base = MAX(1.0, base);
+    // 双速检测：初始间隔 = 配置基准（静止慢检起点），激活标记保证 stop 后异步回调不续排
+    self.wallPollInterval[deviceId] = @(base);
+    [self.wallPollActive addObject:deviceId];
+    NSTimer *timer = [NSTimer timerWithTimeInterval:base
+                                             target:self
+                                           selector:@selector(wallPollTick:)
+                                           userInfo:deviceId
+                                            repeats:NO];
     [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
     self.wallTimers[deviceId] = timer;
-    [timer fire]; // 立即先拉一帧
+    [timer fire]; // 立即先拉一帧（单次 timer fire 后自动失效，由 scheduleNextWallPoll 链式续排）
 }
 
-/// 停止设备的 hash 门控轮询并清除 hash 缓存。
+/// 停止设备的 hash 门控轮询并清除 hash 缓存与双速状态。
 /// @param deviceId 设备 ID
 - (void)stopWallPollForDevice:(NSString *)deviceId {
     if (!deviceId.length) return;
@@ -1066,30 +1134,124 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
     }
     [self.wallHashCache removeObjectForKey:deviceId];
     [self.wallBusy removeObjectForKey:deviceId];
+    [self.wallPollInterval removeObjectForKey:deviceId];
+    [self.wallPollActive removeObject:deviceId];
+    [self.wallSkipHash removeObjectForKey:deviceId];
 }
 
 /// hash 轮询 tick：先取轻量 screen.hash（0.3ms 级 pHash，CPU<1%），
 /// 与上次相同则整轮跳过（静止时零图片流量）；变化才拉 screenshot 渲染新帧。
+/// 每轮结束按「变化/静止」调度下一次间隔（双速检测），由 scheduleNextWallPollForDevice 链式续排。
 /// @param timer 轮询定时器（userInfo = deviceId）
 - (void)wallPollTick:(NSTimer *)timer {
     NSString *deviceId = timer.userInfo;
     if (!deviceId.length) return;
-    if ([self.wallBusy[deviceId] boolValue]) return; // 防重入：上次请求未完成跳过本轮
+    if ([self.wallBusy[deviceId] boolValue]) {
+        // 上次请求未完成：本轮跳过，但仍按静止退避续排，避免单次 timer 链断裂
+        [self scheduleNextWallPollForDevice:deviceId changed:NO];
+        return;
+    }
     self.wallBusy[deviceId] = @YES;
     __weak typeof(self) weakSelf = self;
     [self invokeScreenHashForDevice:deviceId completion:^(NSString *hash) {
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
         strongSelf.wallBusy[deviceId] = @NO;
-        if (!hash.length) return; // 取 hash 失败（设备必具备该能力，不静默降级），下一轮重试
-        NSString *last = strongSelf.wallHashCache[deviceId];
-        if (last && [last isEqualToString:hash]) return; // 画面未变化，保持缓存帧
-        strongSelf.wallHashCache[deviceId] = hash;
-        [strongSelf invokeScreenShotForDevice:deviceId completion:^(UIImage *img, NSDictionary *ack) {
-            if (!strongSelf || !img) return;
-            strongSelf.snapshotCache[deviceId] = img;
-            [strongSelf updateVisibleCellForDevice:deviceId image:img];
-        }];
+        BOOL changed = NO;
+        if (hash.length) {
+            if ([strongSelf.wallSkipHash[deviceId] boolValue]) {
+                // Phase C：增量通道刚拉过新帧，吸收 hash 避免重复拉图
+                strongSelf.wallHashCache[deviceId] = hash;
+                [strongSelf.wallSkipHash removeObjectForKey:deviceId];
+            } else {
+                NSString *last = strongSelf.wallHashCache[deviceId];
+                changed = !(last && [last isEqualToString:hash]); // 画面变化判定
+                if (changed) {
+                    strongSelf.wallHashCache[deviceId] = hash;
+                    [strongSelf invokeScreenShotForDevice:deviceId completion:^(UIImage *img, NSDictionary *ack) {
+                        if (!strongSelf || !img) return;
+                        strongSelf.snapshotCache[deviceId] = img;
+                        [strongSelf updateVisibleCellForDevice:deviceId image:img];
+                    }];
+                }
+            }
+        }
+        // 双速调度：变化 → 快检；静止/hash 失败 → 慢检退避封顶
+        [strongSelf scheduleNextWallPollForDevice:deviceId changed:changed];
+    }];
+}
+
+/// 双速检测调度：安排设备下一次 hash 检测。
+/// 变化后 → kFastPollInterval（1s）快检，画面响应更灵敏；
+/// 静止/失败 → 当前间隔 ×1.5 退避（下限 kSlowPollBase、上限 kSlowPollMax），省流量且不失控。
+/// stop 后（wallPollActive 无该设备）不续排，防止切 Tab 后异步回调残留定时器。
+/// @param deviceId 设备 ID
+/// @param changed  本轮是否检测到画面变化
+- (void)scheduleNextWallPollForDevice:(NSString *)deviceId changed:(BOOL)changed {
+    if (!deviceId.length) return;
+    // 设备已停止轮询（页面切走/移除）：不再续排
+    if (![self.wallPollActive containsObject:deviceId]) return;
+    NSTimer *old = self.wallTimers[deviceId];
+    [old invalidate];
+    NSTimeInterval cur = [self.wallPollInterval[deviceId] doubleValue];
+    NSTimeInterval next;
+    if (changed) {
+        next = kFastPollInterval;
+    } else {
+        next = MIN(MAX(cur * 1.5, kSlowPollBase), kSlowPollMax);
+    }
+    self.wallPollInterval[deviceId] = @(next);
+    NSTimer *t = [NSTimer timerWithTimeInterval:next
+                                          target:self
+                                        selector:@selector(wallPollTick:)
+                                        userInfo:deviceId
+                                         repeats:NO];
+    [[NSRunLoop mainRunLoop] addTimer:t forMode:NSRunLoopCommonModes];
+    self.wallTimers[deviceId] = t;
+}
+
+#pragma mark - Phase C：画面变化增量通道（事件驱动主通道）
+
+/// 启动画面变化增量查询轮询（幂等）：低频（1.5s）查询网关 changedSince 增量，
+/// 对上报过画面变化的设备立即拉取新帧（设备端 screen_changed 上报驱动，静止零图片流量）。
+- (void)startWallChangedPoller {
+    if (self.wallChangedTimer) return;
+    __weak typeof(self) weakSelf = self;
+    self.wallChangedTimer = [NSTimer scheduledTimerWithTimeInterval:1.5
+                                                            repeats:YES
+                                                              block:^(NSTimer *timer) {
+        [weakSelf pollWallChanged];
+    }];
+    self.wallLastChangedSince = [NSDate date];
+}
+
+/// 停止画面变化增量查询轮询（设备墙无活跃轮询时调用，省后台开销）。
+- (void)stopWallChangedPoller {
+    [self.wallChangedTimer invalidate];
+    self.wallChangedTimer = nil;
+}
+
+/// 增量查询回调：对网关返回的「画面变化设备」立即拉取新帧（跳过 hash 门控，走 skip 标记避免重复拉图）。
+- (void)pollWallChanged {
+    if (!self.wallTimers.count) return; // 无活跃轮询设备，不查询
+    NSDate *since = self.wallLastChangedSince;
+    self.wallLastChangedSince = [NSDate date];
+    long long sinceMs = (long long)(since.timeIntervalSince1970 * 1000);
+    __weak typeof(self) weakSelf = self;
+    [[TVNCGatewayClient sharedClient] fetchChangedDevicesSince:sinceMs completion:^(NSArray<NSDictionary *> *devices) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        for (NSDictionary *d in devices) {
+            if (![d isKindOfClass:[NSDictionary class]]) continue;
+            NSString *did = d[@"id"];
+            if (!did.length || !strongSelf.wallTimers[did]) continue; // 仅拉仍在轮询的设备
+            strongSelf.wallSkipHash[did] = @YES;
+            [strongSelf invokeScreenShotForDevice:did completion:^(UIImage *img, NSDictionary *ack) {
+                if (!strongSelf || !img) return;
+                strongSelf.snapshotCache[did] = img;
+                [strongSelf updateVisibleCellForDevice:did image:img];
+            }];
+        }
     }];
 }
 
@@ -1125,41 +1287,8 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
 /// @param completion 完成回调（main queue），ack 为网关返回；失败为 nil
 - (void)invokeCapAck:(NSString *)capId params:(NSDictionary *)params forDevice:(NSString *)deviceId
           completion:(void (^)(NSDictionary *ack))completion {
-    if (!capId.length || !deviceId.length) { if (completion) completion(nil); return; }
-    NSString *host = [self.defaults stringForKey:@"GatewayHost"];
-    if (!host.length) { if (completion) completion(nil); return; }
-    NSInteger consolePort = [self gatewayPort];
-    NSString *urlStr = [NSString stringWithFormat:@"http://%@:%ld/api/devices/%@/invoke",
-                        host, (long)consolePort, deviceId];
-    NSURL *url = [NSURL URLWithString:urlStr];
-    if (!url) { if (completion) completion(nil); return; }
-    NSDictionary *body = @{@"cap": capId, @"params": params ?: @{}};
-    NSData *bodyData = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
-    if (!bodyData) { if (completion) completion(nil); return; }
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-    req.HTTPMethod = @"POST";
-    [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
-    NSString *token = [self.defaults stringForKey:@"GatewayToken"];
-    if (token.length) {
-        [req setValue:[NSString stringWithFormat:@"Bearer %@", token] forHTTPHeaderField:@"Authorization"];
-    }
-    req.HTTPBody = bodyData;
-    req.timeoutInterval = 6.0;
-    __weak typeof(self) weakSelf = self;
-    [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
-        typeof(self) strongSelf = weakSelf;
-        NSDictionary *ack = nil;
-        if (!err && data) {
-            NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-            if ([json isKindOfClass:[NSDictionary class]]) {
-                id a = json[@"ack"];
-                if ([a isKindOfClass:[NSDictionary class]]) ack = a;
-            }
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (strongSelf && completion) completion(ack);
-        });
-    }] resume];
+    // 网络层统一委托 GatewayClient（超时/Token/错误透传/主线程回调）
+    [[TVNCGatewayClient sharedClient] invokeCap:capId params:params forDevice:deviceId completion:completion];
 }
 
 /// 更新可见 cell 的画面为最新截图（仅宫格视图）。
@@ -1181,12 +1310,10 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
     }
 }
 
-/// 从网关配置读取控制台 HTTP 端口。
+/// 从网关配置读取控制台 HTTP 端口（统一委托 GatewayClient，设置是唯一默认源）。
 /// @return 网关 HTTP 端口
 - (NSInteger)gatewayPort {
-    NSInteger port = [self.defaults integerForKey:@"TVNCConsolePort"];
-    if (port <= 0) port = kConsolePort;
-    return port;
+    return [[TVNCGatewayClient sharedClient] gatewayPort];
 }
 
 - (void)collectionView:(UICollectionView *)collectionView didSelectItemAtIndexPath:(NSIndexPath *)ip {
@@ -1255,16 +1382,17 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
 - (void)pushViewerForDevice:(NSDictionary *)d {
     NSString *deviceId = d[@"id"];
     NSString *source = d[@"source"];
+    NSLog(@"[CtrlNav] pushViewerForDevice id=%@ source=%@", deviceId, source);
     // 直连 host 设备模式已废弃：须为 register 来源且有 deviceId
     if (![source isEqualToString:@"register"] || !deviceId.length) return;
-    NSString *gatewayHost = [self.defaults stringForKey:@"GatewayHost"];
+    NSString *gatewayHost = [[TVNCGatewayClient sharedClient] gatewayHost];
     if (!gatewayHost.length) return;
-    NSInteger consolePort = [self.defaults integerForKey:@"TVNCConsolePort"];
-    if (consolePort <= 0) consolePort = kConsolePort;
+    NSInteger consolePort = [[TVNCGatewayClient sharedClient] gatewayPort];
     TVNCViewerViewController *viewer = [[TVNCViewerViewController alloc]
         initWithHost:gatewayHost port:(int)consolePort name:d[@"name"] ?: deviceId];
     viewer.useGatewayTunnel = YES;
     viewer.deviceId = deviceId;
+    NSLog(@"[CtrlNav] pushing viewer host=%@ port=%ld deviceId=%@", gatewayHost, (long)consolePort, deviceId);
     [self.navigationController pushViewController:viewer animated:YES];
 }
 
@@ -1315,40 +1443,8 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
 /// @param completion 完成回调（main queue），caps 为 capMetadata 数组；失败为 nil
 - (void)fetchCapMetadataForDevice:(NSString *)deviceId
                        completion:(void (^)(NSArray<NSDictionary *> *caps))completion {
-    NSString *host = [self.defaults stringForKey:@"GatewayHost"];
-    if (!host.length || !deviceId.length) {
-        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); });
-        return;
-    }
-    NSInteger consolePort = [self.defaults integerForKey:@"TVNCConsolePort"];
-    if (consolePort <= 0) consolePort = kConsolePort;
-    NSString *urlStr = [NSString stringWithFormat:@"http://%@:%ld/api/devices/%@/caps",
-                       host, (long)consolePort, deviceId];
-    NSURL *url = [NSURL URLWithString:urlStr];
-    if (!url) {
-        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); });
-        return;
-    }
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-    req.HTTPMethod = @"GET";
-    req.timeoutInterval = 6.0;
-    NSString *token = [self.defaults stringForKey:@"GatewayToken"];
-    if (token.length) {
-        [req setValue:[NSString stringWithFormat:@"Bearer %@", token] forHTTPHeaderField:@"Authorization"];
-    }
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
-                                                                 completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
-        NSArray *caps = nil;
-        if (!err && data) {
-            NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-            if ([json isKindOfClass:[NSDictionary class]]) {
-                id m = json[@"capMetadata"];
-                if ([m isKindOfClass:[NSArray class]]) caps = m;
-            }
-        }
-        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(caps); });
-    }];
-    [task resume];
+    // 网络层统一委托 GatewayClient
+    [[TVNCGatewayClient sharedClient] fetchCapsForDevice:deviceId completion:completion];
 }
 
 /// 展示能力菜单（actionSheet），按 category 分组，每能力一个 action。
@@ -1434,27 +1530,8 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
 /// @param deviceId 目标设备 ID
 - (void)invokeCap:(NSString *)capId params:(NSDictionary *)params forDevice:(NSString *)deviceId {
     if (!capId.length || !deviceId.length) return;
-    NSString *host = [self.defaults stringForKey:@"GatewayHost"];
-    if (!host.length) return;
-    NSInteger consolePort = [self.defaults integerForKey:@"TVNCConsolePort"];
-    if (consolePort <= 0) consolePort = kConsolePort;
-    NSString *urlStr = [NSString stringWithFormat:@"http://%@:%ld/api/devices/%@/invoke",
-                       host, (long)consolePort, deviceId];
-    NSURL *url = [NSURL URLWithString:urlStr];
-    if (!url) return;
-    NSDictionary *body = @{@"cap": capId, @"params": params ?: @{}};
-    NSData *bodyData = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
-    if (!bodyData) return;
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-    req.HTTPMethod = @"POST";
-    [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
-    NSString *token = [self.defaults stringForKey:@"GatewayToken"];
-    if (token.length) {
-        [req setValue:[NSString stringWithFormat:@"Bearer %@", token] forHTTPHeaderField:@"Authorization"];
-    }
-    req.HTTPBody = bodyData;
-    req.timeoutInterval = 6.0;
-    [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:nil] resume];
+    // 网络层统一委托 GatewayClient
+    [[TVNCGatewayClient sharedClient] invokeCap:capId params:params forDevice:deviceId completion:nil];
 }
 
 #pragma mark - 批量配置流程（Phase 12.6）
@@ -1485,40 +1562,8 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
 /// @param completion 完成回调（main queue），schema 为配置项数组；失败为 nil
 - (void)fetchConfigSchemaForDevice:(NSString *)deviceId
                         completion:(void (^)(NSArray<NSDictionary *> *schema))completion {
-    NSString *host = [self.defaults stringForKey:@"GatewayHost"];
-    if (!host.length || !deviceId.length) {
-        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); });
-        return;
-    }
-    NSInteger consolePort = [self.defaults integerForKey:@"TVNCConsolePort"];
-    if (consolePort <= 0) consolePort = kConsolePort;
-    NSString *urlStr = [NSString stringWithFormat:@"http://%@:%ld/api/devices/%@/caps",
-                       host, (long)consolePort, deviceId];
-    NSURL *url = [NSURL URLWithString:urlStr];
-    if (!url) {
-        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); });
-        return;
-    }
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-    req.HTTPMethod = @"GET";
-    req.timeoutInterval = 6.0;
-    NSString *token = [self.defaults stringForKey:@"GatewayToken"];
-    if (token.length) {
-        [req setValue:[NSString stringWithFormat:@"Bearer %@", token] forHTTPHeaderField:@"Authorization"];
-    }
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
-                                                                 completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
-        NSArray *schema = nil;
-        if (!err && data) {
-            NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-            if ([json isKindOfClass:[NSDictionary class]]) {
-                id s = json[@"configSchema"];
-                if ([s isKindOfClass:[NSArray class]]) schema = s;
-            }
-        }
-        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(schema); });
-    }];
-    [task resume];
+    // 网络层统一委托 GatewayClient
+    [[TVNCGatewayClient sharedClient] fetchConfigSchemaForDevice:deviceId completion:completion];
 }
 
 /// 展示批量配置菜单：按 reload 分区列出配置项，选择后弹出输入框，确认后批量下发。
@@ -1615,15 +1660,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
 /// @param value 配置值
 - (void)batchApplyConfig:(NSString *)key value:(NSString *)value {
     if (!key.length) return;
-    NSString *host = [self.defaults stringForKey:@"GatewayHost"];
-    if (!host.length) return;
-    NSInteger consolePort = [self.defaults integerForKey:@"TVNCConsolePort"];
-    if (consolePort <= 0) consolePort = kConsolePort;
-    NSString *token = [self.defaults stringForKey:@"GatewayToken"];
-
-    NSDictionary *body = @{@"key": key, @"value": value};
-    NSData *bodyData = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
-    if (!bodyData) return;
+    if (![[TVNCGatewayClient sharedClient] gatewayHost].length) return;
 
     __block NSInteger remaining = self.selectedDevices.count;
     __block NSInteger success = 0;
@@ -1631,34 +1668,19 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
     __weak typeof(self) weakSelf = self;
 
     for (NSString *did in allIds) {
-        NSString *urlStr = [NSString stringWithFormat:@"http://%@:%ld/api/devices/%@/config",
-                           host, (long)consolePort, did];
-        NSURL *url = [NSURL URLWithString:urlStr];
-        if (!url) {
-            @synchronized(self) { remaining--; }
-            continue;
-        }
-        NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-        req.HTTPMethod = @"POST";
-        [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
-        if (token.length) {
-            [req setValue:[NSString stringWithFormat:@"Bearer %@", token] forHTTPHeaderField:@"Authorization"];
-        }
-        req.HTTPBody = bodyData;
-        req.timeoutInterval = 6.0;
-        NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
-                                                                     completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
-            @synchronized(weakSelf) {
+        // 网络层统一委托 GatewayClient（逐台下发）
+        [[TVNCGatewayClient sharedClient] setConfig:key value:value forDevice:did completion:^(BOOL ok) {
+            typeof(self) strongSelf = weakSelf;
+            @synchronized(self) {
                 remaining--;
-                if (!err) success++;
+                if (ok) success++;
                 if (remaining <= 0) {
                     dispatch_async(dispatch_get_main_queue(), ^{
-                        [weakSelf showBatchResultToast:success total:allIds.count key:key];
+                        [strongSelf showBatchResultToast:success total:allIds.count key:key];
                     });
                 }
             }
         }];
-        [task resume];
     }
 }
 

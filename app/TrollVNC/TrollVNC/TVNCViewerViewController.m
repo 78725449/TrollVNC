@@ -66,6 +66,7 @@ static NSString *const kViewerBridgeName = @"viewer";
         _port = port;
         _deviceName = [name copy] ?: [host copy];
         self.hidesBottomBarWhenPushed = YES; // 全屏：隐藏底部 Tab
+        NSLog(@"[Viewer] initWithHost host=%@ port=%d name=%@", _host, _port, _deviceName);
     }
     return self;
 }
@@ -76,8 +77,10 @@ static NSString *const kViewerBridgeName = @"viewer";
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor blackColor];
+    NSLog(@"[Viewer] viewDidLoad begin host=%@ port=%d deviceId=%@", self.host, self.port, self.deviceId);
 
     [self setupWebView];
+    NSLog(@"[Viewer] setupWebView ok");
 
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleLarge];
     self.spinner.translatesAutoresizingMaskIntoConstraints = NO;
@@ -93,7 +96,9 @@ static NSString *const kViewerBridgeName = @"viewer";
     [self.view addSubview:self.statusLabel];
 
     [self setupGearButton];
+    NSLog(@"[Viewer] setupGearButton ok");
     [self startSignalPoll];
+    NSLog(@"[Viewer] startSignalPoll ok");
 
     [NSLayoutConstraint activateConstraints:@[
         // screenView 全屏铺满
@@ -107,8 +112,10 @@ static NSString *const kViewerBridgeName = @"viewer";
         [self.statusLabel.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
         [self.statusLabel.topAnchor constraintEqualToAnchor:self.spinner.bottomAnchor constant:12],
     ]];
+    NSLog(@"[Viewer] constraints ok");
 
     [self loadViewerPage];
+    NSLog(@"[Viewer] loadViewerPage called");
 }
 
 /**
@@ -117,6 +124,7 @@ static NSString *const kViewerBridgeName = @"viewer";
  */
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    NSLog(@"[Viewer] viewWillAppear");
     [self.navigationController setNavigationBarHidden:YES animated:animated];
 }
 
@@ -236,9 +244,12 @@ static NSString *const kViewerBridgeName = @"viewer";
  */
 - (void)startConnection {
     if (self.cleanedUp || self.stopRequested) return;
+    NSLog(@"[Viewer] startConnection building ws url");
     NSString *wsURL = [self buildWebSocketURL];
     NSString *arg = [self jsStringLiteral:wsURL];
     NSString *js = [NSString stringWithFormat:@"connect(%@)", arg];
+    NSString *shortUrl = wsURL.length > 80 ? [wsURL substringToIndex:80] : wsURL;
+    NSLog(@"[Viewer] startConnection injecting connect(%@)", shortUrl);
     [self evalJS:js];
 }
 
@@ -289,6 +300,7 @@ static NSString *const kViewerBridgeName = @"viewer";
     NSDictionary *body = [message.body isKindOfClass:[NSDictionary class]] ? message.body : nil;
     if (!body) return;
     NSString *type = body[@"type"];
+    NSLog(@"[Viewer] JS message type=%@", type);
     NSDictionary *detail = [body[@"detail"] isKindOfClass:[NSDictionary class]] ? body[@"detail"] : @{};
 
     if ([type isEqualToString:@"ready"]) {
@@ -336,6 +348,7 @@ static NSString *const kViewerBridgeName = @"viewer";
  * @param reason 失败原因
  */
 - (void)onFailed:(NSString *)reason {
+    NSLog(@"[Viewer] onFailed reason=%@", reason);
     dispatch_async(dispatch_get_main_queue(), ^{
         self.connected = NO;
         [self.spinner stopAnimating];

@@ -642,7 +642,7 @@ static int TVNCConnect(void) {
 // Diffable data source drives cells; no need to implement UITableViewDataSource methods here.
 
 /**
- * 表格右滑操作配置（leading swipe，手势从左向右滑，揭示左侧按钮）。
+ * 表格右滑操作配置（trailing swipe，手指从右向左滑，揭示右侧操作按钮）。
  * 功能：依据当前行的客户端状态（在线 / 冻结）返回对应右滑按钮：
  *   - 在线行：冻结🟠（橙色）+ 断开🔴（红色 destructive）
  *   - 冻结行：仅解冻🟢（绿色）
@@ -652,7 +652,7 @@ static int TVNCConnect(void) {
  * 返回值：UISwipeActionsConfiguration* - 右滑按钮配置；nil 表示无操作
  */
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
-    leadingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
+    trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
 
     NSString *itemId = [self.dataSource itemIdentifierForIndexPath:indexPath];
     if ([itemId isEqualToString:kTVNCEmptyItemId])

@@ -6,6 +6,7 @@
 
 #import "TVNCConnectViewController.h"
 #import "TVNCServiceCoordinator.h"
+#import "TVNCAppStore.h"
 #import "Control.h"
 #import "TVNCUtil.h"
 #import "TVNCClientListController.h"
@@ -166,12 +167,23 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
                                              selector:@selector(refreshStatus)
                                                  name:TVNCServiceStatusDidChangeNotification
                                                object:nil];
+    // 网关状态/设备目录事件驱动刷新（真注册判定替代服务存活近似）
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(refreshStatus)
+                                                 name:TVNCGatewayStateDidChangeNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(refreshStatus)
+                                                 name:TVNCDeviceDirectoryDidUpdateNotification
+                                               object:nil];
     [self refreshStatus];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     [self refreshStatus];
+    // 懒加载：确保设备目录就绪（缓存新鲜直接复用；否则结果驱动拉取并判定注册状态）
+    [[TVNCAppStore sharedStore] ensureDeviceDirectory];
     [self generateQRAsync];
 }
 
@@ -506,22 +518,52 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
 
 /**
  * 刷新 Hero 卡片状态显示（3 行整体刷新）。
- * 功能：依据 TVNCServiceCoordinator.isServiceRunning 更新 Hero 卡片：
- *   - 第 1 行状态点颜色 + 状态文字（已连接/未连接）
- *   - 第 2 行连接状态文字（已注册到网关，隧道已建立 / 未注册到网关）
- *   - 第 3 行服务状态文字（VNC 服务运行中·N 个客户端在线 / VNC 服务未运行·请前往设置配置网关）
+ * 功能：依据 TVNCAppStore 网关状态机（真注册判定）更新 Hero 卡片：
+ *   - 第 1 行状态点颜色 + 状态文字：Registered→绿「已连接」/ ServiceUp→黄「连接中」/
+ *     Disconnected→红「未连接」/ Idle→灰「未连接」
+ *   - 第 2 行连接状态文字（已注册到网关，隧道已建立 / 正在连接网关… / 网关不可达 / 未注册到网关）
+ *   - 第 3 行服务状态文字（VNC 服务运行中·N 个客户端在线 / VNC 服务未运行）
  * 参数：无
  * 返回值：void
  */
 - (void)refreshStatus {
-    BOOL connected = [[TVNCServiceCoordinator sharedCoordinator] isServiceRunning];
+    TVNCGatewayState st = [TVNCAppStore sharedStore].gatewayState;
 
-    // 第 1 行右侧：状态点（UI 实心圆，绿=已连接/灰=未连接）+ 纯文字（不带 emoji，避免与状态点重复）
-    self.heroStatusDot.backgroundColor = connected ? [UIColor systemGreenColor] : [UIColor systemGrayColor];
-    self.heroStatusLabel.text = connected ? @"已连接" : @"未连接";
+    // 第 1 行右侧：状态点（绿=已注册 / 黄=连接中 / 红=不可达 / 灰=未连接）+ 状态文字
+    switch (st) {
+        case TVNCGatewayStateRegistered:
+            self.heroStatusDot.backgroundColor = [UIColor systemGreenColor];
+            self.heroStatusLabel.text = @"已连接";
+            break;
+        case TVNCGatewayStateServiceUp:
+            self.heroStatusDot.backgroundColor = [UIColor systemYellowColor];
+            self.heroStatusLabel.text = @"连接中";
+            break;
+        case TVNCGatewayStateDisconnected:
+            self.heroStatusDot.backgroundColor = [UIColor systemRedColor];
+            self.heroStatusLabel.text = @"未连接";
+            break;
+        default: // Idle
+            self.heroStatusDot.backgroundColor = [UIColor systemGrayColor];
+            self.heroStatusLabel.text = @"未连接";
+            break;
+    }
 
-    // 第 2 行：连接状态文字
-    self.connectStateLabel.text = connected ? @"已注册到网关，隧道已建立" : @"未注册到网关";
+    // 第 2 行：连接状态文字（真实注册判定，替代服务存活近似）
+    switch (st) {
+        case TVNCGatewayStateRegistered:
+            self.connectStateLabel.text = @"已注册到网关，隧道已建立";
+            break;
+        case TVNCGatewayStateServiceUp:
+            self.connectStateLabel.text = @"正在连接网关…";
+            break;
+        case TVNCGatewayStateDisconnected:
+            self.connectStateLabel.text = @"网关不可达，请检查网关配置";
+            break;
+        default:
+            self.connectStateLabel.text = @"未注册到网关";
+            break;
+    }
 
     // 第 3 行：服务状态文字
     [self updateHeroServiceState];
