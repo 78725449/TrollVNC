@@ -391,9 +391,7 @@ static const NSTimeInterval kSlowPollMax = 15.0;
         [self.emptyLabel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-32],
     ]];
 
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh
-                                                                                           target:self
-                                                                                           action:@selector(refreshDevices)];
+    // 右上角不设刷新按钮：下拉刷新（collectionView.refreshControl）已承担手动刷新，避免冗余
 
     // 卡片墙服务（拉取设备目录 + RFB 连接）不随 App 启动提前运行：
     // viewDidLoad 仅搭建 UI；首次切换到「控制」Tab 时由 viewWillAppear 触发
@@ -458,11 +456,11 @@ static const NSTimeInterval kSlowPollMax = 15.0;
     [self.selectAllButton addTarget:self action:@selector(selectAllTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.selectAllButton];
 
-    // 标题
+    // 标题（浏览模式隐藏文字：顶部导航栏已有"设备墙"，避免重复；多选模式显示"已选 N 台"）
     self.titleLabel = [[UILabel alloc] init];
     self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
-    self.titleLabel.text = @"设备墙";
+    self.titleLabel.text = @"";
     [self.view addSubview:self.titleLabel];
 
     // 批量操作按钮（浏览模式：紫底白字；多选模式：白底灰字"取消"）
@@ -577,12 +575,12 @@ static const NSTimeInterval kSlowPollMax = 15.0;
     [self updateMultiSelectUI];
 }
 
-/// 退出多选模式：清空选择、隐藏全选 checkbox、标题恢复"设备墙"、按钮恢复"批量操作"。
+/// 退出多选模式：清空选择、隐藏全选 checkbox、标题恢复空白、按钮恢复"批量操作"。
 - (void)exitMultiSelect {
     self.multiMode = NO;
     [self.selectedDevices removeAllObjects];
     self.selectAllButton.hidden = YES;
-    self.titleLabel.text = @"设备墙";
+    self.titleLabel.text = @"";
     [self styleBatchButtonForMode];
     self.bottomBatchButton.hidden = YES;
     [self reloadBothViews];
@@ -1379,7 +1377,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
     UIImage *thumb = self.snapshotCache[d[@"id"]]; // 使用缓存帧
     NSString *did = d[@"id"];
     BOOL selected = did.length && [self.selectedDevices containsObject:did];
-    [cell configureWithDevice:d thumbnail:thumb selected:(self.multiMode && selected)];
+    [cell configureWithDevice:d thumbnail:thumb multiMode:self.multiMode selected:selected];
     __weak typeof(self) weakSelf = self;
     cell.moreTapped = ^(TVNCDeviceListCell *c) {
         [weakSelf onListCellMoreTapped:c device:d];

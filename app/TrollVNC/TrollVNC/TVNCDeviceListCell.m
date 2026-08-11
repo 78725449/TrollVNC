@@ -134,11 +134,13 @@ static UIColor *TRPurpleColor(void) {
     }
 }
 
-/// 配置行内容：设备名、副信息（IP+iOS 版本 / 最后在线时间）、在线状态、任务状态、缩略图、勾选态。
+/// 配置行内容：设备名、副信息（IP+iOS 版本 / 最后在线时间）、在线状态、缩略图、勾选态。
 /// @param d        设备数据字典（含 name/id/host/online/lastSeen 等）
 /// @param thumb    缩略图（可为 nil，为空时显示 iphone 占位图标）
+/// @param multiMode 是否处于多选模式（仅多选时显示行首复选框）
 /// @param selected 是否处于勾选状态
-- (void)configureWithDevice:(NSDictionary *)d thumbnail:(UIImage *)thumb selected:(BOOL)selected {
+- (void)configureWithDevice:(NSDictionary *)d thumbnail:(UIImage *)thumb
+                   multiMode:(BOOL)multiMode selected:(BOOL)selected {
     BOOL online = [d[@"online"] boolValue];
     self.nameLabel.text = d[@"name"] ?: d[@"id"] ?: @"?";
 
@@ -156,11 +158,13 @@ static UIColor *TRPurpleColor(void) {
     }
 
     self.dotView.backgroundColor = online ? [UIColor systemGreenColor] : [UIColor systemGrayColor];
-    self.taskStatusLabel.text = @"空闲"; // AI 任务预留：当前全部显示"空闲"
+    // 最右侧状态文字：在线/离线（替代预留的"空闲"）
+    self.taskStatusLabel.text = online ? @"在线" : @"离线";
+    self.taskStatusLabel.textColor = online ? [UIColor systemGreenColor] : [UIColor systemGrayColor];
 
-    // checkbox 勾选态
+    // checkbox：仅多选模式显示（正常浏览时不出现，避免遮挡画面）
     self.checkBox.selected = selected;
-    self.checkBox.hidden = NO;
+    self.checkBox.hidden = !multiMode;
 
     // 缩略图
     if (thumb) {

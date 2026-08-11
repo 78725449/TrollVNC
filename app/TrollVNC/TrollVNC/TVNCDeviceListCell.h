@@ -43,8 +43,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// 配置行内容
 /// @param d        设备数据字典
 /// @param thumb    缩略图（可为 nil）
+/// @param multiMode 是否处于多选模式（仅多选时显示行首复选框）
 /// @param selected 是否处于勾选状态（多选模式）
-- (void)configureWithDevice:(NSDictionary *)d thumbnail:(UIImage *)thumb selected:(BOOL)selected;
+- (void)configureWithDevice:(NSDictionary *)d thumbnail:(UIImage *)thumb
+                   multiMode:(BOOL)multiMode selected:(BOOL)selected;
 
 @end
 

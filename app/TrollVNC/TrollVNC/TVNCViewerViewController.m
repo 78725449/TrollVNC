@@ -231,9 +231,10 @@ static NSString *const kViewerBridgeName = @"viewer";
     WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
 
     // 允许从 file:// 加载本地 ES Module 子资源（noVNC 核心模块及其依赖）
+    // 注意：allowUniversalAccessFromFileURLs 是 macOS-only 属性，iOS 上不存在，
+    //       setValue:forKey: 会抛 NSUnknownKeyException（真机大屏初始化失败的根因），必须移除
     WKPreferences *prefs = [[WKPreferences alloc] init];
     [prefs setValue:@YES forKey:@"allowFileAccessFromFileURLs"];
-    [prefs setValue:@YES forKey:@"allowUniversalAccessFromFileURLs"];
     config.preferences = prefs;
 
     // 注册 JS → OC 消息通道（ViewerWeb.html 通过 webkit.messageHandlers.viewer 上报状态）
