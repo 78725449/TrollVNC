@@ -145,10 +145,22 @@ static const NSInteger kRetryMaxCount = 8;
 #pragma mark - Helpers
 
 /// 目录内容是否变化（按设备 id 集合比较，忽略顺序）。
+/// 类型安全：逐个取 id 并过滤非字符串/NSNull 元素（valueForKey: 遇 NSNull 会抛 NSUnknownKeyException）。
 - (BOOL)isSameDirectory:(NSArray<NSDictionary *> *)newList {
-    NSArray<NSString *> *oldIds = [self.deviceDirectory valueForKey:@"id"];
-    NSSet<NSString *> *oldIdSet = oldIds ? [NSSet setWithArray:oldIds] : [NSSet set];
-    NSSet<NSString *> *newIdSet = newList ? [NSSet setWithArray:[newList valueForKey:@"id"]] : [NSSet set];
+    NSMutableArray<NSString *> *oldIds = [NSMutableArray array];
+    for (id obj in self.deviceDirectory) {
+        if (![obj isKindOfClass:[NSDictionary class]]) continue;
+        id i = obj[@"id"];
+        if ([i isKindOfClass:[NSString class]] && [(NSString *)i length]) [oldIds addObject:i];
+    }
+    NSMutableArray<NSString *> *newIds = [NSMutableArray array];
+    for (id obj in newList) {
+        if (![obj isKindOfClass:[NSDictionary class]]) continue;
+        id i = obj[@"id"];
+        if ([i isKindOfClass:[NSString class]] && [(NSString *)i length]) [newIds addObject:i];
+    }
+    NSSet<NSString *> *oldIdSet = [NSSet setWithArray:oldIds];
+    NSSet<NSString *> *newIdSet = [NSSet setWithArray:newIds];
     return [oldIdSet isEqual:newIdSet];
 }
 

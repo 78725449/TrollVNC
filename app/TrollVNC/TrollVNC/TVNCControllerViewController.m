@@ -916,6 +916,8 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
     } else {
         [self.devices removeAllObjects];
         // 去重：同一网关返回的设备按 id 仅保留一条（防止重复上报/重复注册产生重复卡片）
+        // 自身设备 id 只读一次（动态读取 root/mobile 域 plist，避免循环内重复文件 I/O）
+        NSString *selfDid = TVNCReadSelfDeviceId();
         NSMutableSet<NSString *> *seenIds = [NSMutableSet set];
         for (NSDictionary *d in list) {
             if (![d isKindOfClass:[NSDictionary class]]) continue;
@@ -924,8 +926,6 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)g2 {
             if ([seenIds containsObject:did]) continue;     // 去重
             [seenIds addObject:did];
             // 排除自身设备：本机不显示在卡片墙，避免出现"控制自己"
-            // （动态读取：设备端 UUID 由 root 的 trollvncmanager 写入 root 用户域，见 TVNCReadSelfDeviceId）
-            NSString *selfDid = TVNCReadSelfDeviceId();
             if (selfDid.length && [did isEqualToString:selfDid]) continue;
             // 仅保留隧道设备（source=register）；直连 host 设备模式已废弃，不再展示
             if ([d[@"source"] isEqualToString:@"register"]) {

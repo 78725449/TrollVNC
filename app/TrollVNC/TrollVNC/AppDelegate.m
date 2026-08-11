@@ -19,10 +19,29 @@
 #import "TVNCHotspotManager.h"
 #import "TVNCServiceCoordinator.h"
 
+/// 崩溃现场捕获：未捕获 NSException 时写入日志文件（Documents/crash.log + /tmp/trollvnc-crash.log）。
+/// 用于无法连接 Console 的真机场景（TrollStore），下次崩溃后可从 App 数据容器或系统 /tmp 读取定位。
+static void TVNCUncaughtExceptionHandler(NSException *exception) {
+    NSArray *stack = exception.callStackSymbols;
+    NSString *body = [NSString stringWithFormat:
+        @"=== SuperPhone crash @ %@ ===\nName: %@\nReason: %@\nStack:\n%@\n",
+        [NSDate date], exception.name, exception.reason,
+        stack ? [stack componentsJoinedByString:@"\n"] : @"(no stack)"];
+    NSData *data = [body dataUsingEncoding:NSUTF8StringEncoding];
+    if (!data) return;
+    NSArray *dirs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    if (dirs.count) {
+        [data writeToFile:[dirs[0] stringByAppendingPathComponent:@"crash.log"]
+                  options:NSDataWritingAtomic error:nil];
+    }
+    [data writeToFile:@"/tmp/trollvnc-crash.log" options:NSDataWritingAtomic error:nil];
+}
 
 @implementation AppDelegate
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+    // 崩溃现场捕获：任何未捕获异常先落盘再闪退，便于真机无法接 Console 时定位
+    NSSetUncaughtExceptionHandler(&TVNCUncaughtExceptionHandler);
     // Override point for customization after application launch.
     [[TVNCServiceCoordinator sharedCoordinator] registerServiceMonitor];
     [[TVNCHotspotManager sharedManager] registerWithName:@"SuperPhone"];

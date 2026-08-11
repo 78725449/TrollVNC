@@ -79,43 +79,51 @@ static NSString *const kViewerBridgeName = @"viewer";
     self.view.backgroundColor = [UIColor blackColor];
     NSLog(@"[Viewer] viewDidLoad begin host=%@ port=%d deviceId=%@", self.host, self.port, self.deviceId);
 
-    [self setupWebView];
-    NSLog(@"[Viewer] setupWebView ok");
+    // 防守：大屏控制页初始化任一步抛异常都不闪退，改为提示后返回上一级
+    // （覆盖未捕获 NSException：unrecognized selector / 越界等；分段日志定位到具体失败步骤）
+    @try {
+        [self setupWebView];
+        NSLog(@"[Viewer] setupWebView ok");
 
-    self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleLarge];
-    self.spinner.translatesAutoresizingMaskIntoConstraints = NO;
-    self.spinner.color = [UIColor whiteColor];
-    [self.view addSubview:self.spinner];
-    [self.spinner startAnimating];
+        self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleLarge];
+        self.spinner.translatesAutoresizingMaskIntoConstraints = NO;
+        self.spinner.color = [UIColor whiteColor];
+        [self.view addSubview:self.spinner];
+        [self.spinner startAnimating];
 
-    self.statusLabel = [[UILabel alloc] init];
-    self.statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    self.statusLabel.textColor = [UIColor whiteColor];
-    self.statusLabel.font = [UIFont systemFontOfSize:13];
-    self.statusLabel.text = [NSString stringWithFormat:@"连接 %@:%d …", self.host, self.port];
-    [self.view addSubview:self.statusLabel];
+        self.statusLabel = [[UILabel alloc] init];
+        self.statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        self.statusLabel.textColor = [UIColor whiteColor];
+        self.statusLabel.font = [UIFont systemFontOfSize:13];
+        self.statusLabel.text = [NSString stringWithFormat:@"连接 %@:%d …", self.host, self.port];
+        [self.view addSubview:self.statusLabel];
 
-    [self setupGearButton];
-    NSLog(@"[Viewer] setupGearButton ok");
-    [self startSignalPoll];
-    NSLog(@"[Viewer] startSignalPoll ok");
+        [self setupGearButton];
+        NSLog(@"[Viewer] setupGearButton ok");
+        [self startSignalPoll];
+        NSLog(@"[Viewer] startSignalPoll ok");
 
-    [NSLayoutConstraint activateConstraints:@[
-        // screenView 全屏铺满
-        [self.screenView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
-        [self.screenView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [self.screenView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.screenView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-        // spinner/spinner 与状态标签居中
-        [self.spinner.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-        [self.spinner.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
-        [self.statusLabel.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-        [self.statusLabel.topAnchor constraintEqualToAnchor:self.spinner.bottomAnchor constant:12],
-    ]];
-    NSLog(@"[Viewer] constraints ok");
+        [NSLayoutConstraint activateConstraints:@[
+            // screenView 全屏铺满
+            [self.screenView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+            [self.screenView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+            [self.screenView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+            [self.screenView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+            // spinner/spinner 与状态标签居中
+            [self.spinner.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+            [self.spinner.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
+            [self.statusLabel.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+            [self.statusLabel.topAnchor constraintEqualToAnchor:self.spinner.bottomAnchor constant:12],
+        ]];
+        NSLog(@"[Viewer] constraints ok");
 
-    [self loadViewerPage];
-    NSLog(@"[Viewer] loadViewerPage called");
+        [self loadViewerPage];
+        NSLog(@"[Viewer] loadViewerPage called");
+    } @catch (NSException *e) {
+        NSLog(@"[Viewer] viewDidLoad exception: %@ %@", e.name, e.reason);
+        NSLog(@"[Viewer] %@", e.callStackSymbols);
+        [self failWithMessage:[NSString stringWithFormat:@"大屏控制初始化失败：%@", e.reason]];
+    }
 }
 
 /**
@@ -368,6 +376,16 @@ static NSString *const kViewerBridgeName = @"viewer";
 - (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation
        withError:(NSError *)error {
     [self failWithMessage:[NSString stringWithFormat:@"页面加载失败：%@", error.localizedDescription]];
+}
+
+/**
+ * WebContent 进程被系统终止（内存压力/Jetsam）时回调：
+ * 重新加载页面，避免 App 直接闪退。
+ * @param webView 发生进程终止的 WebView
+ */
+- (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
+    NSLog(@"[Viewer] WebContent process terminated, reloading viewer page");
+    [self.screenView reload];
 }
 
 #pragma mark - 悬浮 ⚙（可拖动 + 竖排菜单）
@@ -637,8 +655,12 @@ static NSString *const kViewerBridgeName = @"viewer";
             NSMutableArray<UIAction *> *acts = [NSMutableArray array];
             for (NSDictionary *cap in groups[cat]) {
                 NSString *capId = cap[@"id"] ?: @"";
-                NSString *title = cap[@"title"] ?: capId;
-                NSString *iconName = cap[@"icon"] ?: @"";
+                // 类型安全：网关 capMetadata 字段可能为 NSNull（JSON null），直接传给 UIAction/systemImageNamed 会 unrecognized selector 崩溃
+                id rawTitle = cap[@"title"];
+                NSString *title = [rawTitle isKindOfClass:[NSString class]] && [(NSString *)rawTitle length]
+                                  ? (NSString *)rawTitle : capId;
+                id rawIcon = cap[@"icon"];
+                NSString *iconName = [rawIcon isKindOfClass:[NSString class]] ? (NSString *)rawIcon : @"";
                 // capMetadata 的 icon 字段可能为 emoji 或 SF Symbol 名；
                 // 优先按 SF Symbol 解析，失败则回退到 "circle" 占位图
                 UIImage *img = [UIImage systemImageNamed:iconName];

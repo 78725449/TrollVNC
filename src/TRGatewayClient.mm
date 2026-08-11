@@ -75,6 +75,7 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 - (NSInteger)_gatewayPort;
 - (NSString *)_gatewayToken;
 - (NSString *)_deviceId;
+- (void)_mirrorDeviceIdToMobileDomain:(NSString *)uuid;
 - (NSString *)_deviceName;
 - (NSInteger)_vncPort;
 - (NSInteger)_httpPort;
@@ -164,7 +165,26 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
         TVLog(@"[gw] generated DeviceUUID: %@", uuid);
     }
     _deviceId = uuid;
+    // 跨用户隔离（宪法 7.1）：本进程以 root 运行，suite 写入 root 用户域，
+    // App（mobile uid）经同一 suite 名读到的是 mobile 域、无法命中 root 域文件，
+    // 故同步镜像一份到 mobile 用户域，供 App 端 TVNCReadSelfDeviceId 读取（自身过滤/注册判定）。
+    [self _mirrorDeviceIdToMobileDomain:uuid];
     return _deviceId;
+}
+
+/// 将 DeviceUUID 镜像写入 mobile 用户域 plist（App 可读）。
+/// 解决 root/mobile 跨用户 preferences 隔离：root 进程写 /var/root，App（mobile）读 /var/mobile。
+/// 采用「读-改-写」保留 mobile 域既有键值；UUID 未变化时跳过，避免重复写盘。
+/// @param uuid 设备 UUID
+- (void)_mirrorDeviceIdToMobileDomain:(NSString *)uuid {
+    if (!uuid.length) return;
+    NSString *path = @"/var/mobile/Library/Preferences/com.82flex.trollvnc.plist";
+    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:path];
+    if (!prefs) prefs = [NSMutableDictionary dictionary];
+    if ([prefs[@"DeviceUUID"] isEqualToString:uuid]) return; // 已一致，跳过
+    prefs[@"DeviceUUID"] = uuid;
+    [prefs writeToFile:path atomically:YES];
+    TVLog(@"[gw] mirrored DeviceUUID to mobile domain");
 }
 
 - (NSString *)_deviceName {
