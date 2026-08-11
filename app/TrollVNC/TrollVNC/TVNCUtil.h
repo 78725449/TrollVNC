@@ -16,6 +16,7 @@
 */
 
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 #import <sys/sysctl.h>
 
 #define TVNC_NOTIFY_PREFS_CHANGED "com.82flex.trollvnc.prefs-changed"
