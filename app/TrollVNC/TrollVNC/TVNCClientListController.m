@@ -226,7 +226,8 @@ static NSDictionary *TVNCControlInvoke(NSString *op, NSDictionary *params) {
                                                     userInfo:nil
                                                      repeats:YES];
     // 滚动等 UI 事件期间也保持轮询（可选，保持列表实时性）
-    [[NSRunLoop mainRunLoop] addTimer:self.pollTimer forMode:UITrackingRunLoopCommonModes];
+    // UITrackingRunLoopCommonModes 为 iOS15+ 常量（iOS14.5 SDK 无声明），用字面量兼容（运行时不存在的 mode 仅不生效，无害）
+    [[NSRunLoop mainRunLoop] addTimer:self.pollTimer forMode:@"UITrackingRunLoopCommonModes"];
 }
 
 /**
