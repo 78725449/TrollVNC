@@ -167,7 +167,8 @@ static BOOL TRGenerateSelfSignedCert(NSString *commonName, NSString **certPEM, N
                                                 &kCFTypeDictionaryValueCallBacks);
         if (!encodedExts) goto cleanup;
         NSData *ekuDER = TRExtendedKeyUsageDER();
-        CFDataRef ekuData = CFDataCreate(kCFAllocatorDefault, ekuDER.bytes, (CFIndex)ekuDER.length);
+        // bytes 为 const void*，CFDataCreate 需 const UInt8*（.mm C++ 下需显式转换）
+        CFDataRef ekuData = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)ekuDER.bytes, (CFIndex)ekuDER.length);
         if (!ekuData) goto cleanup;
         CFDictionarySetValue(encodedExts, CFSTR("2.5.29.37"), ekuData); // id-ce-extKeyUsage
         CFRelease(ekuData);
