@@ -3284,18 +3284,22 @@ static NSDictionary *tvExtHandleClientsUnblock(rfbClientPtr cl, NSDictionary *pa
 static NSDictionary *tvExtHandleClientsBlockedList(rfbClientPtr cl, NSDictionary *params);
 
 /** 从 rfbClientPtr 读取一条扩展消息的 JSON payload
+ *  注意：libvncserver 在 rfbProcessClientMessage 中已消费消息首字节（type，存入
+ *        message->type），本函数只读帧头剩余部分：3 字节 reserved + 4 字节 payloadLen。
  *  @param cl  客户端连接指针
  *  @return    解析后的 NSDictionary；解析失败返回 nil
  */
 static NSDictionary *tvExtReadMessage(rfbClientPtr cl) {
-    TVExtHeader hdr;
-    // 读取 8 字节帧头
-    if (rfbReadExact(cl, (char *)&hdr, sizeof(hdr)) <= 0) return nil;
-    hdr.payloadLen = ntohl(hdr.payloadLen);
-    if (hdr.payloadLen == 0 || hdr.payloadLen > 1024 * 1024) return nil;
+    // 帧头剩余 7 字节：reserved[3] + payloadLen[4]（网络序）
+    uint8_t frame[7];
+    if (rfbReadExact(cl, (char *)frame, sizeof(frame)) <= 0) return nil;
+    uint32_t payloadLen = 0;
+    memcpy(&payloadLen, frame + 3, 4);
+    payloadLen = ntohl(payloadLen);
+    if (payloadLen == 0 || payloadLen > 1024 * 1024) return nil;
     // 读取 JSON payload
-    NSMutableData *payload = [NSMutableData dataWithLength:hdr.payloadLen];
-    if (rfbReadExact(cl, (char *)payload.mutableBytes, hdr.payloadLen) <= 0) return nil;
+    NSMutableData *payload = [NSMutableData dataWithLength:payloadLen];
+    if (rfbReadExact(cl, (char *)payload.mutableBytes, payloadLen) <= 0) return nil;
     return [NSJSONSerialization JSONObjectWithData:payload options:0 error:nil];
 }
 
