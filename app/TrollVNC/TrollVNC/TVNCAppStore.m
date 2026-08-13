@@ -67,10 +67,6 @@ static const NSInteger kRetryMaxCount = 8;
     [self fetchWithRetry];
 }
 
-- (void)refreshDeviceDirectory {
-    [self fetchWithRetry];
-}
-
 - (BOOL)isRegistered {
     // 动态读取（不缓存）：设备端 trollvncmanager 以 root 生成 UUID 于 root 用户域，见 TVNCReadSelfDeviceId
     NSString *did = TVNCReadSelfDeviceId();

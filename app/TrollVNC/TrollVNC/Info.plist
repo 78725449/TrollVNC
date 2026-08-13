@@ -2,6 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<!-- Phase 13 Web 容器化：控制 Tab 的 WKWebView 需加载 http:// 网关页面（内网/局域网裸 IP 与 .local）。
+		     URLSession 访问裸 IP 本就豁免 ATS（API 一直正常）；NSAllowsLocalNetworking 覆盖本地网络明文加载，
+		     若真机验证仍被拦再升级 NSAllowsArbitraryLoads（内网可信边界，宪法 1.3）。 -->
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_rfb._tcp</string>

@@ -25,7 +25,7 @@ typedef NS_ENUM(NSInteger, TRCapCategory) {
 typedef NS_ENUM(NSInteger, TRCapRouteType) {
     TRCapRouteHID      = 0, // 直接调用 STHIDEventGenerator 注入硬件事件
     TRCapRouteTouch    = 1, // 触控类，归一化坐标转原生像素后注入 HID
-    TRCapRouteLocalCmd = 2, // 转发到 46752 本地控制端口
+    TRCapRouteLocalCmd = 2, // 经 5901 RFB 扩展消息（_rfbCommand 持久连接）
     TRCapRouteNative   = 3, // 其他原生 Objective-C 调用（剪贴板/截屏等）
 };
 
@@ -40,7 +40,7 @@ typedef NS_ENUM(NSInteger, TRConfigReload) {
 /**
  * 能力注册表（单例）
  * 启动时自动注册所有能力模块（数据驱动表），对外提供：
- *  - capabilities[] / configs[] 自动生成（供设备上报）
+ *  - 本地 executor 容器（capabilities/capMetadata 不再随 register 上报；configs 上报当前值）
  *  - invoke 统一执行入口（按 route 自动路由，不写 if/else 业务分支）
  *  - setConfig 统一配置入口（写 NSUserDefaults + 返回 reload 策略）
  */
@@ -48,16 +48,10 @@ typedef NS_ENUM(NSInteger, TRConfigReload) {
 
 + (instancetype)sharedRegistry;
 
-#pragma mark - 能力查询（供上报与前端渲染）
-
-/** 所有控制型能力 ID 列表（供上报 capabilities[]） */
-- (NSArray<NSString *> *)allCapabilityIds;
+#pragma mark - 能力查询（query 命令通道用，2026-08-13 起不再随 register 上报）
 
 /** 所有控制型能力完整元数据（含 id/title/icon/route/params） */
 - (NSArray<NSDictionary *> *)allControlMetadata;
-
-/** 按能力 ID 查询元数据 */
-- (nullable NSDictionary *)metadataForId:(NSString *)capId;
 
 #pragma mark - 配置查询（供上报 configs[]）
 
@@ -66,9 +60,6 @@ typedef NS_ENUM(NSInteger, TRConfigReload) {
 
 /** 所有配置项的当前值（读 NSUserDefaults，供上报 configs[]） */
 - (NSDictionary *)currentConfigs;
-
-/** 按配置 key 查询 schema */
-- (nullable NSDictionary *)schemaForKey:(NSString *)key;
 
 #pragma mark - 能力调用（invoke 统一入口）
 

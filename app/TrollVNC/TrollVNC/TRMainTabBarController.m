@@ -17,7 +17,7 @@
 
 #import "TRMainTabBarController.h"
 #import "TVNCConnectViewController.h"
-#import "TVNCControllerViewController.h"
+#import "TVNCConsoleWebViewController.h"
 #import "TVNCRootListController.h"
 
 #import <UIKit/UIKit.h>
@@ -46,9 +46,10 @@
                                                             ];
     [self styleNav:connectNav tint:tint];
 
-    // Tab 2 控制：TVNCControllerViewController（卡片墙，升为主入口之一）
-    TVNCControllerViewController *controller = [[TVNCControllerViewController alloc] init];
-    UINavigationController *controllerNav = [[UINavigationController alloc] initWithRootViewController:controller];
+    // Tab 2 控制：TVNCConsoleWebViewController（Web 容器化 Phase 13：WKWebView 加载网关 H5 手机控制台，
+    // 设备墙/大屏/批量/能力菜单全部由 H5 渲染，原生设备墙 TVNCControllerViewController 已删除）
+    TVNCConsoleWebViewController *console = [[TVNCConsoleWebViewController alloc] init];
+    UINavigationController *controllerNav = [[UINavigationController alloc] initWithRootViewController:console];
     controllerNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"控制"
                                                               image:[UIImage systemImageNamed:@"square.grid.2x2"]
                                                       selectedImage:[UIImage systemImageNamed:@"square.grid.2x2.fill"]

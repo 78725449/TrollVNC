@@ -32,20 +32,10 @@ FOUNDATION_EXPORT NSNotificationName const TVNCDeviceDirectoryDidUpdateNotificat
 
 /// 当前网关连接状态（默认 Idle）
 @property (nonatomic, assign, readonly) TVNCGatewayState gatewayState;
-/// 最近一次成功拉取的设备目录缓存（未拉取为 nil）
-@property (nonatomic, copy, readonly, nullable) NSArray<NSDictionary *> *deviceDirectory;
-/// 最近一次成功拉取时间
-@property (nonatomic, copy, readonly, nullable) NSDate *lastDirectoryFetchedAt;
 
 /// 确保设备目录就绪（懒加载）：缓存有效（<60s）直接复用；无效则拉取并结果驱动重试。
-/// 页面（连接页/控制页）出现时调用，幂等。
+/// 页面（连接页）出现时调用，幂等。
 - (void)ensureDeviceDirectory;
-
-/// 手动强制刷新设备目录（重置重试状态立即拉取，结果驱动重试）。
-- (void)refreshDeviceDirectory;
-
-/// 判定本设备是否已注册到网关（设备目录含 selfDeviceId）。
-- (BOOL)isRegistered;
 
 @end
 

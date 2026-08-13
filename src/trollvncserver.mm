@@ -66,14 +66,12 @@
 int gOrientationFixQuad = 0; // 0=0°, 1=90°CW, 2=180°, 3=270°CW
 
 static BOOL gEnabled = YES;
-static int gPort = 5901;
-static int gTvCtlPort = 0;        // port for control connections (0 = disabled)
+static int gPort = 5901;      // 端口固定不可调（5901 = VNC 后端入口）
 static NSString *gBindHost = nil; // optional bind address from CLI/config
 static NSString *gDesktopName = @"SuperPhone";
 static BOOL gViewOnly = NO;
 static double gKeepAliveSec = 0.0; // 15..86400
 static BOOL gClipboardEnabled = YES;
-static BOOL gIsDaemonMode = NO; // set when launched with -daemon
 
 static double gScale = 1.0; // 0 < scale <= 1.0, 1.0 = no scaling
 // Preferred frame rate range (0 = unspecified)
@@ -114,7 +112,7 @@ static char *gAuthPasswdStr = NULL;         // owns the duplicated password stri
 static char *gAuthViewOnlyPasswdStr = NULL; // optional view-only password string
 
 // HTTP server (LibVNCServer built-in web client)
-static int gHttpPort = 0;
+static int gHttpPort = 5801; // 端口固定不可调（5801 = 前端入口）
 static char *gHttpDirOverride = NULL;
 static char *gSslCertPath = NULL;
 static char *gSslKeyPath = NULL;
@@ -292,7 +290,6 @@ static void printUsageAndExit(const char *prog) {
     fprintf(stderr, "Basic:\n");
     fprintf(stderr, "  -b host    Bind host address (IPv4/IPv6 literal, default to all)\n");
     fprintf(stderr, "  -p port    VNC TCP port (default: %d)\n", gPort);
-    fprintf(stderr, "  -c port    Client management TCP port (0=off, default: 0)\n");
     fprintf(stderr, "  -n name    Desktop name (default: %s)\n", [gDesktopName UTF8String]);
     fprintf(stderr, "  -v         View-only (ignore input)\n");
     fprintf(stderr, "  -A sec     Keep-alive interval to prevent sleep; only when clients > 0 (15..86400, 0=off)\n\n");
@@ -519,18 +516,7 @@ static void parseDaemonOptions(void) {
         }
     }
 
-    // Numbers
-    NSNumber *portN = [prefs objectForKey:@"Port"];
-    if ([portN isKindOfClass:[NSNumber class]] || [portN isKindOfClass:[NSString class]]) {
-        int v = portN.intValue;
-        if (v < 1024 || v > 65535) {
-            // Privileged or invalid -> fallback to default 5901
-            TVLog(@"-daemon: invalid TCP Port=%d; using default 5901", v);
-            gPort = 5901;
-        } else {
-            gPort = v;
-        }
-    }
+    // Port / HttpPort 端口固定不可调（5901/5801），不读 NSUserDefaults，忽略历史设置
 
     NSNumber *keepAliveN = [prefs objectForKey:@"KeepAliveSec"];
     if ([keepAliveN isKindOfClass:[NSNumber class]]) {
@@ -652,21 +638,8 @@ static void parseDaemonOptions(void) {
         }
     }
 
-    NSNumber *httpPortN = [prefs objectForKey:@"HttpPort"];
-    if ([httpPortN isKindOfClass:[NSNumber class]] || [httpPortN isKindOfClass:[NSString class]]) {
-        int v = httpPortN.intValue;
-        if (v == 0) {
-            gHttpPort = 0; // disabled (explicit)
-        } else if (v < 0 || v > 65535 || v < 1024) {
-            TVLog(@"-daemon: invalid HTTP Port=%d; using default 5801", v);
-            gHttpPort = 5801;
-        } else {
-            gHttpPort = v;
-        }
-    } else {
-        // ?????????? 5801 HTTP ???????????Root.plist ????????? NSUserDefaults?
-        gHttpPort = 5801;
-    }
+    // HttpPort 固定 5801（前端入口），不读 NSUserDefaults，忽略历史设置
+    gHttpPort = 5801;
 
     // Booleans
     NSNumber *enableN = [prefs objectForKey:@"Enabled"];
@@ -823,8 +796,6 @@ static void parseCLI(int argc, const char *argv[]) {
         }
     }
     if (isDaemon) {
-        gIsDaemonMode = YES;
-        gTvCtlPort = kTvDefaultCtlPort;
         parseDaemonOptions();
         return;
     }
@@ -846,7 +817,7 @@ static void parseCLI(int argc, const char *argv[]) {
 #pragma clang diagnostic pop
 
     int opt;
-    const char *optstr = "p:b:n:vA:c:C:s:F:d:Q:t:P:R:aW:w:NM:KU:O:o:I:i:H:D:e:k:B:T:Vh";
+    const char *optstr = "p:b:n:vA:C:s:F:d:Q:t:P:R:aW:w:NM:KU:O:o:I:i:H:D:e:k:B:T:Vh";
     optind = 1;
     while ((opt = getopt(__argc2, __argv2.data(), optstr)) != -1) {
         switch (opt) {
@@ -887,16 +858,6 @@ static void parseCLI(int argc, const char *argv[]) {
             }
             gKeepAliveSec = sec;
             TVLog(@"CLI: KeepAlive interval set to %.3f sec (-A)", gKeepAliveSec);
-            break;
-        }
-        case 'c': {
-            long port = strtol(optarg, NULL, 10);
-            if (port <= 0 || port > 65535) {
-                TVPrintError("Invalid port: %s", optarg);
-                exit(EXIT_FAILURE);
-            }
-            gTvCtlPort = (int)port;
-            TVLog(@"CLI: Mgmt port set to %d", gTvCtlPort);
             break;
         }
         case 'C': {
@@ -2673,17 +2634,17 @@ static void kbdAddEvent(rfbBool down, rfbKeySym keySym, rfbClientPtr cl) {
             [gen menuUp];
         return;
     // Brightness Up/Down
-    case 0x1008ff02UL: // XF86MonBrightnessUp
-        if (down)
-            [gen displayBrightnessIncrementDown];
-        else
-            [gen displayBrightnessIncrementUp];
-        return;
-    case 0x1008ff03UL: // XF86MonBrightnessDown
+    case 0x1008ff02UL: // XF86MonBrightnessDown（0x1008ff02 = 标准 Down）
         if (down)
             [gen displayBrightnessDecrementDown];
         else
             [gen displayBrightnessDecrementUp];
+        return;
+    case 0x1008ff03UL: // XF86MonBrightnessUp（0x1008ff03 = 标准 Up）
+        if (down)
+            [gen displayBrightnessIncrementDown];
+        else
+            [gen displayBrightnessIncrementUp];
         return;
     // Volume/Mute
     case 0x1008ff13UL: // XF86AudioRaiseVolume
@@ -2722,6 +2683,22 @@ static void kbdAddEvent(rfbBool down, rfbKeySym keySym, rfbClientPtr cl) {
             [gen otherConsumerUsageDown:kHIDUsage_Csmr_ScanNextTrack];
         else
             [gen otherConsumerUsageUp:kHIDUsage_Csmr_ScanNextTrack];
+        return;
+    // 系统动作键（H5 控制台按键直发映射）：点击即触发，仅 down 时执行（up 忽略，防 toggle 双触发）
+    case 0x1008ff2eUL: // XF86Keyboard → 唤起/收起系统键盘
+        if (down) [gen toggleOnScreenKeyboard];
+        return;
+    case 0x1008ff1dUL: // XF86Search → 搜索（Spotlight 下拉）
+        if (down) [gen toggleSpotlight];
+        return;
+    case 0x1008ff80UL: // 自定义 keysym：Home+Power 截屏
+        if (down) [gen snapshotPress];
+        return;
+    case 0x1008ff81UL: // 自定义 keysym：硬件键盘锁
+        if (down) [gen hardwareLock];
+        return;
+    case 0x1008ff82UL: // 自定义 keysym：释放所有按键
+        if (down) [gen releaseEveryKeys];
         return;
     default:
         break;
@@ -2832,6 +2809,7 @@ typedef struct {
     double wheelAccumPx;               // accumulated scroll in pixels (+down, -up) for this client
     BOOL wheelFlushScheduled;          // whether a flush is pending for this client
     char clientId8[CLIENT_ID_LEN + 1]; // cached 8-char client id (NUL-terminated)
+    BOOL isMgmtClient;                // 管理客户端标记（不计入 count/list，不推帧）
 } TVClientState;
 
 NS_INLINE TVClientState *tvGetClientState(rfbClientPtr cl) { return cl ? (TVClientState *)cl->clientData : NULL; }
@@ -3269,21 +3247,232 @@ static void startBonjour(void) {
     }
 }
 
-#pragma mark - Control Socket
-
-static int gTvCtlListenFd = -1;
-static dispatch_source_t gTvCtlAcceptSource = NULL;
-
 // Number of connected clients
 static int gClientCount = 0;
-
-// Subscribers for control change notifications (store as NSNumber wrapping fd)
-static NSMutableSet<NSNumber *> *gTvCtlSubscribers = nil;
-static dispatch_source_t gTvCtlDebounceTimer = NULL; // debounce timer for change notifications
 
 // Global client states, populated via newClientHook/clientGoneHook.
 // Key: 8-char client id; Value: immutable snapshot dictionary.
 static NSMutableDictionary<NSString *, NSDictionary<NSString *, id> *> *gClientStates = nil;
+
+// 前向声明（RFB 扩展 handler 使用，定义在其后）
+static void tvPublishUserSingleNotifs(void);
+
+#pragma mark - RFB Extension (5901, type 0x50)
+
+// 消息类型
+#define TV_EXT_MSG_TYPE  0x50      // client→server
+#define TV_EXT_RESP_TYPE 0x80      // server→client
+
+// 帧头：1B type + 3B reserved + 4B payloadLen = 8 字节
+typedef struct {
+    uint8_t  type;
+    uint8_t  reserved[3];
+    uint32_t payloadLen;  // big-endian（网络字节序）
+} TVExtHeader;
+
+// --- 前向声明：具体 handler 在任务 2/3 实现 ---
+static NSDictionary *tvExtHandleCapHello(rfbClientPtr cl, NSDictionary *params);
+static NSDictionary *tvExtHandleCapList(rfbClientPtr cl, NSDictionary *params);
+static NSDictionary *tvExtHandleScreenHash(rfbClientPtr cl, NSDictionary *params);
+static NSDictionary *tvExtHandleScreenDiff(rfbClientPtr cl, NSDictionary *params);
+static NSDictionary *tvExtHandleScreenWaitStable(rfbClientPtr cl, NSDictionary *params);
+static NSDictionary *tvExtHandleClientsCount(rfbClientPtr cl, NSDictionary *params);
+static NSDictionary *tvExtHandleClientsList(rfbClientPtr cl, NSDictionary *params);
+static NSDictionary *tvExtHandleClientsDisconnect(rfbClientPtr cl, NSDictionary *params);
+static NSDictionary *tvExtHandleClientsBlock(rfbClientPtr cl, NSDictionary *params);
+static NSDictionary *tvExtHandleClientsUnblock(rfbClientPtr cl, NSDictionary *params);
+static NSDictionary *tvExtHandleClientsBlockedList(rfbClientPtr cl, NSDictionary *params);
+
+/** 从 rfbClientPtr 读取一条扩展消息的 JSON payload
+ *  @param cl  客户端连接指针
+ *  @return    解析后的 NSDictionary；解析失败返回 nil
+ */
+static NSDictionary *tvExtReadMessage(rfbClientPtr cl) {
+    TVExtHeader hdr;
+    // 读取 8 字节帧头
+    if (rfbReadExact(cl, (char *)&hdr, sizeof(hdr)) <= 0) return nil;
+    hdr.payloadLen = ntohl(hdr.payloadLen);
+    if (hdr.payloadLen == 0 || hdr.payloadLen > 1024 * 1024) return nil;
+    // 读取 JSON payload
+    NSMutableData *payload = [NSMutableData dataWithLength:hdr.payloadLen];
+    if (rfbReadExact(cl, (char *)payload.mutableBytes, hdr.payloadLen) <= 0) return nil;
+    return [NSJSONSerialization JSONObjectWithData:payload options:0 error:nil];
+}
+
+/** 向 rfbClientPtr 写回一条扩展响应
+ *  @param cl   客户端连接指针
+ *  @param resp 待序列化为 JSON 的 NSDictionary
+ */
+static void tvExtWriteResponse(rfbClientPtr cl, NSDictionary *resp) {
+    if (!cl || !resp) return;
+    NSData *json = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
+    if (!json) return;
+    TVExtHeader hdr;
+    hdr.type = TV_EXT_RESP_TYPE;
+    memset(hdr.reserved, 0, 3);
+    hdr.payloadLen = htonl((uint32_t)json.length);
+    rfbWriteExact(cl, (const char *)&hdr, sizeof(hdr));
+    rfbWriteExact(cl, (const char *)json.bytes, json.length);
+}
+
+/** 构造成功响应
+ *  @param data 数据载荷（可为 nil）
+ *  @return     @{@"ok":@YES, ...data}
+ */
+static NSDictionary *tvExtOk(NSDictionary *data) {
+    NSMutableDictionary *r = [@{@"ok": @YES} mutableCopy];
+    if (data) [r addEntriesFromDictionary:data];
+    return r;
+}
+
+/** 构造错误响应
+ *  @param msg 错误描述（可为 nil，默认 "unknown"）
+ *  @return    @{@"ok":@NO, @"error":msg}
+ */
+static NSDictionary *tvExtErr(NSString *msg) {
+    return @{@"ok": @NO, @"error": msg ?: @"unknown"};
+}
+
+/** rfbProtocolExtension 消息分发入口
+ *  @param cl      客户端连接指针
+ *  @param data    扩展私有数据（本扩展未使用）
+ *  @param message LibVNCServer 透传的客户端消息
+ *  @return        TRUE 表示已处理；FALSE 表示不属于本扩展
+ */
+static rfbBool tvExtHandleMessage(rfbClientPtr cl, void *data,
+                                  const rfbClientToServerMsg *message) {
+    if (!cl || !message) return FALSE;
+    if (message->type != TV_EXT_MSG_TYPE) return FALSE;  // 不属于本扩展
+
+    NSDictionary *req = tvExtReadMessage(cl);
+    if (!req) {
+        tvExtWriteResponse(cl, tvExtErr(@"消息解析失败"));
+        return TRUE;
+    }
+
+    NSString *op = req[@"op"];
+    NSDictionary *params = req[@"params"] ?: @{};
+    NSDictionary *resp = nil;
+
+    // NSNull 防御：JSON 中 "op":null 时 req[@"op"] 为 NSNull 而非 nil
+    if (!op || ![op isKindOfClass:[NSString class]]) {
+        tvExtWriteResponse(cl, tvExtErr(@"op 字段缺失或非字符串"));
+        return TRUE;
+    }
+
+    // 分发（具体 handler 在任务 2/3 填充实现）
+    if ([op isEqualToString:@"cap.hello"]) {
+        resp = tvExtHandleCapHello(cl, params);
+    } else if ([op isEqualToString:@"cap.list"]) {
+        resp = tvExtHandleCapList(cl, params);
+    } else if ([op isEqualToString:@"screen.hash"]) {
+        resp = tvExtHandleScreenHash(cl, params);
+    } else if ([op isEqualToString:@"screen.diff"]) {
+        resp = tvExtHandleScreenDiff(cl, params);
+    } else if ([op isEqualToString:@"screen.waitStable"]) {
+        resp = tvExtHandleScreenWaitStable(cl, params);
+    } else if ([op isEqualToString:@"clients.count"]) {
+        resp = tvExtHandleClientsCount(cl, params);
+    } else if ([op isEqualToString:@"clients.list"]) {
+        resp = tvExtHandleClientsList(cl, params);
+    } else if ([op isEqualToString:@"clients.disconnect"]) {
+        resp = tvExtHandleClientsDisconnect(cl, params);
+    } else if ([op isEqualToString:@"clients.block"]) {
+        resp = tvExtHandleClientsBlock(cl, params);
+    } else if ([op isEqualToString:@"clients.unblock"]) {
+        resp = tvExtHandleClientsUnblock(cl, params);
+    } else if ([op isEqualToString:@"clients.blocked.list"]) {
+        resp = tvExtHandleClientsBlockedList(cl, params);
+    } else {
+        resp = tvExtErr([NSString stringWithFormat:@"未知操作: %@", op ?: @""]);
+    }
+
+    tvExtWriteResponse(cl, resp);
+    return TRUE;
+}
+
+/** 扩展 newClient：LibVNCServer 要求非 NULL 才激活扩展（rfb.h "if newClient == NULL, it is always deactivated"）
+ *  @param cl   客户端连接指针（未使用）
+ *  @param data 扩展私有数据指针（未使用，数据走 TVClientState）
+ *  @return     TRUE 激活扩展；FALSE 拒绝客户端
+ */
+static rfbBool tvExtNewClient(rfbClientPtr cl, void **data) {
+    (void)cl; (void)data;
+    return TRUE;  // 激活扩展（不挂载扩展私有数据，数据走 TVClientState）
+}
+
+static rfbProtocolExtension gTvExtExtension = {
+    .newClient            = tvExtNewClient,
+    .init                 = NULL,
+    .pseudoEncodings      = NULL,
+    .enablePseudoEncoding = NULL,
+    .handleMessage        = tvExtHandleMessage,
+    .close                = NULL,
+    .usage                = NULL,
+    .processArgument      = NULL,
+    .next                 = NULL
+};
+
+/** 注册 RFB 协议扩展（在 rfbInitServer 之前调用） */
+static void setupRfbExtension(void) {
+    rfbRegisterProtocolExtension(&gTvExtExtension);
+    TVLog(@"RFB extension registered (type 0x50)");
+}
+
+/** 处理 cap.hello：标记管理客户端并撤销 newClientHook 的计数/状态注册
+ *  - params[@"mgmt"] 为真时：st->isMgmtClient=YES、gClientCount--、
+ *    从 gClientStates 移除条目、cl->viewOnly=TRUE（不推帧）、刷新通知/Bonjour
+ *  - params[@"mgmt"] 为假时：no-op，仅回传 exempted:NO
+ *  @param cl     客户端连接指针
+ *  @param params 请求参数 NSDictionary
+ *  @return        NSDictionary 响应（含 exempted 标记），永不为 nil
+ */
+static NSDictionary *tvExtHandleCapHello(rfbClientPtr cl, NSDictionary *params) {
+    TVClientState *st = tvGetClientState(cl);
+    if (!st) return tvExtErr(@"客户端状态不可用");
+
+    BOOL isMgmt = [params[@"mgmt"] boolValue];
+    if (isMgmt) {
+        if (st->isMgmtClient) return tvExtOk(@{@"exempted": @YES});  // 幂等：已豁免则不再减计数
+        st->isMgmtClient = YES;
+        // 撤销 newClientHook 的计数与状态注册
+        gClientCount--;
+        if (st->clientId8[0] != '\0') {
+            NSString *cid = [NSString stringWithUTF8String:st->clientId8];
+            @synchronized(gClientStates) {
+                [gClientStates removeObjectForKey:cid];
+            }
+        }
+        // 不推画面帧
+        cl->viewOnly = TRUE;
+        // 更新通知（计数已变）
+        refreshBonjourTXTRecord();
+        tvPublishUserSingleNotifs();
+        TVLog(@"Management client exempted (clients=%d)", gClientCount);
+    }
+    return tvExtOk(@{@"exempted": @(isMgmt)});
+}
+
+/** 处理 cap.list：返回扩展消息组目录供 AI 发现可用操作
+ *  - 返回 extensions 数组，每组含 group 名与 ops 列表
+ *  @param cl     客户端连接指针（未使用，保留以统一 handler 签名）
+ *  @param params 请求参数（未使用）
+ *  @return        NSDictionary 响应，data[@"extensions"] 为 group 目录数组
+ */
+static NSDictionary *tvExtHandleCapList(rfbClientPtr cl, NSDictionary *params) {
+    (void)cl;
+    (void)params;
+    NSArray *groups = @[
+        @{@"group": @"cap",     @"ops": @[@"cap.hello", @"cap.list"]},
+        @{@"group": @"screen",  @"ops": @[@"screen.hash", @"screen.diff", @"screen.waitStable"]},
+        @{@"group": @"clients", @"ops": @[@"clients.count", @"clients.list",
+                                         @"clients.disconnect", @"clients.block",
+                                         @"clients.unblock", @"clients.blocked.list"]},
+    ];
+    return tvExtOk(@{@"extensions": groups});
+}
+
+#pragma mark - Client Helpers
 
 // Generate a stable-length 8-char id for a given socket fd (deterministic per fd).
 static NSString *tvGenerateClientId8(int fd) {
@@ -3315,282 +3504,6 @@ static NSString *tvGenerateClientId8(int fd) {
     return [NSString stringWithFormat:@"%08x", v];
 }
 
-static int tvSetNonBlocking(int fd) {
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags == -1)
-        return -1;
-    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-}
-
-static void tvStopControlSocket(void) {
-    if (gTvCtlAcceptSource) {
-        dispatch_source_cancel(gTvCtlAcceptSource);
-        gTvCtlAcceptSource = NULL;
-    }
-
-    if (gTvCtlDebounceTimer) {
-        dispatch_source_cancel(gTvCtlDebounceTimer);
-        gTvCtlDebounceTimer = NULL;
-    }
-
-    // Close all subscriber sockets and clear set
-    if (gTvCtlSubscribers) {
-        @synchronized(gTvCtlSubscribers) {
-            for (NSNumber *num in gTvCtlSubscribers) {
-                int fd = [num intValue];
-                if (fd >= 0)
-                    close(fd);
-            }
-            [gTvCtlSubscribers removeAllObjects];
-        }
-    }
-
-    if (gTvCtlListenFd >= 0) {
-        close(gTvCtlListenFd);
-        gTvCtlListenFd = -1;
-    }
-}
-
-static void tvStartControlSocketIfNeeded(void) {
-    if (!gTvCtlPort)
-        return;
-    if (gTvCtlAcceptSource)
-        return; // already started
-
-    // Create listening socket bound to 127.0.0.1:gTvCtlPort
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        TVPrintError("Control socket: socket() failed: %s", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-
-    int yes = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-#ifdef SO_NOSIGPIPE
-    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &yes, sizeof(yes));
-#endif
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_len = sizeof(addr);
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons((uint16_t)gTvCtlPort);
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // 127.0.0.1
-
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        TVPrintError("Control socket: bind 127.0.0.1:%d failed: %s", gTvCtlPort, strerror(errno));
-        close(fd);
-        exit(EXIT_FAILURE);
-    }
-
-    if (listen(fd, 8) < 0) {
-        TVPrintError("Control socket: listen() failed: %s", strerror(errno));
-        close(fd);
-        exit(EXIT_FAILURE);
-    }
-
-    if (tvSetNonBlocking(fd) < 0) {
-        TVPrintError("Control socket: failed to set O_NONBLOCK: %s", strerror(errno));
-        // Continue anyway
-    }
-
-    gTvCtlListenFd = fd;
-
-    static dispatch_queue_t sTVCtlQueue = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sTVCtlQueue = dispatch_queue_create("com.82flex.trollvnc.control", DISPATCH_QUEUE_SERIAL_WITH_AUTORELEASE_POOL);
-    });
-
-    gTvCtlAcceptSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, (uintptr_t)fd, 0, sTVCtlQueue);
-    // Helper forward declaration
-    void tvCtlHandleConnection(int cfd, struct sockaddr_in caddr);
-    dispatch_source_set_event_handler(gTvCtlAcceptSource, ^{
-        for (;;) {
-            struct sockaddr_in caddr;
-            socklen_t clen = sizeof(caddr);
-            int cfd = accept(fd, (struct sockaddr *)&caddr, &clen);
-            if (cfd < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK)
-                    break;
-                TVLog(@"Control socket: accept() error: %s", strerror(errno));
-                break;
-            }
-            tvCtlHandleConnection(cfd, caddr);
-        }
-    });
-
-    dispatch_source_set_cancel_handler(gTvCtlAcceptSource, ^{
-        if (gTvCtlListenFd >= 0) {
-            close(gTvCtlListenFd);
-            gTvCtlListenFd = -1;
-        }
-    });
-
-    dispatch_resume(gTvCtlAcceptSource);
-    TVLog(@"Control socket listening on 127.0.0.1:%d (daemon=%@)", gTvCtlPort,
-          gIsDaemonMode ? @"YES" : @"NO");
-}
-
-// ---------- Control Protocol Implementation ----------
-
-static void tvCtlWriteAll(int fd, const void *buf, size_t len) {
-    const uint8_t *p = (const uint8_t *)buf;
-    size_t left = len;
-    while (left > 0) {
-        ssize_t n = send(fd, p, left, 0);
-        if (n < 0) {
-            if (errno == EINTR)
-                continue;
-            break;
-        }
-        if (n == 0)
-            break;
-        p += (size_t)n;
-        left -= (size_t)n;
-    }
-}
-
-// --- Subscription helpers ---
-static void tvCtlAddSubscriber(int fd) {
-    if (fd < 0)
-        return;
-    (void)tvSetNonBlocking(fd);
-#ifdef SO_NOSIGPIPE
-    int yes = 1;
-    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &yes, sizeof(yes));
-#endif
-    // Enable TCP keepalive to detect disappeared clients
-    int kaOn = 1;
-    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &kaOn, sizeof(kaOn));
-#ifdef TCP_KEEPALIVE
-    int kaIdle = 10;
-    setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &kaIdle, sizeof(kaIdle));
-#endif
-#ifdef TCP_KEEPINTVL
-    int kaIntvl = 3;
-    setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &kaIntvl, sizeof(kaIntvl));
-#endif
-#ifdef TCP_KEEPCNT
-    int kaCnt = 3;
-    setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &kaCnt, sizeof(kaCnt));
-#endif
-    if (!gTvCtlSubscribers)
-        gTvCtlSubscribers = [[NSMutableSet alloc] init];
-    @synchronized(gTvCtlSubscribers) {
-        [gTvCtlSubscribers addObject:@(fd)];
-    }
-    TVLog(@"Control socket: subscribed fd=%d (total=%lu)", fd, (unsigned long)gTvCtlSubscribers.count);
-}
-
-static void tvCtlRemoveSubscriber(int fd, BOOL closeFd) {
-    if (!gTvCtlSubscribers)
-        return;
-    @synchronized(gTvCtlSubscribers) {
-        [gTvCtlSubscribers removeObject:@(fd)];
-    }
-    if (closeFd && fd >= 0)
-        close(fd);
-    TVLog(@"Control socket: unsubscribed fd=%d", fd);
-}
-
-static void tvCtlBroadcastChanged(void) {
-    if (!gTvCtlSubscribers || gTvCtlSubscribers.count == 0)
-        return;
-    const char *msg = "changed\n";
-    size_t len = strlen(msg);
-    NSMutableArray<NSNumber *> *dead = [NSMutableArray array];
-    @synchronized(gTvCtlSubscribers) {
-        for (NSNumber *num in gTvCtlSubscribers) {
-            int fd = [num intValue];
-            ssize_t n;
-        retry_send:
-            n = send(fd, msg, len, 0);
-            if (n == (ssize_t)len)
-                continue; // success
-            if (n < 0) {
-                if (errno == EINTR)
-                    goto retry_send;
-                if (errno == EAGAIN || errno == EWOULDBLOCK)
-                    continue; // buffer temporarily full — skip, not dead
-                // Truly dead (EPIPE, ECONNRESET, EBADF, etc.)
-                [dead addObject:num];
-            }
-            // Partial write (0 <= n < len): best-effort for 8-byte msg, not fatal
-        }
-        if (dead.count) {
-            for (NSNumber *num in dead) {
-                int fd = [num intValue];
-                (void)close(fd);
-                [gTvCtlSubscribers removeObject:num];
-            }
-        }
-    }
-}
-
-/**
- * 向所有 46752 订阅者广播任意数据（Phase 11.4：screen.subscribe 推送通道）。
- * 功能：遍历 gTvCtlSubscribers，向每个 fd 发送 data；清理已断开的 fd。
- * 参数：data - 要广播的 NSData
- * 返回值：无
- */
-static void tvCtlBroadcastToSubscribers(NSData *data) {
-    if (!gTvCtlSubscribers || gTvCtlSubscribers.count == 0 || !data.length)
-        return;
-    const char *bytes = (const char *)data.bytes;
-    size_t len = data.length;
-    NSMutableArray<NSNumber *> *dead = [NSMutableArray array];
-    @synchronized(gTvCtlSubscribers) {
-        for (NSNumber *num in gTvCtlSubscribers) {
-            int fd = [num intValue];
-            ssize_t n;
-        retry_broadcast:
-            n = send(fd, bytes, len, 0);
-            if (n == (ssize_t)len)
-                continue; // success
-            if (n < 0) {
-                if (errno == EINTR)
-                    goto retry_broadcast;
-                if (errno == EAGAIN || errno == EWOULDBLOCK)
-                    continue; // buffer temporarily full — skip
-                [dead addObject:num]; // truly dead
-            }
-            // Partial write: best-effort, not fatal
-        }
-        if (dead.count) {
-            for (NSNumber *num in dead) {
-                int fd = [num intValue];
-                (void)close(fd);
-                [gTvCtlSubscribers removeObject:num];
-            }
-        }
-    }
-}
-
-static void tvCtlScheduleBroadcastChanged(void) {
-    // Coalesce rapid changes to ~150ms
-    if (gTvCtlDebounceTimer) {
-        dispatch_source_cancel(gTvCtlDebounceTimer);
-        gTvCtlDebounceTimer = NULL;
-    }
-
-    dispatch_queue_t q = dispatch_get_main_queue();
-    dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);
-    gTvCtlDebounceTimer = t;
-
-    uint64_t delayNs = (uint64_t)(150 * NSEC_PER_MSEC);
-    dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, delayNs), DISPATCH_TIME_FOREVER, delayNs / 4);
-    dispatch_source_set_event_handler(t, ^{
-        tvCtlBroadcastChanged();
-        if (gTvCtlDebounceTimer) {
-            dispatch_source_cancel(gTvCtlDebounceTimer);
-            gTvCtlDebounceTimer = NULL;
-        }
-    });
-
-    dispatch_resume(t);
-}
-
 static NSArray *tvSnapshotClients(void) {
     // Build JSON-safe snapshot
     NSMutableArray *arr = [NSMutableArray array];
@@ -3620,24 +3533,6 @@ static NSArray *tvSnapshotClients(void) {
     }
 
     return arr;
-}
-
-static NSData *tvCtlTSVForList(void) {
-    NSArray *clients = tvSnapshotClients();
-    NSMutableString *out = [NSMutableString string];
-
-    // Header
-    [out appendString:@"id\thost\tviewOnly\tconnectedAt\tdurationSec\n"];
-    for (NSDictionary *c in clients) {
-        NSString *cid = c[@"id"] ?: @"";
-        NSString *host = c[@"host"] ?: @"";
-        BOOL vo = [c[@"viewOnly"] boolValue];
-        double t0 = [c[@"connectedAt"] doubleValue];
-        double dur = [c[@"durationSec"] doubleValue];
-        [out appendFormat:@"%@\t%@\t%@\t%.0f\t%.3f\n", cid, host, vo ? @"1" : @"0", t0, dur];
-    }
-
-    return [out dataUsingEncoding:NSUTF8StringEncoding];
 }
 
 static BOOL tvDisconnectClientById(NSString *cid, BOOL addToBlocklist) {
@@ -3683,12 +3578,6 @@ static BOOL tvDisconnectClientById(NSString *cid, BOOL addToBlocklist) {
     return found;
 }
 
-static NSData *tvCtlTextForKick(NSString *cid, BOOL addToBlocklist) {
-    BOOL ok = tvDisconnectClientById(cid, addToBlocklist);
-    const char *raw = ok ? "OK\n" : "NOT_FOUND\n";
-    return [NSData dataWithBytes:raw length:strlen(raw)];
-}
-
 static BOOL tvDisconnectAllClients(void) {
     if (!gScreen)
         return NO;
@@ -3703,193 +3592,181 @@ static BOOL tvDisconnectAllClients(void) {
     return YES;
 }
 
-void tvCtlHandleConnection(int cfd, struct sockaddr_in caddr) {
-    // Log peer and set short timeouts
-    char ipbuf[INET_ADDRSTRLEN] = {0};
-    const char *ip = inet_ntop(AF_INET, &caddr.sin_addr, ipbuf, sizeof(ipbuf));
-    TVLog(@"Control socket: connection from %s:%d (fd=%d)", ip ? ip : "?", ntohs(caddr.sin_port), cfd);
+// --- RFB 扩展 handler 实现（screen.* / clients.*，复用上方辅助函数，前向声明见任务 1）---
 
-    struct timeval tv;
-    tv.tv_sec = 2;
-    tv.tv_usec = 0;
-    setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+/** 处理 screen.hash：返回当前屏幕 pHash（16 字符 hex）
+ *  - 复用 TRScreenHasher.computeHashHexForCurrentFrame
+ *  @param cl     客户端连接指针（未使用，保留以统一 handler 签名）
+ *  @param params 请求参数（未使用）
+ *  @return       NSDictionary 响应，data[@"hash"] 为 16 字符 hex 字符串；取帧失败为 @""
+ */
+static NSDictionary *tvExtHandleScreenHash(rfbClientPtr cl, NSDictionary *params) {
+    (void)cl;
+    (void)params;
+    NSString *hex = [[TRScreenHasher sharedHasher] computeHashHexForCurrentFrame];
+    return tvExtOk(@{@"hash": hex ?: @""});
+}
 
-    // Read a single line command
-    uint8_t buf[1024];
-    size_t off = 0;
-    for (;;) {
-        ssize_t n = recv(cfd, buf + off, sizeof(buf) - off, 0);
-        if (n < 0) {
-            if (errno == EINTR)
-                continue;
-            break;
-        }
-        if (n == 0)
-            break;
-        off += (size_t)n;
-        if (off >= sizeof(buf))
-            break;
-        if (memchr(buf, '\n', off))
-            break;
+/** 处理 screen.diff：与基线哈希比较汉明距离，判定画面是否变化
+ *  - params[@"baseline"]  基线哈希（16 字符 hex 字符串）
+ *  - params[@"threshold"] 汉明距离阈值，缺省/传 0 时 TRScreenHasher 使用默认值 5
+ *  @param cl     客户端连接指针（未使用，保留以统一 handler 签名）
+ *  @param params 请求参数 NSDictionary
+ *  @return       NSDictionary 响应，data 含 distance/threshold/changed/hash；
+ *                基线非法（取帧失败）时返回 ok:NO + error:InvalidBaseline
+ */
+static NSDictionary *tvExtHandleScreenDiff(rfbClientPtr cl, NSDictionary *params) {
+    (void)cl;
+    NSString *baseline = params[@"baseline"] ?: @"";
+    NSInteger threshold = [params[@"threshold"] integerValue];
+    NSString *currentHex = nil;
+    NSDictionary *result = [[TRScreenHasher sharedHasher] diffWithBaselineHash:baseline
+                                                                      threshold:threshold
+                                                                    currentHash:&currentHex];
+    if (!result) return tvExtErr(@"InvalidBaseline");
+    return tvExtOk(@{
+        @"distance": result[@"distance"],
+        @"threshold": result[@"threshold"],
+        @"changed": result[@"changed"],
+        @"hash": currentHex ?: @""
+    });
+}
+
+/** 处理 screen.waitStable：轮询等待画面稳定
+ *  - params[@"maxMs"]/stableMs/intervalMs 为 NSTimeInterval（毫秒），缺省/传 0 用 TRScreenHasher 默认值
+ *  - params[@"threshold"] 汉明距离阈值，缺省/传 0 用默认值 3
+ *  @param cl     客户端连接指针（未使用，保留以统一 handler 签名）
+ *  @param params 请求参数 NSDictionary
+ *  @return       NSDictionary 响应，data 含 stable/frames/durationMs/hash
+ */
+static NSDictionary *tvExtHandleScreenWaitStable(rfbClientPtr cl, NSDictionary *params) {
+    (void)cl;
+    NSTimeInterval maxMs = [params[@"maxMs"] doubleValue];
+    NSTimeInterval stableMs = [params[@"stableMs"] doubleValue];
+    NSTimeInterval intervalMs = [params[@"intervalMs"] doubleValue];
+    NSInteger threshold = [params[@"threshold"] integerValue];
+    NSInteger frameCount = 0;
+    NSTimeInterval durationMs = 0;
+    NSString *lastHash = nil;
+    BOOL stable = [[TRScreenHasher sharedHasher] waitStableWithMaxMs:maxMs
+                                                            stableMs:stableMs
+                                                          intervalMs:intervalMs
+                                                           threshold:threshold
+                                                          frameCount:&frameCount
+                                                          durationMs:&durationMs
+                                                            lastHash:&lastHash];
+    return tvExtOk(@{
+        @"stable": @(stable),
+        @"frames": @(frameCount),
+        @"durationMs": @(durationMs),
+        @"hash": lastHash ?: @""
+    });
+}
+
+/** 处理 clients.count：返回当前活跃客户端数（不含管理客户端）
+ *  @param cl     客户端连接指针（未使用，保留以统一 handler 签名）
+ *  @param params 请求参数（未使用）
+ *  @return       NSDictionary 响应，data[@"count"] 为整数
+ */
+static NSDictionary *tvExtHandleClientsCount(rfbClientPtr cl, NSDictionary *params) {
+    (void)cl;
+    (void)params;
+    return tvExtOk(@{@"count": @(gClientCount)});
+}
+
+/** 处理 clients.list：返回客户端快照列表
+ *  - 复用 tvSnapshotClients()，字段 id/host/viewOnly/connectedAt/durationSec 与快照一致
+ *  @param cl     客户端连接指针（未使用，保留以统一 handler 签名）
+ *  @param params 请求参数（未使用）
+ *  @return       NSDictionary 响应，data[@"clients"] 为快照数组
+ */
+static NSDictionary *tvExtHandleClientsList(rfbClientPtr cl, NSDictionary *params) {
+    (void)cl;
+    (void)params;
+    NSArray *clients = tvSnapshotClients();
+    NSMutableArray *arr = [NSMutableArray array];
+    for (NSDictionary *c in clients) {
+        [arr addObject:@{
+            @"id": c[@"id"] ?: @"",
+            @"host": c[@"host"] ?: @"",
+            @"viewOnly": c[@"viewOnly"] ?: @NO,
+            @"connectedAt": c[@"connectedAt"] ?: @"",
+            @"durationSec": c[@"durationSec"] ?: @(0)
+        }];
     }
+    return tvExtOk(@{@"clients": arr});
+}
 
-    // Parse command
-    NSString *cmd = [[NSString alloc] initWithBytes:buf length:off encoding:NSUTF8StringEncoding];
-    if (!cmd)
-        cmd = @"";
-    cmd = [cmd stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-
-    NSData *resp = nil;
-    BOOL keepOpen = NO;
-    if (cmd.length == 0) {
-        resp = [@"ERR Empty\n" dataUsingEncoding:NSUTF8StringEncoding];
-    } else if ([cmd isEqualToString:@"count"]) {
-        NSString *s = [NSString stringWithFormat:@"%d\n", gClientCount];
-        resp = [s dataUsingEncoding:NSUTF8StringEncoding];
-    } else if ([cmd isEqualToString:@"list"]) {
-        resp = tvCtlTSVForList();
-    } else if ([cmd isEqualToString:@"subscribe on"]) {
-        tvCtlAddSubscriber(cfd);
-        const char *ok = "OK\n";
-        resp = [NSData dataWithBytes:ok length:strlen(ok)];
-        keepOpen = YES; // keep connection open for pushes
-    } else if ([cmd isEqualToString:@"subscribe off"]) {
-        tvCtlRemoveSubscriber(cfd, NO);
-        const char *ok = "OK\n";
-        resp = [NSData dataWithBytes:ok length:strlen(ok)];
-    } else if ([cmd hasPrefix:@"unblock "]) {
-        // 解冻：从临时黑名单移除 host（配合 App 端“解冻”操作）
-        NSArray *ubParts = [cmd componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-        NSString *ubHost = ubParts.count >= 2 ? ubParts[1] : @"";
-        BOOL ubRemoved = NO;
-        if (ubHost.length && gBlockedHosts) {
-            @synchronized(gBlockedHosts) {
-                if ([gBlockedHosts containsObject:ubHost]) {
-                    [gBlockedHosts removeObject:ubHost];
-                    ubRemoved = YES;
-                }
-            }
-        }
-        const char *ubRaw = ubRemoved ? "OK\n" : "NOT_FOUND\n";
-        resp = [NSData dataWithBytes:ubRaw length:strlen(ubRaw)];
-    } else if ([cmd isEqualToString:@"blocked.list"]) {
-        // 返回当前黑名单主机列表（每行一个 host，末尾换行）
-        NSMutableString *bl = [NSMutableString string];
-        if (gBlockedHosts) {
-            @synchronized(gBlockedHosts) {
-                for (NSString *h in gBlockedHosts) {
-                    [bl appendFormat:@"%@\n", h];
-                }
-            }
-        }
-        resp = [bl dataUsingEncoding:NSUTF8StringEncoding];
-    } else if ([cmd isEqualToString:@"screen.hash"]) {
-        // Phase 11.4：返回当前屏幕 pHash（16 字符 hex）
-        NSString *hex = [[TRScreenHasher sharedHasher] computeHashHexForCurrentFrame];
-        NSString *line = [NSString stringWithFormat:@"%@\n", hex];
-        resp = [line dataUsingEncoding:NSUTF8StringEncoding];
-    } else if ([cmd hasPrefix:@"screen.diff "]) {
-        // Phase 11.4：与基线哈希比较，返回 distance/changed
-        // 格式：screen.diff <baselineHash> [threshold]
-        NSArray *parts = [cmd componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-        NSString *baselineHash = parts.count >= 2 ? parts[1] : @"";
-        NSInteger threshold = parts.count >= 3 ? [parts[2] integerValue] : 0;
-        NSString *currentHex = nil;
-        NSDictionary *result = [[TRScreenHasher sharedHasher] diffWithBaselineHash:baselineHash
-                                                                          threshold:threshold
-                                                                        currentHash:&currentHex];
-        if (result) {
-            NSString *line = [NSString stringWithFormat:@"OK distance=%ld threshold=%ld changed=%d hash=%@\n",
-                              (long)[result[@"distance"] integerValue],
-                              (long)[result[@"threshold"] integerValue],
-                              [result[@"changed"] boolValue] ? 1 : 0,
-                              result[@"currentHash"]];
-            resp = [line dataUsingEncoding:NSUTF8StringEncoding];
-        } else {
-            resp = [@"ERR InvalidBaseline\n" dataUsingEncoding:NSUTF8StringEncoding];
-        }
-    } else if ([cmd hasPrefix:@"screen.waitStable"]) {
-        // Phase 11.4：轮询等待画面稳定
-        // 格式：screen.waitStable [maxMs] [stableMs] [intervalMs] [threshold]
-        NSArray *parts = [cmd componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-        NSTimeInterval maxMs = parts.count >= 2 ? [parts[1] doubleValue] : 0;
-        NSTimeInterval stableMs = parts.count >= 3 ? [parts[2] doubleValue] : 0;
-        NSTimeInterval intervalMs = parts.count >= 4 ? [parts[3] doubleValue] : 0;
-        NSInteger threshold = parts.count >= 5 ? [parts[4] integerValue] : 0;
-
-        NSInteger frameCount = 0;
-        NSTimeInterval durationMs = 0;
-        NSString *lastHash = nil;
-        BOOL stable = [[TRScreenHasher sharedHasher] waitStableWithMaxMs:maxMs
-                                                                 stableMs:stableMs
-                                                               intervalMs:intervalMs
-                                                                threshold:threshold
-                                                               frameCount:&frameCount
-                                                               durationMs:&durationMs
-                                                                 lastHash:&lastHash];
-        NSString *line = [NSString stringWithFormat:@"OK stable=%d frames=%ld durationMs=%.0f hash=%@\n",
-                          stable ? 1 : 0, (long)frameCount, durationMs, lastHash ?: @"0"];
-        resp = [line dataUsingEncoding:NSUTF8StringEncoding];
-    } else if ([cmd hasPrefix:@"screen.subscribe"]) {
-        // Phase 11.4：开启/关闭屏幕变化推送
-        // 格式：screen.subscribe on [throttleMs] [minDistance] / screen.subscribe off
-        if ([cmd hasPrefix:@"screen.subscribe on"]) {
-            NSArray *parts = [cmd componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-            NSTimeInterval throttleMs = parts.count >= 3 ? [parts[2] doubleValue] : 0;
-            NSInteger minDistance = parts.count >= 4 ? [parts[3] integerValue] : 0;
-
-            // 添加为 46752 订阅者（复用 clients.subscribe 的推送通道）
-            tvCtlAddSubscriber(cfd);
-            // 开启 pHash 订阅，推送事件通过 46752 订阅通道发送
-            [[TRScreenHasher sharedHasher] subscribeWithEnable:YES
-                                                       throttleMs:throttleMs
-                                                      minDistance:minDistance
-                                                           handler:^(NSString *hash, NSInteger distance, uint64_t timestamp) {
-                NSString *push = [NSString stringWithFormat:@"screen.event hash=%@ distance=%ld ts=%llu\n",
-                                  hash, (long)distance, (unsigned long long)timestamp];
-                NSData *pushData = [push dataUsingEncoding:NSUTF8StringEncoding];
-                tvCtlBroadcastToSubscribers(pushData);
-            }];
-            const char *ok = "OK\n";
-            resp = [NSData dataWithBytes:ok length:strlen(ok)];
-            keepOpen = YES; // 保持连接，接收推送
-        } else if ([cmd hasPrefix:@"screen.subscribe off"]) {
-            [[TRScreenHasher sharedHasher] subscribeWithEnable:NO
-                                                       throttleMs:0
-                                                      minDistance:0
-                                                           handler:nil];
-            tvCtlRemoveSubscriber(cfd, NO);
-            const char *ok = "OK\n";
-            resp = [NSData dataWithBytes:ok length:strlen(ok)];
-        } else {
-            resp = [@"ERR InvalidSubscribeArgs\n" dataUsingEncoding:NSUTF8StringEncoding];
-        }
-    } else if ([cmd hasPrefix:@"disconnect "] || [cmd hasPrefix:@"kick "] || [cmd hasPrefix:@"block "]) {
-        NSArray *parts = [cmd componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-        NSString *cid = parts.count >= 2 ? parts[1] : @"";
-        if ([cid isEqualToString:@"ALL"]) {
-            tvDisconnectAllClients();
-            resp = [@"OK\n" dataUsingEncoding:NSUTF8StringEncoding];
-        } else if (cid.length != 8) {
-            resp = [@"ERR InvalidID\n" dataUsingEncoding:NSUTF8StringEncoding];
-        } else {
-            BOOL shouldBlock = [cmd hasPrefix:@"block "];
-            resp = tvCtlTextForKick(cid, shouldBlock);
-        }
-    } else {
-        resp = [@"ERR Unknown\n" dataUsingEncoding:NSUTF8StringEncoding];
+/** 处理 clients.disconnect：踢出指定客户端（可选加入黑名单）或全部
+ *  - params[@"id"]    8 字符客户端 ID；传 "ALL" 时断开全部
+ *  - params[@"block"] 为真时同时将客户端 host 加入黑名单
+ *  @param cl     客户端连接指针（未使用，保留以统一 handler 签名）
+ *  @param params 请求参数 NSDictionary
+ *  @return       NSDictionary 响应；ID 非法返回 ok:NO + error:InvalidID，
+ *                未找到返回 ok:NO + error:NOT_FOUND
+ */
+static NSDictionary *tvExtHandleClientsDisconnect(rfbClientPtr cl, NSDictionary *params) {
+    (void)cl;
+    NSString *cid = params[@"id"] ?: @"";
+    BOOL shouldBlock = [params[@"block"] boolValue];
+    if ([cid isEqualToString:@"ALL"]) {
+        tvDisconnectAllClients();
+        return tvExtOk(nil);
     }
+    if (cid.length != 8) return tvExtErr(@"InvalidID");
+    BOOL ok = tvDisconnectClientById(cid, shouldBlock);
+    return ok ? tvExtOk(nil) : tvExtErr(@"NOT_FOUND");
+}
 
-    if (resp)
-        tvCtlWriteAll(cfd, resp.bytes, resp.length);
+/** 处理 clients.block：踢出指定客户端并加入黑名单
+ *  - params[@"id"] 8 字符客户端 ID
+ *  @param cl     客户端连接指针（未使用，保留以统一 handler 签名）
+ *  @param params 请求参数 NSDictionary
+ *  @return       NSDictionary 响应；ID 非法返回 ok:NO + error:InvalidID，
+ *                未找到返回 ok:NO + error:NOT_FOUND
+ */
+static NSDictionary *tvExtHandleClientsBlock(rfbClientPtr cl, NSDictionary *params) {
+    (void)cl;
+    NSString *cid = params[@"id"] ?: @"";
+    if (cid.length != 8) return tvExtErr(@"InvalidID");
+    BOOL ok = tvDisconnectClientById(cid, YES);
+    return ok ? tvExtOk(nil) : tvExtErr(@"NOT_FOUND");
+}
 
-    if (keepOpen) {
-        // Do not close; subscriber lifecycle managed elsewhere
-        return;
+/** 处理 clients.unblock：从黑名单移除指定 host
+ *  - params[@"host"] 待解封的主机地址
+ *  @param cl     客户端连接指针（未使用，保留以统一 handler 签名）
+ *  @param params 请求参数 NSDictionary
+ *  @return       NSDictionary 响应；host 不在黑名单返回 ok:NO + error:NOT_FOUND
+ */
+static NSDictionary *tvExtHandleClientsUnblock(rfbClientPtr cl, NSDictionary *params) {
+    (void)cl;
+    NSString *host = params[@"host"] ?: @"";
+    if (!host.length || !gBlockedHosts) return tvExtErr(@"NOT_FOUND");
+    @synchronized(gBlockedHosts) {
+        if ([gBlockedHosts containsObject:host]) {
+            [gBlockedHosts removeObject:host];
+            return tvExtOk(nil);
+        }
     }
+    return tvExtErr(@"NOT_FOUND");
+}
 
-    close(cfd);
+/** 处理 clients.blocked.list：返回当前黑名单主机列表
+ *  @param cl     客户端连接指针（未使用，保留以统一 handler 签名）
+ *  @param params 请求参数（未使用）
+ *  @return       NSDictionary 响应，data[@"hosts"] 为主机地址数组
+ */
+static NSDictionary *tvExtHandleClientsBlockedList(rfbClientPtr cl, NSDictionary *params) {
+    (void)cl;
+    (void)params;
+    NSMutableArray *hosts = [NSMutableArray array];
+    if (gBlockedHosts) {
+        @synchronized(gBlockedHosts) {
+            [hosts addObjectsFromArray:[gBlockedHosts allObjects]];
+        }
+    }
+    return tvExtOk(@{@"hosts": hosts});
 }
 
 #pragma mark - User Notifications
@@ -3982,6 +3859,7 @@ static BOOL gRestoreAssist = NO;
 static void clientGoneHook(rfbClientPtr cl) {
     // Free per-client state
     TVClientState *st = tvGetClientState(cl);
+    BOOL wasMgmt = st && st->isMgmtClient;  // 在 free(st) 前捕获，避免悬垂访问
     NSString *removeKey = nil;
     if (st) {
         if (st->clientId8[0] != '\0') {
@@ -3989,6 +3867,12 @@ static void clientGoneHook(rfbClientPtr cl) {
         }
         free(st);
         cl->clientData = NULL;
+    }
+
+    // 管理客户端：计数与状态注册已在 cap.hello 时撤销，跳过所有后续清理
+    if (wasMgmt) {
+        TVLog(@"Management client gone");
+        return;
     }
 
     // Remove by cached id (fallback to fd-derived if unavailable)
@@ -4036,9 +3920,6 @@ static void clientGoneHook(rfbClientPtr cl) {
     // Update TXT with possibly changed state (e.g., viewOnly unaffected, but keep consistent)
     refreshBonjourTXTRecord();
 
-    // Notify subscribers after removal (debounced)
-    tvCtlScheduleBroadcastChanged();
-
     // Update user notification
     tvPublishUserSingleNotifs();
 
@@ -4058,6 +3939,7 @@ static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
         st->wheelAccumPx = 0;
         st->wheelFlushScheduled = NO;
         st->clientId8[0] = '\0';
+        st->isMgmtClient = NO;  // 默认非管理客户端；cap.hello 到达后置 YES
         cl->clientData = st;
     }
 
@@ -4090,9 +3972,6 @@ static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
 
     // Update TXT (e.g., potential dynamic flags in future)
     refreshBonjourTXTRecord();
-
-    // Notify subscribers (debounced)
-    tvCtlScheduleBroadcastChanged();
 
     // Update user notification
     tvPublishUserSingleNotifs();
@@ -4584,9 +4463,6 @@ static rfbBool tvCheckPasswordByList(rfbClientPtr cl, const char *passwd, int le
         }
     }
 
-    // Notify subscribers about property change (debounced)
-    tvCtlScheduleBroadcastChanged();
-
     return rc;
 }
 
@@ -4707,6 +4583,7 @@ static void setupRfbFileTransferExtension(void) {
 static const long cSelectTimeout = 1e4; // 10 ms
 
 static void initializeAndRunRfbServer(void) {
+    setupRfbExtension();
     rfbInitServer(gScreen);
     TVLog(@"VNC server initialized on port %d, %dx%d, name '%@'", gPort, gWidth, gHeight, gDesktopName);
 
@@ -4838,9 +4715,6 @@ static void cleanupAndExit(int code) {
 
     // Clear all user notifications
     [[BulletinManager sharedManager] revokeAllNotifications];
-
-    // Stop control socket if any
-    tvStopControlSocket();
 
     if (gFileTransferRegistered) {
         rfbUnregisterTightVNCFileTransferExtension();
@@ -5009,8 +4883,6 @@ int main(int argc, const char *argv[]) {
 
         installSignalHandlers();
         installTerminationHandlers();
-
-        tvStartControlSocketIfNeeded();
     }
 
     CFRunLoopRun();

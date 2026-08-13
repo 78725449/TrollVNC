@@ -85,13 +85,11 @@ add_str ViewOnlyPassword       "${TVNC_VIEWONLY_PASSWORD:-}"
 add_str ModifierMap            "${TVNC_MODIFIER_MAP:-}"
 
 # Integers (optional)
-add_int Port                           "${TVNC_PORT:-}"
+# Port/HttpPort/GatewayPort 端口固定不可调（5901/5801/18081），不生成
 add_int MaxInflight                    "${TVNC_MAX_INFLIGHT:-}"
 add_int TileSize                       "${TVNC_TILE_SIZE:-}"
 add_int FullscreenThresholdPercent     "${TVNC_FULLSCREEN_THRESHOLD_PERCENT:-}"
 add_int MaxRects                       "${TVNC_MAX_RECTS:-}"
-add_int HttpPort                       "${TVNC_HTTP_PORT:-}"
-add_int GatewayPort                     "${TVNC_GATEWAY_PORT:-}"
 
 # Reals (optional)
 add_real KeepAliveSec         "${TVNC_KEEPALIVE_SEC:-}"

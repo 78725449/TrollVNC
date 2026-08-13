@@ -93,9 +93,7 @@ NSString *TVNCDeviceUDID(void) {
         NSString *gwHost = [gwDefaults stringForKey:@"GatewayHost"];
         if (gwHost.length) {
             env[@"TVNC_GATEWAY_HOST"] = gwHost;
-            NSInteger gwPort = [gwDefaults integerForKey:@"GatewayPort"];
-            env[@"TVNC_GATEWAY_PORT"] =
-                (gwPort > 0 && gwPort < 65536) ? [NSString stringWithFormat:@"%ld", (long)gwPort] : @"18081";
+            // GatewayPort 固定 18081（网关注册端口）不可调，不注入 env（TRGatewayClient 固定读取）
             NSString *gwToken = [gwDefaults stringForKey:@"GatewayToken"];
             if (gwToken.length) env[@"TVNC_GATEWAY_TOKEN"] = gwToken;
         }
@@ -153,12 +151,7 @@ NSString *TVNCDeviceUDID(void) {
         }
     }
 
-    // HTTP ?????? 5801?????/5801 web ????trollvncserver ?????????
-    // ?????????? Managed ?????????? 5801 ?????
-    if ([_userDefaults objectForKey:@"HttpPort"] == nil) {
-        [_userDefaults setInteger:5801 forKey:@"HttpPort"];
-        [_userDefaults synchronize];
-    }
+    // HTTP 端口固定 5801（前端入口）不可调，由 trollvncserver 硬编码，无需写 defaults
 }
 
 #pragma mark - Public Methods

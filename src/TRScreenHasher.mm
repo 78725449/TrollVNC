@@ -36,13 +36,6 @@ static const int kHashBits = 64;                      // 哈希位数
     uint8_t *_grayData;             // 灰度缓冲区数据指针
     float *_dctInput;               // DCT 输入（1024 floats）
     float *_dctOutput;              // DCT 输出（1024 floats）
-    // subscribe 状态
-    BOOL _subscribed;
-    NSTimeInterval _subscribeThrottleMs;
-    NSInteger _subscribeMinDistance;
-    TRScreenHashEventHandler _subscribeHandler;
-    uint64_t _lastPushedHash;
-    uint64_t _lastPushedTimeMs;
 }
 
 #pragma mark - 单例与初始化
@@ -89,11 +82,6 @@ static const int kHashBits = 64;                      // 哈希位数
     // DCT 输入/输出：1024 floats × 2 = 8KB
     _dctInput = (float *)malloc(kDCTLength * sizeof(float));
     _dctOutput = (float *)malloc(kDCTLength * sizeof(float));
-
-    _subscribed = NO;
-    _subscribeHandler = nil;
-    _lastPushedHash = 0;
-    _lastPushedTimeMs = 0;
 
     TVLog(@"[TRScreenHasher] 初始化完成（ARGB=%zuB, Gray=%zuB, DCT=%zuB）",
           (size_t)(kHashSize * kHashSize * 4), (size_t)(kHashSize * kHashSize),
@@ -448,109 +436,6 @@ static const int kHashBits = 64;                      // 哈希位数
     if (durationMs) *durationMs = (NSTimeInterval)([self _machTimeToMs:mach_absolute_time()] - startMs);
     if (lastHash) *lastHash = finalHash;
     return NO;
-}
-
-#pragma mark - screen.subscribe 实现
-
-/**
- * 开启/关闭屏幕变化推送订阅。
- * 功能：开启后，在 ScreenCapturer 帧回调中每帧计算 pHash，
- *      与上次推送的 hash 比较汉明距离，distance >= minDistance 且距上次推送 >= throttleMs 则推送。
- *      关闭时停止计算并释放帧回调。
- * 参数：enable      - YES 开启订阅，NO 关闭
- *      throttleMs  - 推送防抖毫秒，传 0 使用默认值 150
- *      minDistance - 最小汉明距离，传 0 使用默认值 8
- *      handler     - 推送回调（enable=YES 时不可为 nil）
- * 返回值：BOOL - 操作成功返回 YES，失败返回 NO
- */
-- (BOOL)subscribeWithEnable:(BOOL)enable
-                throttleMs:(NSTimeInterval)throttleMs
-               minDistance:(NSInteger)minDistance
-                    handler:(nullable TRScreenHashEventHandler)handler {
-    if (enable) {
-        if (!handler) {
-            TVLog(@"[TRScreenHasher] subscribe 失败：enable=YES 时 handler 不可为 nil");
-            return NO;
-        }
-        if (throttleMs <= 0) throttleMs = TRScreenSubscribeDefaultThrottleMs;
-        if (minDistance <= 0) minDistance = TRScreenSubscribeDefaultMinDistance;
-
-        dispatch_async(_queue, ^{
-            self->_subscribed = YES;
-            self->_subscribeThrottleMs = throttleMs;
-            self->_subscribeMinDistance = minDistance;
-            self->_subscribeHandler = [handler copy];
-            self->_lastPushedHash = 0;
-            self->_lastPushedTimeMs = 0;
-            TVLog(@"[TRScreenHasher] subscribe 开启（throttle=%llums, minDistance=%ld）",
-                  (unsigned long long)throttleMs, (long)minDistance);
-
-            // 挂载到 ScreenCapturer 帧回调
-            [[ScreenCapturer sharedCapturer] startCaptureWithFrameHandler:^(CMSampleBufferRef sb) {
-                [self _onFrameForSubscribe];
-            }];
-        });
-        return YES;
-    } else {
-        dispatch_async(_queue, ^{
-            self->_subscribed = NO;
-            self->_subscribeHandler = nil;
-            self->_lastPushedHash = 0;
-            self->_lastPushedTimeMs = 0;
-            TVLog(@"[TRScreenHasher] subscribe 关闭");
-            // 停止 ScreenCapturer 采集
-            // 注意：不调用 endCapture，因为 RFB 编码器可能也在用 ScreenCapturer
-            // subscribe 仅通过标志位停止计算，endCapture 由 screen.capture.stop 控制
-        });
-        return YES;
-    }
-}
-
-/**
- * ScreenCapturer 帧回调：计算 pHash 并按阈值推送。
- * 功能：每帧调用 _computeHashUnsafe 计算 pHash，与上次推送 hash 比较汉明距离，
- *      distance >= minDistance 且距上次推送 >= throttleMs 则调用 handler 推送。
- * 参数：无
- * 返回值：无
- */
-- (void)_onFrameForSubscribe {
-    if (!_subscribed || !_subscribeHandler) {
-        return;
-    }
-
-    // 已在 _queue 外（ScreenCapturer 帧回调在主线程），dispatch_async 到 _queue
-    dispatch_async(_queue, ^{
-        if (!self->_subscribed || !self->_subscribeHandler) {
-            return;
-        }
-
-        uint64_t currentHash = [self _computeHashUnsafe];
-        if (currentHash == 0) {
-            return; // 取帧失败，跳过
-        }
-
-        uint64_t nowMs = [self _machTimeToMs:mach_absolute_time()];
-
-        // 首次推送：直接推
-        if (self->_lastPushedHash == 0 && self->_lastPushedTimeMs == 0) {
-            self->_lastPushedHash = currentHash;
-            self->_lastPushedTimeMs = nowMs;
-            NSString *hex = [self hexStringFromHash:currentHash];
-            self->_subscribeHandler(hex, 0, nowMs);
-            return;
-        }
-
-        // 后续推送：检查距离和防抖
-        NSInteger dist = [self hammingDistanceBetweenHash:self->_lastPushedHash andHash:currentHash];
-        NSTimeInterval elapsed = (NSTimeInterval)(nowMs - self->_lastPushedTimeMs);
-
-        if (dist >= self->_subscribeMinDistance && elapsed >= self->_subscribeThrottleMs) {
-            self->_lastPushedHash = currentHash;
-            self->_lastPushedTimeMs = nowMs;
-            NSString *hex = [self hexStringFromHash:currentHash];
-            self->_subscribeHandler(hex, dist, nowMs);
-        }
-    });
 }
 
 #pragma mark - 工具方法

@@ -1,8 +1,9 @@
 /*
   TRGatewayClient - 内网群控网关注册/心跳客户端（BSD socket / TCP JSON 行协议）
-  功能：读取预置网关配置(GatewayHost+GatewayPort / GatewayToken)，生成并持久化设备 UUID，
-       连接网关注册端口(默认 18081)，上报能力清单（capabilities/configs/screen/httpPort，
-       宪法 7.3），定时 hello，断线退避重连；设置变更时重发 register 保持清单新鲜。
+  功能：读取预置网关配置(GatewayHost / GatewayToken)，生成并持久化设备 UUID，
+       连接网关注册端口(固定 18081)，register 仅上报连接信息 + configs（2026-08-13，
+       宪法 7.3），定时 hello，断线退避重连；设置变更时重发 register 保持 configs 新鲜。
+       端口固定不可调：18081 注册 / 5901 VNC / 5801 HTTP 硬编码，不读 GatewayPort/Port/HttpPort。
 */
 #ifndef TRGatewayClient_h
 #define TRGatewayClient_h

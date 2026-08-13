@@ -6,7 +6,7 @@
 #import <stdlib.h>
 #import <string.h>
 
-// Private posix_spawn persona API (same as used by TaskProcess+ObjC.swift)
+// Private posix_spawn persona API
 extern int posix_spawnattr_set_persona_np(posix_spawnattr_t *, int, unsigned int);
 extern int posix_spawnattr_set_persona_uid_np(posix_spawnattr_t *, uid_t);
 extern int posix_spawnattr_set_persona_gid_np(posix_spawnattr_t *, gid_t);

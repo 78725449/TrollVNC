@@ -201,63 +201,22 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     // Resign first responder status
     [self.view endEditing:YES];
 
-    // Validate ports before restarting service, using -readPreferenceValue: to get live edits
-    int port = 5901;
-    int httpPort = 0;
+    // 端口固定不可调（5901/5801），仅校验绑定地址
     NSString *bindHost = @"";
-
-    PSSpecifier *portSpec = nil;
-    PSSpecifier *httpPortSpec = nil;
     PSSpecifier *bindHostSpec = nil;
     for (PSSpecifier *sp in _specifiers) {
         NSString *key = [sp propertyForKey:@"key"];
         if (!key)
             continue;
-        if (!portSpec && [key isEqualToString:@"Port"])
-            portSpec = sp;
-        else if (!httpPortSpec && [key isEqualToString:@"HttpPort"])
-            httpPortSpec = sp;
-        else if (!bindHostSpec && [key isEqualToString:@"BindHost"])
+        if ([key isEqualToString:@"BindHost"]) {
             bindHostSpec = sp;
-        if (portSpec && httpPortSpec && bindHostSpec)
             break;
-    }
-
-    id portVal = portSpec ? [self readPreferenceValue:portSpec] : nil;
-    if ([portVal isKindOfClass:[NSNumber class]]) {
-        port = [portVal intValue];
-    } else if ([portVal isKindOfClass:[NSString class]]) {
-        port = [(NSString *)portVal intValue];
-    }
-
-    id httpPortVal = httpPortSpec ? [self readPreferenceValue:httpPortSpec] : nil;
-    if ([httpPortVal isKindOfClass:[NSNumber class]]) {
-        httpPort = [httpPortVal intValue];
-    } else if ([httpPortVal isKindOfClass:[NSString class]]) {
-        httpPort = [(NSString *)httpPortVal intValue];
+        }
     }
 
     id bindHostVal = bindHostSpec ? [self readPreferenceValue:bindHostSpec] : nil;
     if ([bindHostVal isKindOfClass:[NSString class]]) {
         bindHost = (NSString *)bindHostVal;
-    }
-
-    BOOL portInvalid = (port < 1024 || port > 65535);
-    BOOL httpInvalid = (httpPort != 0 && (httpPort < 1024 || httpPort > 65535));
-    if (portInvalid || httpInvalid) {
-        NSString *t = NSLocalizedStringFromTableInBundle(@"Invalid Port", @"Localizable", self.bundle, nil);
-        NSString *msg = NSLocalizedStringFromTableInBundle(
-            @"TCP/HTTP ports must be 1024..65535 (HTTP can be 0 to disable). The server will fallback to defaults.",
-            @"Localizable", self.bundle, nil);
-        NSString *ok = NSLocalizedStringFromTableInBundle(@"OK", @"Localizable", self.bundle, nil);
-
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:t
-                                                                       message:msg
-                                                                preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:ok style:UIAlertActionStyleCancel handler:nil]];
-
-        [self presentViewController:alert animated:YES completion:nil];
-        return; // do not restart now
     }
 
     if (!TVNCIsValidBindHostLiteral(bindHost)) {
@@ -708,11 +667,13 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 }
 
 - (void)saveGateway:(NSString *)host port:(NSInteger)port {
+    // 端口固定不可调（18081 = 网关注册端口），忽略搜索到的 port，统一写 18081
+    (void)port;
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
     [defaults setObject:host forKey:@"GatewayHost"];
-    [defaults setInteger:port forKey:@"GatewayPort"];
+    [defaults setInteger:18081 forKey:@"GatewayPort"];
     [defaults synchronize];
-    [self showGatewayMessage:[NSString stringWithFormat:@"已设置网关 %@:%ld", host, (long)port]];
+    [self showGatewayMessage:[NSString stringWithFormat:@"已设置网关 %@:%d", host, 18081]];
     [self reloadSpecifiers];
 }
 

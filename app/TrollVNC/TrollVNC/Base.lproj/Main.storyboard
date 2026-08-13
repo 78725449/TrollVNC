@@ -20,7 +20,7 @@
         <!--View Controller-->
         <scene sceneID="IRZ-Yc-mOc">
             <objects>
-                <navigationController id="Sel-8y-CGo" customClass="TVNCViewController" sceneMemberID="viewController">
+                <navigationController id="Sel-8y-CGo" sceneMemberID="viewController">
                     <navigationBar key="navigationBar" contentMode="scaleToFill" id="kw3-aP-vFh">
                         <rect key="frame" x="0.0" y="59" width="393" height="44"/>
                         <autoresizingMask key="autoresizingMask"/>

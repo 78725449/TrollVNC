@@ -10,10 +10,13 @@
 #import "TRGatewayClient.h"
 #import "TRWatchDog.h"
 #import "BulletinManager.h"
+#import "Logging.h"
 #import <UIKit/UIKit.h>
+#import <Security/Security.h>
 #import <sys/socket.h>
 #import <netinet/in.h>
 #import <arpa/inet.h>
+#import <netdb.h>
 #import <unistd.h>
 
 // trollvncserver.mm 公开访问函数（供系统查询能力调用）
@@ -23,12 +26,12 @@ extern NSDictionary *tvGetBonjourTXT(void);
 extern int tvReloadConfigForKey(const char *key);
 
 static NSString *const kDefaultsSuite = @"com.82flex.trollvnc";
-// 本地控制端口（来自 Control.h 的 kTvDefaultCtlPort，仅 127.0.0.1 回环）
-static const int kLocalCmdPort = 46752;
-// Phase 11.4：本地命令 socket 超时常量（毫秒，统一管理）
-// 短命令默认超时：count/list/disconnect/block/unblock/subscribe/blocked.list/screen.hash/screen.diff 等
+// Phase 2：RFB 端口（原 46752 控制端口已收敛，能力经 5901 RFB 扩展消息 type 0x50/0x80 承载）
+static const int kRfbPort = 5901;
+// RFB 扩展消息超时常量（毫秒，统一管理）
+// 短命令默认超时：count/list/disconnect/block/unblock/blocked.list/screen.hash/screen.diff 等
 // 本地回环实际响应 <50ms，3 秒超时已含极端 CPU 满载余量
-static const NSTimeInterval kLocalCmdDefaultTimeoutMs = 3000;
+static const NSTimeInterval kRfbDefaultTimeoutMs = 3000;
 
 #pragma mark - 预置读取辅助（未设置时回退默认值）
 
@@ -53,6 +56,251 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     if (!v) return def;
     NSString *s = [v description];
     return s.length ? s : def;
+}
+
+#pragma mark - 自签证书生成辅助（对齐 app 侧 ZTSelfSignedCertificate.m，仅依赖系统 Security 框架）
+// 说明：ZTSelfSignedCertificate 仅编译进 TrollVNC app target（TrollVNC.xcodeproj），
+//       trollvncmanager（本文件所在二进制，见 Makefile）无法链接该类，故按同目录
+//       ZTSelfSignedCertificate.m 逐行对齐移植等价逻辑（同为 Security 私有函数路径）。
+
+// Security 私有符号（与 ZTSelfSignedCertificate.m 一致，SecGenerateSelfSignedCertificate 为私有函数）
+extern SecCertificateRef SecGenerateSelfSignedCertificate(CFArrayRef subject, CFDictionaryRef __nullable parameters,
+                                                          SecKeyRef publicKey, SecKeyRef privateKey);
+extern const CFStringRef kSecOidCommonName;
+extern const CFStringRef kSecCSRBasicContraintsPathLen;
+extern const CFStringRef kSecCertificateKeyUsage;
+extern const CFStringRef kSecCertificateExtensionsEncoded;
+
+// keyUsage bit 定义（对齐 SecCertificatePriv.h / ZTSelfSignedCertificate.m）
+enum {
+    kTRKeyUsageDigitalSignature = 1 << 0,
+    kTRKeyUsageKeyEncipherment = 1 << 2,
+    kTRKeyUsageKeyCertSign = 1 << 5,
+    kTRKeyUsageCRLSign = 1 << 6,
+};
+
+/** DER → PEM（64 字符折行，对齐 ZTSelfSignedCertificate.m 的 ZTPEMFromDER） */
+static NSString *TRPEMFromDER(NSData *der, NSString *header, NSString *footer) {
+    if (!der) return nil;
+    NSString *b64 = [der base64EncodedStringWithOptions:0];
+    NSMutableString *pem = [NSMutableString string];
+    [pem appendFormat:@"-----BEGIN %@-----\n", header];
+    const NSUInteger lineLen = 64;
+    for (NSUInteger i = 0; i < b64.length; i += lineLen) {
+        NSUInteger len = MIN(lineLen, b64.length - i);
+        [pem appendFormat:@"%@\n", [b64 substringWithRange:NSMakeRange(i, len)]];
+    }
+    [pem appendFormat:@"-----END %@-----\n", footer];
+    return pem;
+}
+
+/** 手工构造 EKU = { serverAuth, clientAuth } 的 DER（对齐 ZTSelfSignedCertificate.m 的 ZTExtendedKeyUsageDER） */
+static NSData *TRExtendedKeyUsageDER(void) {
+    // 30 14       SEQUENCE, length 0x14
+    //    06 08    OBJECT IDENTIFIER, length 8
+    //       2b 06 01 05 05 07 03 01   (1.3.6.1.5.5.7.3.1 serverAuth)
+    //    06 08    OBJECT IDENTIFIER, length 8
+    //       2b 06 01 05 05 07 03 02   (1.3.6.1.5.5.7.3.2 clientAuth)
+    static const uint8_t ekuBytes[] = {0x30, 0x14, 0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03,
+                                       0x01, 0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02};
+    return [NSData dataWithBytes:ekuBytes length:sizeof(ekuBytes)];
+}
+
+/**
+ * 生成 RSA2048 自签 CA 证书 + 私钥（PEM）
+ * 功能：等价 ZTSelfSignedCertificate generateWithCommonName 的核心逻辑
+ *      （同 certParams/同 subject 结构/同 EKU，CA:TRUE pathLen=0），供 settings.generateKeys 复用。
+ * 参数：commonName - 证书 CN 字符串
+ *      certPEM - 输出：证书 PEM（-----BEGIN CERTIFICATE-----）
+ *      keyPEM  - 输出：私钥 PEM（-----BEGIN RSA PRIVATE KEY-----，PKCS#1）
+ * 返回值：BOOL - 生成成功
+ */
+static BOOL TRGenerateSelfSignedCert(NSString *commonName, NSString **certPEM, NSString **keyPEM) {
+    OSStatus status = errSecSuccess;
+    SecKeyRef publicKey = NULL;
+    SecKeyRef privateKey = NULL;
+    SecCertificateRef cert = NULL;
+    CFMutableDictionaryRef certParams = NULL;
+    CFMutableDictionaryRef encodedExts = NULL;
+    CFArrayRef subject = NULL;
+    CFArrayRef cnPair = NULL;
+    CFArrayRef cnRDN = NULL;
+    CFStringRef cfCommonName = (__bridge CFStringRef)commonName;
+    BOOL ok = NO;
+
+    // 1. 生成 RSA key pair (2048 bit)
+    {
+        CFMutableDictionaryRef keyParams =
+            CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
+                                      &kCFTypeDictionaryValueCallBacks);
+        if (!keyParams) goto cleanup;
+        CFDictionaryAddValue(keyParams, kSecAttrKeyType, kSecAttrKeyTypeRSA);
+        int keySize = 2048;
+        CFNumberRef keySizeNum = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &keySize);
+        CFDictionaryAddValue(keyParams, kSecAttrKeySizeInBits, keySizeNum);
+        CFRelease(keySizeNum);
+        CFDictionaryAddValue(keyParams, kSecAttrLabel, cfCommonName);
+        status = SecKeyGeneratePair(keyParams, &publicKey, &privateKey);
+        CFRelease(keyParams);
+        if (status != errSecSuccess || !publicKey || !privateKey) goto cleanup;
+    }
+
+    // 2. 构造 certParams：CA:TRUE pathLen=0 + keyUsage + EKU(serverAuth+clientAuth)
+    certParams = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
+                                           &kCFTypeDictionaryValueCallBacks);
+    if (!certParams) goto cleanup;
+    {
+        CFIndex pathLenValue = 0;
+        CFNumberRef pathLen = CFNumberCreate(kCFAllocatorDefault, kCFNumberCFIndexType, &pathLenValue);
+        CFDictionarySetValue(certParams, kSecCSRBasicContraintsPathLen, pathLen);
+        CFRelease(pathLen);
+    }
+    {
+        int keyUsageValue = kTRKeyUsageDigitalSignature | kTRKeyUsageKeyEncipherment |
+                            kTRKeyUsageKeyCertSign | kTRKeyUsageCRLSign;
+        CFNumberRef keyUsageNum = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &keyUsageValue);
+        CFDictionarySetValue(certParams, kSecCertificateKeyUsage, keyUsageNum);
+        CFRelease(keyUsageNum);
+    }
+    {
+        encodedExts = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
+                                                &kCFTypeDictionaryValueCallBacks);
+        if (!encodedExts) goto cleanup;
+        NSData *ekuDER = TRExtendedKeyUsageDER();
+        CFDataRef ekuData = CFDataCreate(kCFAllocatorDefault, ekuDER.bytes, (CFIndex)ekuDER.length);
+        if (!ekuData) goto cleanup;
+        CFDictionarySetValue(encodedExts, CFSTR("2.5.29.37"), ekuData); // id-ce-extKeyUsage
+        CFRelease(ekuData);
+        CFDictionarySetValue(certParams, kSecCertificateExtensionsEncoded, encodedExts);
+    }
+
+    // 3. 构造 subject（三层数组结构，仅一个 CN）
+    {
+        const void *cnFields[2] = {kSecOidCommonName, cfCommonName};
+        cnPair = CFArrayCreate(kCFAllocatorDefault, cnFields, 2, &kCFTypeArrayCallBacks);
+        if (!cnPair) goto cleanup;
+        const void *cnRDNFields[1] = {cnPair};
+        cnRDN = CFArrayCreate(kCFAllocatorDefault, cnRDNFields, 1, &kCFTypeArrayCallBacks);
+        if (!cnRDN) goto cleanup;
+        const void *rdnList[1] = {cnRDN};
+        subject = CFArrayCreate(kCFAllocatorDefault, rdnList, 1, &kCFTypeArrayCallBacks);
+        if (!subject) goto cleanup;
+    }
+
+    // 4. 生成自签 CA 证书
+    cert = SecGenerateSelfSignedCertificate(subject, certParams, publicKey, privateKey);
+    if (!cert) goto cleanup;
+
+    // 5. 导出证书（DER → PEM）
+    {
+        CFDataRef certData = SecCertificateCopyData(cert);
+        if (!certData) goto cleanup;
+        NSData *derCert = (__bridge_transfer NSData *)certData;
+        NSString *pem = TRPEMFromDER(derCert, @"CERTIFICATE", @"CERTIFICATE");
+        if (!pem) goto cleanup;
+        if (certPEM) *certPEM = pem;
+    }
+
+    // 6. 导出私钥（DER → PEM，PKCS#1 RSA PRIVATE KEY）
+    {
+        CFErrorRef error = NULL;
+        CFDataRef keyData = SecKeyCopyExternalRepresentation(privateKey, &error);
+        if (!keyData) {
+            if (error) CFRelease(error);
+            goto cleanup;
+        }
+        NSData *derKey = (__bridge_transfer NSData *)keyData;
+        NSString *pem = TRPEMFromDER(derKey, @"RSA PRIVATE KEY", @"RSA PRIVATE KEY");
+        if (!pem) goto cleanup;
+        if (keyPEM) *keyPEM = pem;
+    }
+
+    ok = (*certPEM != nil && *keyPEM != nil);
+
+cleanup:
+    if (cert) CFRelease(cert);
+    if (publicKey) CFRelease(publicKey);
+    if (privateKey) CFRelease(privateKey);
+    if (subject) CFRelease(subject);
+    if (cnRDN) CFRelease(cnRDN);
+    if (cnPair) CFRelease(cnPair);
+    if (encodedExts) CFRelease(encodedExts);
+    if (certParams) CFRelease(certParams);
+    return ok;
+}
+
+#pragma mark - 网关搜索辅助（对齐 TVNCRootListController searchGateway 非 UI 核心逻辑）
+
+/** 从 NSNetService 提取 IPv4 地址（对齐 TVNCRootListController ipAddressOfService，跳过 169.254.* 链路本地） */
+static NSString *TRIPAddressOfService(NSNetService *service) {
+    for (NSData *address in service.addresses) {
+        const struct sockaddr *sa = (const struct sockaddr *)address.bytes;
+        if (sa->sa_family != AF_INET) continue;
+        char host[NI_MAXHOST];
+        if (getnameinfo(sa, (socklen_t)address.length, host, sizeof(host), NULL, 0, NI_NUMERICHOST) == 0) {
+            NSString *ip = [NSString stringWithUTF8String:host];
+            if (![ip hasPrefix:@"169.254."]) return ip;
+        }
+    }
+    return nil;
+}
+
+/** 网关搜索收集对象（NSNetServiceBrowserDelegate/NSNetServiceDelegate，生命周期限于单次搜索） */
+@interface TRGatewaySearchHelper : NSObject <NSNetServiceBrowserDelegate, NSNetServiceDelegate>
+@property(nonatomic, strong) NSNetServiceBrowser *browser;               // 搜索器（强持有防释放，delegate 为弱引用）
+@property(nonatomic, strong) NSMutableArray<NSNetService *> *services;   // 发现的 service（resolve 后取 IPv4）
+@end
+
+@implementation TRGatewaySearchHelper
+- (instancetype)init {
+    self = [super init];
+    if (self) _services = [NSMutableArray<NSNetService *> array];
+    return self;
+}
+- (void)netServiceBrowser:(NSNetServiceBrowser *)browser didFindService:(NSNetService *)service moreComing:(BOOL)moreComing {
+    [_services addObject:service];
+    service.delegate = self;
+    [service resolveWithTimeout:3.0];
+}
+@end
+
+/**
+ * 同步执行一次局域网网关搜索（_superphone-farm._tcp）
+ * 功能：在独立串行队列线程驱动 run loop，收集 3.5s 内发现的网关，返回第一个有 IPv4 地址的 {host, port}。
+ *      对齐 TVNCRootListController searchGateway + saveGateway 语义（原实现为 UI 弹窗选择，
+ *      invoke 无 UI 场景直接取第一个可用网关）。
+ * 参数：无
+ * 返回值：NSDictionary* - {host, port}；未发现网关返回 nil
+ */
+static NSDictionary *TRSearchGatewaySync(void) {
+    __block NSDictionary *result = nil;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    dispatch_queue_t q = dispatch_queue_create("com.82flex.trollvnc.gateway-search", DISPATCH_QUEUE_SERIAL);
+    dispatch_async(q, ^{
+        TRGatewaySearchHelper *helper = [TRGatewaySearchHelper new];
+        helper.browser = [[NSNetServiceBrowser alloc] init];
+        helper.browser.delegate = helper;
+        [helper.browser searchForServicesOfType:@"_superphone-farm._tcp" inDomain:@"local."];
+        // 驱动 run loop 让 delegate 回调与 resolve 完成（3.5s 上限，bonjour 局域网响应远快于此）
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:3.5];
+        while ([deadline timeIntervalSinceNow] > 0) {
+            [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                                      beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+        }
+        [helper.browser stop];
+        helper.browser.delegate = nil;
+        // 取第一个已 resolve 的 IPv4 网关（对齐 presentFoundGateways 的 ready 过滤逻辑）
+        for (NSNetService *svc in helper.services) {
+            NSString *host = TRIPAddressOfService(svc);
+            if (host) {
+                result = @{@"host": host, @"port": @(svc.port)};
+                break;
+            }
+        }
+        dispatch_semaphore_signal(sem);
+    });
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 6 * NSEC_PER_SEC));
+    return result;
 }
 
 #pragma mark - 内部表项结构
@@ -126,6 +374,7 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     [self _registerTouchCapabilities];
     [self _registerStylusCapabilities];
     [self _registerNativeCapabilities];
+    [self _registerSettingsActions];
     [self _registerBulletinCapabilities];
     [self _registerWatchdogCapabilities];
     [self _registerLocalCmdCapabilities];
@@ -134,6 +383,21 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     [self _registerGatewayCapabilities];
     [self _registerScreenHashCapabilities];
     [self _registerConfigSchemas];
+
+    // 调试/运维向能力：菜单不显示（internal），invoke 仍可用（运维/自动化可调）
+    // 2026-08-12：卡片 ⋯ 菜单收窄为「常用管理」，调试类收敛出菜单
+    NSSet *debugCaps = [NSSet setWithArray:@[
+        @"service.signal", @"service.state", @"service.info", @"service.isActive",
+        @"service.isThrottled", @"service.validate",
+        @"sys.configSnapshot", @"sys.stats.inflight",
+        @"notify.banner", @"notify.banner.update", @"notify.revoke", @"notify.revokeAll",
+        @"gateway.deviceInfo",
+        @"screen.forceRefresh",
+        @"clients.freeze", @"clients.unfreeze",
+    ]];
+    for (TRControlCap *cap in [_controlCaps allValues]) {
+        if ([debugCaps containsObject:cap.capId]) cap.menuLevel = @"internal";
+    }
 }
 
 /** 注册 HID 硬件注入能力（Home/电源/音量/亮度/键盘等） */
@@ -172,20 +436,20 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
         @{@"id":@"power.triple",@"title":@"三击电源",   @"icon":@"⏻",  @"sel":NSStringFromSelector(@selector(powerTriplePress))},
         @{@"id":@"power.long",  @"title":@"长按电源",   @"icon":@"⏻",  @"sel":NSStringFromSelector(@selector(powerLongPress))},
         @{@"id":@"snapshot",    @"title":@"Home+Power截屏", @"icon":@"📸", @"sel":NSStringFromSelector(@selector(snapshotPress))},
-        @{@"id":@"home.down",   @"title":@"Home按下",   @"icon":@"🏠",  @"sel":NSStringFromSelector(@selector(menuDown))},
-        @{@"id":@"home.up",     @"title":@"Home抬起",   @"icon":@"🏠",  @"sel":NSStringFromSelector(@selector(menuUp))},
-        @{@"id":@"power.down",  @"title":@"电源按下",   @"icon":@"⏻",  @"sel":NSStringFromSelector(@selector(powerDown))},
-        @{@"id":@"power.up",    @"title":@"电源抬起",   @"icon":@"⏻",  @"sel":NSStringFromSelector(@selector(powerUp))},
-        @{@"id":@"volup.down",  @"title":@"音量+按下",  @"icon":@"🔊",  @"sel":NSStringFromSelector(@selector(volumeIncrementDown))},
-        @{@"id":@"volup.up",    @"title":@"音量+抬起",  @"icon":@"🔊",  @"sel":NSStringFromSelector(@selector(volumeIncrementUp))},
-        @{@"id":@"voldn.down",  @"title":@"音量−按下",  @"icon":@"🔉",  @"sel":NSStringFromSelector(@selector(volumeDecrementDown))},
-        @{@"id":@"voldn.up",    @"title":@"音量−抬起",  @"icon":@"🔉",  @"sel":NSStringFromSelector(@selector(volumeDecrementUp))},
-        @{@"id":@"mute.down",   @"title":@"静音按下",   @"icon":@"🔇",  @"sel":NSStringFromSelector(@selector(muteDown))},
-        @{@"id":@"mute.up",     @"title":@"静音抬起",   @"icon":@"🔇",  @"sel":NSStringFromSelector(@selector(muteUp))},
-        @{@"id":@"briup.down",  @"title":@"亮度+按下",  @"icon":@"☀️",  @"sel":NSStringFromSelector(@selector(displayBrightnessIncrementDown))},
-        @{@"id":@"briup.up",    @"title":@"亮度+抬起",  @"icon":@"☀️",  @"sel":NSStringFromSelector(@selector(displayBrightnessIncrementUp))},
-        @{@"id":@"bridn.down",  @"title":@"亮度−按下",  @"icon":@"🌙",  @"sel":NSStringFromSelector(@selector(displayBrightnessDecrementDown))},
-        @{@"id":@"bridn.up",    @"title":@"亮度−抬起",  @"icon":@"🌙",  @"sel":NSStringFromSelector(@selector(displayBrightnessDecrementUp))},
+        @{@"id":@"home.down",   @"title":@"Home按下",   @"icon":@"🏠",  @"sel":NSStringFromSelector(@selector(menuDown)), @"menu":@"internal"},
+        @{@"id":@"home.up",     @"title":@"Home抬起",   @"icon":@"🏠",  @"sel":NSStringFromSelector(@selector(menuUp)), @"menu":@"internal"},
+        @{@"id":@"power.down",  @"title":@"电源按下",   @"icon":@"⏻",  @"sel":NSStringFromSelector(@selector(powerDown)), @"menu":@"internal"},
+        @{@"id":@"power.up",    @"title":@"电源抬起",   @"icon":@"⏻",  @"sel":NSStringFromSelector(@selector(powerUp)), @"menu":@"internal"},
+        @{@"id":@"volup.down",  @"title":@"音量+按下",  @"icon":@"🔊",  @"sel":NSStringFromSelector(@selector(volumeIncrementDown)), @"menu":@"internal"},
+        @{@"id":@"volup.up",    @"title":@"音量+抬起",  @"icon":@"🔊",  @"sel":NSStringFromSelector(@selector(volumeIncrementUp)), @"menu":@"internal"},
+        @{@"id":@"voldn.down",  @"title":@"音量−按下",  @"icon":@"🔉",  @"sel":NSStringFromSelector(@selector(volumeDecrementDown)), @"menu":@"internal"},
+        @{@"id":@"voldn.up",    @"title":@"音量−抬起",  @"icon":@"🔉",  @"sel":NSStringFromSelector(@selector(volumeDecrementUp)), @"menu":@"internal"},
+        @{@"id":@"mute.down",   @"title":@"静音按下",   @"icon":@"🔇",  @"sel":NSStringFromSelector(@selector(muteDown)), @"menu":@"internal"},
+        @{@"id":@"mute.up",     @"title":@"静音抬起",   @"icon":@"🔇",  @"sel":NSStringFromSelector(@selector(muteUp)), @"menu":@"internal"},
+        @{@"id":@"briup.down",  @"title":@"亮度+按下",  @"icon":@"☀️",  @"sel":NSStringFromSelector(@selector(displayBrightnessIncrementDown)), @"menu":@"internal"},
+        @{@"id":@"briup.up",    @"title":@"亮度+抬起",  @"icon":@"☀️",  @"sel":NSStringFromSelector(@selector(displayBrightnessIncrementUp)), @"menu":@"internal"},
+        @{@"id":@"bridn.down",  @"title":@"亮度−按下",  @"icon":@"🌙",  @"sel":NSStringFromSelector(@selector(displayBrightnessDecrementDown)), @"menu":@"internal"},
+        @{@"id":@"bridn.up",    @"title":@"亮度−抬起",  @"icon":@"🌙",  @"sel":NSStringFromSelector(@selector(displayBrightnessDecrementUp)), @"menu":@"internal"},
         @{@"id":@"hwlock",      @"title":@"硬件键盘锁", @"icon":@"🔒",  @"sel":NSStringFromSelector(@selector(hardwareLock))},
         @{@"id":@"hwunlock",    @"title":@"硬件键盘解锁",@"icon":@"🔓", @"sel":NSStringFromSelector(@selector(hardwareUnlock))},
         @{@"id":@"releasekeys", @"title":@"释放所有按键",@"icon":@"🙊", @"sel":NSStringFromSelector(@selector(releaseEveryKeys))},
@@ -193,10 +457,12 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     for (NSDictionary *item in hidNoParam) {
         SEL sel = NSSelectorFromString(item[@"sel"]);
         NSString *capId = item[@"id"];
-        [self _registerControl:capId title:item[@"title"] icon:item[@"icon"] route:TRCapRouteHID params:@[] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+        TRControlCap *cap = [self _registerControl:capId title:item[@"title"] icon:item[@"icon"] route:TRCapRouteHID params:@[] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             ((void(*)(id,SEL))[hid methodForSelector:sel])(hid, sel);
             return @{@"ok":@YES};
         }];
+        // 按下/抬起原语为 AI 自动化专用，不进人工菜单（数组内其余条目保持默认菜单层级）
+        if (item[@"menu"]) cap.menuLevel = item[@"menu"];
     }
     // screenshot.system：系统截屏（存相册，与静默 screenshot 区分）
     [self _registerControl:@"screenshot.system" title:@"系统截屏" icon:@"📸" route:TRCapRouteHID params:@[] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
@@ -207,7 +473,7 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     NSArray *consumerSels = @[@"otherConsumerUsagePress:", @"otherConsumerUsageDown:", @"otherConsumerUsageUp:"];
     for (NSUInteger i = 0; i < consumerIds.count; i++) {
         NSString *capId = consumerIds[i]; SEL sel = NSSelectorFromString(consumerSels[i]);
-        [self _registerControl:capId title:(i==0?@"Consumer按下":(i==1?@"Consumer按下":@"Consumer抬起"))
+        TRControlCap *cap = [self _registerControl:capId title:(i==0?@"Consumer按下":(i==1?@"Consumer按下":@"Consumer抬起"))
                           icon:@"🎛" route:TRCapRouteHID
             params:@[@{@"name":@"usage",@"type":@"number",@"min":@0,@"max":@0xFFFFFFFF,@"required":@YES}]
             executor:^NSDictionary *(NSDictionary *p, NSError **e) {
@@ -215,13 +481,15 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
                 ((void(*)(id,SEL,uint32_t))[hid methodForSelector:sel])(hid, sel, usage);
                 return @{@"ok":@YES, @"usage":@(usage)};
             }];
+        // Consumer 用法原语为 AI 自动化专用，不进人工菜单
+        cap.menuLevel = @"internal";
     }
     // 任意页+用法（3 项）：params {page:int, usage:int}
     NSArray *hidPageIds = @[@"hid.press", @"hid.down", @"hid.up"];
     NSArray *hidPageSels = @[@"otherPage:usagePress:", @"otherPage:usageDown:", @"otherPage:usageUp:"];
     for (NSUInteger i = 0; i < hidPageIds.count; i++) {
         NSString *capId = hidPageIds[i]; SEL sel = NSSelectorFromString(hidPageSels[i]);
-        [self _registerControl:capId title:(i==0?@"HID按下":(i==1?@"HID按下":@"HID抬起"))
+        TRControlCap *cap = [self _registerControl:capId title:(i==0?@"HID按下":(i==1?@"HID按下":@"HID抬起"))
                           icon:@"🕹" route:TRCapRouteHID
             params:@[@{@"name":@"page",@"type":@"number",@"min":@0,@"max":@0xFFFF,@"required":@YES},
                      @{@"name":@"usage",@"type":@"number",@"min":@0,@"max":@0xFFFF,@"required":@YES}]
@@ -231,29 +499,33 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
                 ((void(*)(id,SEL,uint32_t,uint32_t))[hid methodForSelector:sel])(hid, sel, page, usage);
                 return @{@"ok":@YES, @"page":@(page), @"usage":@(usage)};
             }];
+        // HID 页/用法原语为 AI 自动化专用，不进人工菜单
+        cap.menuLevel = @"internal";
     }
-    // 键盘按下/抬起（2 项）：params {char:string(1)}
-    [self _registerControl:@"key.down" title:@"按键按下" icon:@"⬇" route:TRCapRouteHID
+    // 键盘按下/抬起（2 项）：params {char:string(1)}（AI 自动化原语，不进人工菜单）
+    TRControlCap *keyDownCap = [self _registerControl:@"key.down" title:@"按键按下" icon:@"⬇" route:TRCapRouteHID
         params:@[@{@"name":@"char",@"type":@"string",@"required":@YES}]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             NSString *c = p[@"char"];
             if (c.length != 1) { *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"char 需为单字符"}]; return nil; }
             [hid keyDown:c]; return @{@"ok":@YES};
         }];
-    [self _registerControl:@"key.up" title:@"按键抬起" icon:@"⬆" route:TRCapRouteHID
+    keyDownCap.menuLevel = @"internal";
+    TRControlCap *keyUpCap = [self _registerControl:@"key.up" title:@"按键抬起" icon:@"⬆" route:TRCapRouteHID
         params:@[@{@"name":@"char",@"type":@"string",@"required":@YES}]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             NSString *c = p[@"char"];
             if (c.length != 1) { *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"char 需为单字符"}]; return nil; }
             [hid keyUp:c]; return @{@"ok":@YES};
         }];
+    keyUpCap.menuLevel = @"internal";
 }
 
 /** 注册触控类能力（归一化 0-1 坐标，设备侧转原生像素） */
 - (void)_registerTouchCapabilities {
     STHIDEventGenerator *hid = [STHIDEventGenerator sharedGenerator];
-    // 单点触控：params {x:0-1, y:0-1}
-    [self _registerControl:@"touch.tap" title:@"点击" icon:@"👆" route:TRCapRouteTouch
+    // 单点触控：params {x:0-1, y:0-1}（画布直操语义：触控能力不进人工菜单，AI/画布经 invoke 使用）
+    TRControlCap *tapCap = [self _registerControl:@"touch.tap" title:@"点击" icon:@"👆" route:TRCapRouteTouch
         params:@[@{@"name":@"x",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
                  @{@"name":@"y",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES}]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
@@ -261,8 +533,9 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
             if (pt.x < 0) return nil;
             [hid tap:pt]; return @{@"ok":@YES};
         }];
-    // 滑动：params {x1,y1,x2,y2,duration}
-    [self _registerControl:@"touch.swipe" title:@"滑动" icon:@"↔" route:TRCapRouteTouch
+    tapCap.menuLevel = @"internal";
+    // 滑动：params {x1,y1,x2,y2,duration}（画布直操语义：不进人工菜单，AI/画布经 invoke 使用）
+    TRControlCap *swipeCap = [self _registerControl:@"touch.swipe" title:@"滑动" icon:@"↔" route:TRCapRouteTouch
         params:@[@{@"name":@"x1",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
                  @{@"name":@"y1",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
                  @{@"name":@"x2",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
@@ -277,6 +550,7 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
             [hid dragLinearWithStartPoint:s endPoint:ed duration:dur];
             return @{@"ok":@YES};
         }];
+    swipeCap.menuLevel = @"internal";
     // 文本输入：params {text:"..."}（逐字符 keyPress，支持 ASCII）
     [self _registerControl:@"type.text" title:@"文本输入" icon:@"⌨" route:TRCapRouteTouch
         params:@[@{@"name":@"text",@"type":@"string",@"required":@YES}]
@@ -313,7 +587,7 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     NSArray *tapIcons = @[@"👆×2", @"✌️", @"🖐️", @"👆⌛"];
     for (NSUInteger i = 0; i < tapIds.count; i++) {
         SEL sel = NSSelectorFromString(tapSels[i]);
-        [self _registerControl:tapIds[i] title:tapTitles[i] icon:tapIcons[i] route:TRCapRouteTouch
+        TRControlCap *cap = [self _registerControl:tapIds[i] title:tapTitles[i] icon:tapIcons[i] route:TRCapRouteTouch
             params:@[@{@"name":@"x",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
                  @{@"name":@"y",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES}] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
                 CGPoint pt = [self _denormalizePoint:p error:e];
@@ -321,9 +595,11 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
                 ((void(*)(id,SEL,CGPoint))[hid methodForSelector:sel])(hid, sel, pt);
                 return @{@"ok":@YES};
             }];
+        // 手势原语为画布直操/AI 自动化专用（双击/双指/三指/长按），不进人工菜单
+        cap.menuLevel = @"internal";
     }
-    // 曲线滑动：params {x1,y1,x2,y2,duration?}
-    [self _registerControl:@"touch.curveSwipe" title:@"曲线滑动" icon:@"〰" route:TRCapRouteTouch
+    // 曲线滑动：params {x1,y1,x2,y2,duration?}（AI 手势原语，不进人工菜单）
+    TRControlCap *curveCap = [self _registerControl:@"touch.curveSwipe" title:@"曲线滑动" icon:@"〰" route:TRCapRouteTouch
         params:@[@{@"name":@"x1",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
                  @{@"name":@"y1",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
                  @{@"name":@"x2",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
@@ -338,8 +614,9 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
             [hid dragCurveWithStartPoint:s endPoint:ed duration:dur];
             return @{@"ok":@YES};
         }];
-    // 捏合缩放：params {bounds:{x,y,w,h}, scale, angle, duration}
-    [self _registerControl:@"touch.pinch" title:@"捏合缩放" icon:@"🤏" route:TRCapRouteTouch
+    curveCap.menuLevel = @"internal";
+    // 捏合缩放：params {bounds:{x,y,w,h}, scale, angle, duration}（AI 手势原语，不进人工菜单）
+    TRControlCap *pinchCap = [self _registerControl:@"touch.pinch" title:@"捏合缩放" icon:@"🤏" route:TRCapRouteTouch
         params:@[@{@"name":@"bounds",@"type":@"object",@"required":@YES},
                  @{@"name":@"scale",@"type":@"number",@"min":@0.1,@"max":@10.0,@"required":@YES},
                  @{@"name":@"angle",@"type":@"number",@"min":@0,@"max":@(M_PI*2),@"default":@0},
@@ -362,23 +639,26 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
             [hid pinchLinearInBounds:bounds scale:pinchScale angle:angle duration:dur];
             return @{@"ok":@YES};
         }];
-    // 触摸按下/抬起：params {x,y}
-    [self _registerControl:@"touch.down" title:@"触摸按下" icon:@"👇" route:TRCapRouteTouch
+    pinchCap.menuLevel = @"internal";
+    // 触摸按下/抬起：params {x,y}（AI 自动化原语，不进人工菜单）
+    TRControlCap *touchDownCap = [self _registerControl:@"touch.down" title:@"触摸按下" icon:@"👇" route:TRCapRouteTouch
         params:@[@{@"name":@"x",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
                  @{@"name":@"y",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES}] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             CGPoint pt = [self _denormalizePoint:p error:e];
             if (pt.x < 0) return nil;
             [hid touchDown:pt]; return @{@"ok":@YES};
         }];
-    [self _registerControl:@"touch.up" title:@"触摸抬起" icon:@"👆" route:TRCapRouteTouch
+    touchDownCap.menuLevel = @"internal";
+    TRControlCap *touchUpCap = [self _registerControl:@"touch.up" title:@"触摸抬起" icon:@"👆" route:TRCapRouteTouch
         params:@[@{@"name":@"x",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
                  @{@"name":@"y",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES}] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             CGPoint pt = [self _denormalizePoint:p error:e];
             if (pt.x < 0) return nil;
             [hid liftUp:pt]; return @{@"ok":@YES};
         }];
-    // 多指同点按下/抬起：params {x,y,count}
-    [self _registerControl:@"touch.downMulti" title:@"多指按下" icon:@"👥" route:TRCapRouteTouch
+    touchUpCap.menuLevel = @"internal";
+    // 多指同点按下/抬起：params {x,y,count}（AI 自动化原语，不进人工菜单）
+    TRControlCap *downMultiCap = [self _registerControl:@"touch.downMulti" title:@"多指按下" icon:@"👥" route:TRCapRouteTouch
         params:@[@{@"name":@"x",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
                  @{@"name":@"y",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
                  @{@"name":@"count",@"type":@"number",@"min":@1,@"max":@30,@"required":@YES}]
@@ -392,7 +672,8 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
             }
             [hid touchDown:pt touchCount:count]; return @{@"ok":@YES, @"count":@(count)};
         }];
-    [self _registerControl:@"touch.upMulti" title:@"多指抬起" icon:@"👥" route:TRCapRouteTouch
+    downMultiCap.menuLevel = @"internal";
+    TRControlCap *upMultiCap = [self _registerControl:@"touch.upMulti" title:@"多指抬起" icon:@"👥" route:TRCapRouteTouch
         params:@[@{@"name":@"x",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
                  @{@"name":@"y",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
                  @{@"name":@"count",@"type":@"number",@"min":@1,@"max":@30,@"required":@YES}]
@@ -406,8 +687,9 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
             }
             [hid liftUp:pt touchCount:count]; return @{@"ok":@YES, @"count":@(count)};
         }];
-    // Batch 4：多指异点按下/抬起（每个触点独立坐标，params {points:[{x,y},...]}）
-    [self _registerControl:@"touch.downMultiAt" title:@"多指异点按下" icon:@"🖐️" route:TRCapRouteTouch
+    upMultiCap.menuLevel = @"internal";
+    // Batch 4：多指异点按下/抬起（每个触点独立坐标，params {points:[{x,y},...]}，AI 自动化原语，不进人工菜单）
+    TRControlCap *downMultiAtCap = [self _registerControl:@"touch.downMultiAt" title:@"多指异点按下" icon:@"🖐️" route:TRCapRouteTouch
         params:@[@{@"name":@"points",@"type":@"array",@"items":@{@"type":@"object",@"properties":@{@"x":@{@"type":@"number",@"min":@0,@"max":@1},@"y":@{@"type":@"number",@"min":@0,@"max":@1}},@"required":@[@"x",@"y"]},@"required":@YES}]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             NSArray *pts = p[@"points"];
@@ -430,7 +712,8 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
             free(locations);
             return @{@"ok":@YES, @"count":@(count)};
         }];
-    [self _registerControl:@"touch.upMultiAt" title:@"多指异点抬起" icon:@"🖐️" route:TRCapRouteTouch
+    downMultiAtCap.menuLevel = @"internal";
+    TRControlCap *upMultiAtCap = [self _registerControl:@"touch.upMultiAt" title:@"多指异点抬起" icon:@"🖐️" route:TRCapRouteTouch
         params:@[@{@"name":@"points",@"type":@"array",@"items":@{@"type":@"object",@"properties":@{@"x":@{@"type":@"number",@"min":@0,@"max":@1},@"y":@{@"type":@"number",@"min":@0,@"max":@1}},@"required":@[@"x",@"y"]},@"required":@YES}]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             NSArray *pts = p[@"points"];
@@ -453,13 +736,15 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
             free(locations);
             return @{@"ok":@YES, @"count":@(count)};
         }];
-    // Batch 4：重置触摸状态（清除所有触点）
-    [self _registerControl:@"touch.reset" title:@"重置触摸" icon:@"🔄" route:TRCapRouteTouch params:@[]
+    upMultiAtCap.menuLevel = @"internal";
+    // Batch 4：重置触摸状态（清除所有触点，AI 自动化原语，不进人工菜单）
+    TRControlCap *resetCap = [self _registerControl:@"touch.reset" title:@"重置触摸" icon:@"🔄" route:TRCapRouteTouch params:@[]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             [hid dispatchHandResetEvent]; return @{@"ok":@YES};
         }];
-    // Batch 4：单事件派发（透传 eventInfo 字典）
-    [self _registerControl:@"touch.event" title:@"单事件派发" icon:@"🎞️" route:TRCapRouteTouch
+    resetCap.menuLevel = @"internal";
+    // Batch 4：单事件派发（透传 eventInfo 字典，AI 自动化原语，不进人工菜单）
+    TRControlCap *eventCap = [self _registerControl:@"touch.event" title:@"单事件派发" icon:@"🎞️" route:TRCapRouteTouch
         params:@[@{@"name":@"eventInfo",@"type":@"object",@"required":@YES}]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             NSDictionary *eventInfo = p[@"eventInfo"];
@@ -470,8 +755,9 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
             [hid dispatchEventWithInfo:eventInfo];
             return @{@"ok":@YES};
         }];
-    // 通用N击M指：params {x,y,tapCount,touchCount,delay}
-    [self _registerControl:@"touch.taps" title:@"通用N击M指" icon:@"👆✖️N" route:TRCapRouteTouch
+    eventCap.menuLevel = @"internal";
+    // 通用N击M指：params {x,y,tapCount,touchCount,delay}（AI 自动化原语，不进人工菜单）
+    TRControlCap *tapsCap = [self _registerControl:@"touch.taps" title:@"通用N击M指" icon:@"👆✖️N" route:TRCapRouteTouch
         params:@[@{@"name":@"x",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
                  @{@"name":@"y",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
                  @{@"name":@"tapCount",@"type":@"number",@"min":@1,@"max":@50,@"required":@YES},
@@ -486,8 +772,9 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
             [hid sendTaps:tapCount location:pt numberOfTouches:touchCount delayBetweenTaps:delay];
             return @{@"ok":@YES, @"tapCount":@(tapCount), @"touchCount":@(touchCount)};
         }];
-    // 自定义事件流：params {eventInfo}（透传给 STHIDEventGenerator.sendEventStream:）
-    [self _registerControl:@"touch.eventStream" title:@"自定义事件流" icon:@"🎞️" route:TRCapRouteTouch
+    tapsCap.menuLevel = @"internal";
+    // 自定义事件流：params {eventInfo}（透传给 STHIDEventGenerator.sendEventStream:，AI 自动化原语，不进人工菜单）
+    TRControlCap *eventStreamCap = [self _registerControl:@"touch.eventStream" title:@"自定义事件流" icon:@"🎞️" route:TRCapRouteTouch
         params:@[@{@"name":@"eventInfo",@"type":@"object",@"required":@YES}]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             NSDictionary *eventInfo = p[@"eventInfo"];
@@ -498,6 +785,7 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
             [hid sendEventStream:eventInfo];
             return @{@"ok":@YES};
         }];
+    eventStreamCap.menuLevel = @"internal";
 }
 
 /** 注册原生调用能力（剪贴板/截屏等） */
@@ -515,7 +803,7 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
             [[ClipboardManager sharedManager] setStringFromRemote:text];
             return @{@"ok":@YES};
         }];
-    [self _registerControl:@"screenshot" title:@"截屏" icon:@"📷" route:TRCapRouteNative params:@[] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+    [self _registerControl:@"screenshot" title:@"屏幕快照" icon:@"📷" route:TRCapRouteNative params:@[] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
         // 静默截图：调用 ScreenCapturer 单帧捕获 → UIImage → JPEG base64（不触发系统动画，不存相册）
         UIImage *img = [[ScreenCapturer sharedCapturer] captureSingleFrameImage];
         if (!img) {
@@ -548,6 +836,78 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     }];
 }
 
+/**
+ * 注册设置页动作项（07 §7：Root.plist PSButtonCell 动作暴露为可 invoke 能力）
+ * 功能：settings.generateKeys 生成自签 CA + SSL 证书；settings.searchGateway 触发网关搜索/设置。
+ * 参数：无
+ * 返回值：void
+ */
+- (void)_registerSettingsActions {
+    // settings.generateKeys：生成自签证书（对齐 TVNCRootListController generateKeys 核心逻辑，
+    // 复用本文件顶部 TRGenerateSelfSignedCert，等价 ZTSelfSignedCertificate generateWithCommonName）
+    [self _registerControl:@"settings.generateKeys" title:@"生成证书" icon:@"🔐" route:TRCapRouteNative params:@[]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            // 对齐 TVNCRootListController _reallyGenerateKeys（L457-526）：
+            // 1) commonName = "SuperPhone " + UUID 后 8 位
+            // 2) 生成 RSA2048 自签 CA（等价 ZTSelfSignedCertificate generateWithCommonName）
+            // 3) 写 cacertPath/cakeyPath（Library/Preferences/com.82flex.trollvnc.ca-{cert,key}.pem），chmod 0600
+            // 4) 写 defaults SslCertFile/SslKeyFile = 路径（等价 setPreferenceValue:specifier: 效果）
+            // 跳过 UI 部分：覆盖确认弹窗/成功提示/导出证书（invoke 为无 UI 场景，直接执行覆盖生成）
+            NSString *randomUUID = [[[NSUUID UUID] UUIDString] substringFromIndex:28];
+            NSString *commonName = [NSString stringWithFormat:@"SuperPhone %@", randomUUID];
+            NSString *certPEM = nil, *keyPEM = nil;
+            if (!TRGenerateSelfSignedCert(commonName, &certPEM, &keyPEM)) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:99
+                            userInfo:@{NSLocalizedDescriptionKey:@"证书生成失败"}];
+                return nil;
+            }
+            NSError *werr = nil;
+            NSString *cacertPath =
+                [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences/com.82flex.trollvnc.ca-cert.pem"];
+            NSString *cakeyPath =
+                [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences/com.82flex.trollvnc.ca-key.pem"];
+            BOOL ok = [certPEM writeToFile:cacertPath atomically:YES encoding:NSUTF8StringEncoding error:&werr];
+            if (ok) ok = [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions:@0600}
+                                                           ofItemAtPath:cacertPath error:&werr];
+            if (ok) ok = [keyPEM writeToFile:cakeyPath atomically:YES encoding:NSUTF8StringEncoding error:&werr];
+            if (ok) ok = [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions:@0600}
+                                                           ofItemAtPath:cakeyPath error:&werr];
+            if (!ok) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:98
+                            userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"证书保存失败: %@",
+                                                                  werr.localizedDescription]}];
+                return nil;
+            }
+            // 写 defaults（对齐 certSpecifier/keysSpecifier 的 SslCertFile/SslKeyFile 键，
+            // reload=restart，setConfig 链路会在重启时生效）
+            [_defaults setObject:cacertPath forKey:@"SslCertFile"];
+            [_defaults setObject:cakeyPath forKey:@"SslKeyFile"];
+            [_defaults synchronize];
+            return @{@"ok":@YES, @"certFile":cacertPath, @"keyFile":cakeyPath};
+        }];
+    // settings.searchGateway：触发网关搜索（对齐 TVNCRootListController searchGateway + saveGateway 语义）
+    [self _registerControl:@"settings.searchGateway" title:@"搜索网关" icon:@"🔍" route:TRCapRouteNative params:@[]
+        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+            // 对齐 TVNCRootListController searchGateway（L636-716）：NSNetServiceBrowser 搜索
+            // _superphone-farm._tcp local. 域，过滤 IPv4 地址。
+            // 原实现为 UI 弹窗选择（搜索 alert → 网关 ActionSheet → saveGateway:port: 写 defaults），
+            // invoke 无 UI 场景取第一个可用网关自动保存（与 saveGateway 落盘逻辑一致）。
+            NSDictionary *found = TRSearchGatewaySync();
+            if (!found) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:14
+                            userInfo:@{NSLocalizedDescriptionKey:@"未找到网关，请检查软路由是否运行 superphone-farm"}];
+                return nil;
+            }
+            // 对齐 saveGateway:port:（L709-716）：写 defaults + synchronize
+            // （GatewayHost reload=gateway，TRGatewayClient 观察 defaults 变更会自动重发 register；
+            //   GatewayPort 固定 18081 不可调，不写入，TRGatewayClient 固定读取）
+            [_defaults setObject:found[@"host"] forKey:@"GatewayHost"];
+            [_defaults setInteger:18081 forKey:@"GatewayPort"];
+            [_defaults synchronize];
+            return @{@"ok":@YES, @"host":found[@"host"], @"port":@18081};
+        }];
+}
+
 /** 注册触控笔能力（Batch 1：4 项，归一化 0-1 坐标 + 方位/压力参数） */
 - (void)_registerStylusCapabilities {
     STHIDEventGenerator *hid = [STHIDEventGenerator sharedGenerator];
@@ -566,7 +926,7 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     NSArray *stylusTitles = @[@"触控笔点击", @"触控笔按下", @"触控笔移动"];
     for (NSUInteger i = 0; i < stylusIds.count; i++) {
         SEL sel = NSSelectorFromString(stylusSels[i]);
-        [self _registerControl:stylusIds[i] title:stylusTitles[i] icon:@"✏️" route:TRCapRouteTouch
+        TRControlCap *cap = [self _registerControl:stylusIds[i] title:stylusTitles[i] icon:@"✏️" route:TRCapRouteTouch
             params:stylusParams executor:^NSDictionary *(NSDictionary *p, NSError **e) {
                 CGPoint pt = [self _denormalizePoint:p error:e];
                 if (pt.x < 0) return nil;
@@ -576,9 +936,11 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
                 ((void(*)(id,SEL,CGPoint,CGFloat,CGFloat,CGFloat))[hid methodForSelector:sel])(hid, sel, pt, az, alt, pressure);
                 return @{@"ok":@YES};
             }];
+        // 触控笔原语为 AI 自动化专用，不进人工菜单
+        cap.menuLevel = @"internal";
     }
-    // stylus.up 只需坐标
-    [self _registerControl:@"stylus.up" title:@"触控笔抬起" icon:@"✏️" route:TRCapRouteTouch
+    // stylus.up 只需坐标（AI 自动化原语，不进人工菜单）
+    TRControlCap *stylusUpCap = [self _registerControl:@"stylus.up" title:@"触控笔抬起" icon:@"✏️" route:TRCapRouteTouch
         params:@[@{@"name":@"x",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
                  @{@"name":@"y",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES}]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
@@ -586,6 +948,7 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
             if (pt.x < 0) return nil;
             [hid stylusUpAtPoint:pt]; return @{@"ok":@YES};
         }];
+    stylusUpCap.menuLevel = @"internal";
 }
 
 /** 注册通知能力（Batch 1：4 项，调用 BulletinManager） */
@@ -704,37 +1067,29 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     return @"unknown";
 }
 
-/** 注册本地命令能力（Batch 2：6 项，经 46752 控制端口桥接 clients.* 命令） */
+/** 注册本地命令能力（Batch 2：8 项，经 5901 RFB 扩展消息桥接 clients.* 命令） */
 - (void)_registerLocalCmdCapabilities {
     // clients.count：客户端数量
     [self _registerControl:@"clients.count" title:@"客户端数量" icon:@"🔢" route:TRCapRouteLocalCmd params:@[]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSString *resp = [self _executeLocalCmd:@"count" timeoutMs:kLocalCmdDefaultTimeoutMs error:e];
+            NSDictionary *resp = [self _rfbCommand:@"clients.count" params:@{} timeoutMs:kRfbDefaultTimeoutMs error:e];
             if (!resp) return nil;
-            int count = [resp intValue];
-            return @{@"ok":@YES, @"count":@(count)};
+            if (![resp[@"ok"] boolValue]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp[@"error"] ?: @"clients.count 失败"}];
+                return nil;
+            }
+            return @{@"ok":@YES, @"count":resp[@"count"]};
         }];
-    // clients.list：客户端列表（TSV 解析为 JSON 数组）
+    // clients.list：客户端列表（服务端扩展 handler 已返回 JSON 数组，无需 TSV 解析）
     [self _registerControl:@"clients.list" title:@"客户端列表" icon:@"📋" route:TRCapRouteLocalCmd params:@[]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSString *resp = [self _executeLocalCmd:@"list" timeoutMs:kLocalCmdDefaultTimeoutMs error:e];
+            NSDictionary *resp = [self _rfbCommand:@"clients.list" params:@{} timeoutMs:kRfbDefaultTimeoutMs error:e];
             if (!resp) return nil;
-            // TSV 格式：首行表头 id\thost\tviewOnly\tconnectedAt\tdurationSec
-            NSArray *lines = [resp componentsSeparatedByString:@"\n"];
-            NSMutableArray *clients = [NSMutableArray array];
-            for (NSUInteger i = 1; i < lines.count; i++) { // 跳过表头
-                NSString *line = [lines[i] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                if (line.length == 0) continue;
-                NSArray *fields = [line componentsSeparatedByString:@"\t"];
-                if (fields.count >= 5) {
-                    [clients addObject:@{
-                        @"id":fields[0], @"host":fields[1],
-                        @"viewOnly":@([fields[2] boolValue]),
-                        @"connectedAt":@([fields[3] longLongValue]),
-                        @"durationSec":@([fields[4] doubleValue]),
-                    }];
-                }
+            if (![resp[@"ok"] boolValue]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp[@"error"] ?: @"clients.list 失败"}];
+                return nil;
             }
+            NSArray *clients = resp[@"clients"] ?: @[];
             return @{@"ok":@YES, @"clients":clients};
         }];
     // clients.disconnect：断开客户端 params {clientId}（支持 "ALL"）
@@ -743,10 +1098,10 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             NSString *cid = p[@"clientId"];
             if (!cid) { *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"clientId 缺失"}]; return nil; }
-            NSString *resp = [self _executeLocalCmd:[NSString stringWithFormat:@"disconnect %@", cid] timeoutMs:kLocalCmdDefaultTimeoutMs error:e];
+            NSDictionary *resp = [self _rfbCommand:@"clients.disconnect" params:@{@"id":cid, @"block":@NO} timeoutMs:kRfbDefaultTimeoutMs error:e];
             if (!resp) return nil;
-            if ([resp hasPrefix:@"ERR"] || [resp hasPrefix:@"NOT_FOUND"]) {
-                *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp}];
+            if (![resp[@"ok"] boolValue]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp[@"error"] ?: @"clients.disconnect 失败"}];
                 return nil;
             }
             return @{@"ok":@YES};
@@ -757,10 +1112,10 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             NSString *cid = p[@"clientId"];
             if (!cid) { *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"clientId 缺失"}]; return nil; }
-            NSString *resp = [self _executeLocalCmd:[NSString stringWithFormat:@"block %@", cid] timeoutMs:kLocalCmdDefaultTimeoutMs error:e];
+            NSDictionary *resp = [self _rfbCommand:@"clients.block" params:@{@"id":cid} timeoutMs:kRfbDefaultTimeoutMs error:e];
             if (!resp) return nil;
-            if ([resp hasPrefix:@"ERR"] || [resp hasPrefix:@"NOT_FOUND"]) {
-                *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp}];
+            if (![resp[@"ok"] boolValue]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp[@"error"] ?: @"clients.block 失败"}];
                 return nil;
             }
             return @{@"ok":@YES};
@@ -771,73 +1126,54 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             NSString *host = p[@"host"];
             if (!host) { *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"host 缺失"}]; return nil; }
-            NSString *resp = [self _executeLocalCmd:[NSString stringWithFormat:@"unblock %@", host] timeoutMs:kLocalCmdDefaultTimeoutMs error:e];
+            NSDictionary *resp = [self _rfbCommand:@"clients.unblock" params:@{@"host":host} timeoutMs:kRfbDefaultTimeoutMs error:e];
             if (!resp) return nil;
-            if ([resp hasPrefix:@"ERR"] || [resp hasPrefix:@"NOT_FOUND"]) {
-                *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp}];
+            if (![resp[@"ok"] boolValue]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp[@"error"] ?: @"clients.unblock 失败"}];
                 return nil;
             }
             return @{@"ok":@YES};
         }];
-    // clients.subscribe：订阅推送 params {enable:bool}
-    // 注意：subscribe on 在 invoke 同步模式下连接会关闭，持久订阅需通过 WS 接口
-    [self _registerControl:@"clients.subscribe" title:@"订阅推送" icon:@"📡" route:TRCapRouteLocalCmd
-        params:@[@{@"name":@"enable",@"type":@"bool",@"required":@YES}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            BOOL enable = [p[@"enable"] boolValue];
-            NSString *cmd = enable ? @"subscribe on" : @"subscribe off";
-            NSString *resp = [self _executeLocalCmd:cmd timeoutMs:kLocalCmdDefaultTimeoutMs error:e];
-            if (!resp) return nil;
-            if ([resp hasPrefix:@"ERR"]) {
-                *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp}];
-                return nil;
-            }
-            return @{@"ok":@YES, @"enabled":@(enable)};
-        }];
-    // Batch 3：黑名单列表（需 trollvncserver 控制端口 blocked.list 命令支持）
+    // Batch 3：黑名单列表（服务端扩展 handler 已返回 JSON 数组）
     [self _registerControl:@"clients.blocked.list" title:@"黑名单列表" icon:@"📜" route:TRCapRouteLocalCmd params:@[]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSString *resp = [self _executeLocalCmd:@"blocked.list" timeoutMs:kLocalCmdDefaultTimeoutMs error:e];
+            NSDictionary *resp = [self _rfbCommand:@"clients.blocked.list" params:@{} timeoutMs:kRfbDefaultTimeoutMs error:e];
             if (!resp) return nil;
-            // 响应：每行一个 host（空列表为空字符串）
-            NSMutableArray *hosts = [NSMutableArray array];
-            if (resp.length > 0) {
-                NSArray *lines = [resp componentsSeparatedByString:@"\n"];
-                for (NSString *line in lines) {
-                    NSString *h = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                    if (h.length > 0) [hosts addObject:h];
-                }
+            if (![resp[@"ok"] boolValue]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp[@"error"] ?: @"clients.blocked.list 失败"}];
+                return nil;
             }
+            NSArray *hosts = resp[@"hosts"] ?: @[];
             return @{@"ok":@YES, @"hosts":hosts};
         }];
     // clients.freeze：冻结客户端 params {clientId}
-    // 语义：与本地命令 block 等价（断开 + 加入临时黑名单，客户端下次无法自动注册）
+    // 语义：与 clients.block 等价（断开 + 加入黑名单，客户端下次无法自动注册），服务端无独立 freeze op
     // 与 TVNCClientListController.freezeClientWithId: 行为对齐，提供网关 invoke API 入口
     [self _registerControl:@"clients.freeze" title:@"冻结客户端" icon:@"🧊" route:TRCapRouteLocalCmd
         params:@[@{@"name":@"clientId",@"type":@"string",@"required":@YES}]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             NSString *cid = p[@"clientId"];
             if (!cid) { *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"clientId 缺失"}]; return nil; }
-            NSString *resp = [self _executeLocalCmd:[NSString stringWithFormat:@"block %@", cid] timeoutMs:kLocalCmdDefaultTimeoutMs error:e];
+            NSDictionary *resp = [self _rfbCommand:@"clients.block" params:@{@"id":cid} timeoutMs:kRfbDefaultTimeoutMs error:e];
             if (!resp) return nil;
-            if ([resp hasPrefix:@"ERR"] || [resp hasPrefix:@"NOT_FOUND"]) {
-                *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp}];
+            if (![resp[@"ok"] boolValue]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp[@"error"] ?: @"clients.freeze 失败"}];
                 return nil;
             }
             return @{@"ok":@YES};
         }];
     // clients.unfreeze：解冻客户端 params {host}
-    // 语义：与本地命令 unblock 等价（移除黑名单，释放客户端，下次可自动注册）
+    // 语义：与 clients.unblock 等价（移除黑名单，释放客户端，下次可自动注册），服务端无独立 unfreeze op
     // 与 TVNCClientListController.unfreezeHost: 行为对齐，提供网关 invoke API 入口
     [self _registerControl:@"clients.unfreeze" title:@"解冻客户端" icon:@"🔥" route:TRCapRouteLocalCmd
         params:@[@{@"name":@"host",@"type":@"string",@"required":@YES}]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             NSString *host = p[@"host"];
             if (!host) { *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"host 缺失"}]; return nil; }
-            NSString *resp = [self _executeLocalCmd:[NSString stringWithFormat:@"unblock %@", host] timeoutMs:kLocalCmdDefaultTimeoutMs error:e];
+            NSDictionary *resp = [self _rfbCommand:@"clients.unblock" params:@{@"host":host} timeoutMs:kRfbDefaultTimeoutMs error:e];
             if (!resp) return nil;
-            if ([resp hasPrefix:@"ERR"] || [resp hasPrefix:@"NOT_FOUND"]) {
-                *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp}];
+            if (![resp[@"ok"] boolValue]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp[@"error"] ?: @"clients.unfreeze 失败"}];
                 return nil;
             }
             return @{@"ok":@YES};
@@ -901,17 +1237,19 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 /** 注册 ScreenCapturer 扩展能力（Batch 5：5 项） */
 - (void)_registerScreenExtCapabilities {
     ScreenCapturer *cap = [ScreenCapturer sharedCapturer];
-    // screen.capture.start：开始流式采集（传 no-op block，RFB 内核有自己的帧处理）
-    [self _registerControl:@"screen.capture.start" title:@"开始采集" icon:@"▶️" route:TRCapRouteNative params:@[]
+    // screen.capture.start：开始流式采集（传 no-op block，RFB 内核有自己的帧处理；AI 专用，不进人工菜单）
+    TRControlCap *captureStartCap = [self _registerControl:@"screen.capture.start" title:@"开始采集" icon:@"▶️" route:TRCapRouteNative params:@[]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             [cap startCaptureWithFrameHandler:^(CMSampleBufferRef sb){}];
             return @{@"ok":@YES};
         }];
-    // screen.capture.stop：停止流式采集
-    [self _registerControl:@"screen.capture.stop" title:@"停止采集" icon:@"⏹️" route:TRCapRouteNative params:@[]
+    captureStartCap.menuLevel = @"internal";
+    // screen.capture.stop：停止流式采集（AI 专用，不进人工菜单）
+    TRControlCap *captureStopCap = [self _registerControl:@"screen.capture.stop" title:@"停止采集" icon:@"⏹️" route:TRCapRouteNative params:@[]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             [cap endCapture]; return @{@"ok":@YES};
         }];
+    captureStopCap.menuLevel = @"internal";
     // screen.fps：设置帧率范围 params {min, preferred, max}
     [self _registerControl:@"screen.fps" title:@"设置帧率" icon:@"🎬" route:TRCapRouteNative
         params:@[@{@"name":@"min",@"type":@"number",@"min":@1,@"max":@120,@"default":@0},
@@ -959,9 +1297,9 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 }
 
 /**
- * 注册屏幕感知能力（Phase 11.4：4 项，route=LocalCmd 转发到 46752）
+ * 注册屏幕感知能力（Phase 11.4：3 项，route=LocalCmd 转发到 5901 RFB 扩展消息）
  * 借鉴 hermes-android screen_hash/diff_screen/wait/event_stream。
- * pHash 计算在 trollvncserver 进程内执行（TRScreenHasher），通过 46752 端口桥接。
+ * pHash 计算在 trollvncserver 进程内执行（TRScreenHasher），经 5901 扩展消息桥接。
  * 全部标记为 internal（AI 专用，不进人工菜单），scenes=[ai]。
  */
 - (void)_registerScreenHashCapabilities {
@@ -969,13 +1307,13 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     TRControlCap *hashCap = [self _registerControl:@"screen.hash" title:@"屏幕哈希" icon:@"#" route:TRCapRouteLocalCmd
         params:@[]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSString *resp = [self _executeLocalCmd:@"screen.hash" timeoutMs:kLocalCmdDefaultTimeoutMs error:e];
+            NSDictionary *resp = [self _rfbCommand:@"screen.hash" params:@{} timeoutMs:kRfbDefaultTimeoutMs error:e];
             if (!resp) return nil;
-            if ([resp hasPrefix:@"ERR"]) {
-                *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp}];
+            if (![resp[@"ok"] boolValue]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp[@"error"] ?: @"screen.hash 失败"}];
                 return nil;
             }
-            NSString *hex = [resp stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            NSString *hex = resp[@"hash"];
             return @{@"ok":@YES, @"hash":hex};
         }];
     hashCap.menuLevel = @"internal";
@@ -989,15 +1327,18 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             NSString *baseline = p[@"baselineHash"] ?: @"";
             NSInteger threshold = [p[@"threshold"] integerValue];
-            NSString *cmd = [NSString stringWithFormat:@"screen.diff %@ %ld", baseline, (long)threshold];
-            NSString *resp = [self _executeLocalCmd:cmd timeoutMs:kLocalCmdDefaultTimeoutMs error:e];
+            NSDictionary *resp = [self _rfbCommand:@"screen.diff" params:@{@"baseline":baseline, @"threshold":@(threshold)} timeoutMs:kRfbDefaultTimeoutMs error:e];
             if (!resp) return nil;
-            if ([resp hasPrefix:@"ERR"]) {
-                *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp}];
+            if (![resp[@"ok"] boolValue]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp[@"error"] ?: @"screen.diff 失败"}];
                 return nil;
             }
-            // 解析 "OK distance=N threshold=N changed=N hash=XXXX"
-            return [self _parseScreenDiffResponse:resp];
+            // 服务端 tvExtOk 将 data 平铺到顶层；hash → 保持旧返回键 currentHash（兼容既有消费方）
+            return @{@"ok":@YES,
+                     @"distance":resp[@"distance"],
+                     @"threshold":resp[@"threshold"],
+                     @"changed":resp[@"changed"],
+                     @"currentHash":resp[@"hash"]};
         }];
     diffCap.menuLevel = @"internal";
     diffCap.scenes = @[@"ai"];
@@ -1014,99 +1355,28 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
             NSTimeInterval stableMs = [p[@"stableMs"] doubleValue];
             NSTimeInterval intervalMs = [p[@"intervalMs"] doubleValue];
             NSInteger threshold = [p[@"threshold"] integerValue];
-            NSString *cmd = [NSString stringWithFormat:@"screen.waitStable %.0f %.0f %.0f %ld",
-                             maxMs, stableMs, intervalMs, (long)threshold];
             // waitStable 超时 = maxMs + 2000ms 缓冲（含取帧/计算/网络耗时），最少 5 秒
             // 避免默认 3 秒 socket 超时截断 maxMs=3000 的调用
             NSTimeInterval timeoutMs = MAX(maxMs + 2000, 5000);
-            NSString *resp = [self _executeLocalCmd:cmd timeoutMs:timeoutMs error:e];
+            NSDictionary *resp = [self _rfbCommand:@"screen.waitStable"
+                                             params:@{@"maxMs":@(maxMs), @"stableMs":@(stableMs),
+                                                      @"intervalMs":@(intervalMs), @"threshold":@(threshold)}
+                                          timeoutMs:timeoutMs error:e];
             if (!resp) return nil;
-            if ([resp hasPrefix:@"ERR"]) {
-                *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp}];
+            if (![resp[@"ok"] boolValue]) {
+                if (e) *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp[@"error"] ?: @"screen.waitStable 失败"}];
                 return nil;
             }
-            return [self _parseScreenWaitStableResponse:resp];
+            // 服务端 tvExtOk 将 data 平铺到顶层；frames/hash → 保持旧返回键 frameCount/lastHash（兼容既有消费方）
+            return @{@"ok":@YES,
+                     @"stable":resp[@"stable"],
+                     @"frameCount":resp[@"frames"],
+                     @"durationMs":resp[@"durationMs"],
+                     @"lastHash":resp[@"hash"]};
         }];
     waitCap.menuLevel = @"internal";
     waitCap.scenes = @[@"ai"];
     waitCap.batchSupport = NO;
-
-    // screen.subscribe：开启/关闭屏幕变化推送
-    TRControlCap *subCap = [self _registerControl:@"screen.subscribe" title:@"变化推送" icon:@"📡" route:TRCapRouteLocalCmd
-        params:@[@{@"name":@"enable",@"type":@"bool",@"required":@YES},
-                 @{@"name":@"throttleMs",@"type":@"number",@"min":@0,@"max":@5000,@"default":@150},
-                 @{@"name":@"minDistance",@"type":@"number",@"min":@0,@"max":@64,@"default":@8}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            BOOL enable = [p[@"enable"] boolValue];
-            if (enable) {
-                NSTimeInterval throttleMs = [p[@"throttleMs"] doubleValue];
-                NSInteger minDistance = [p[@"minDistance"] integerValue];
-                NSString *cmd = [NSString stringWithFormat:@"screen.subscribe on %.0f %ld",
-                                 throttleMs, (long)minDistance];
-                NSString *resp = [self _executeLocalCmd:cmd timeoutMs:kLocalCmdDefaultTimeoutMs error:e];
-                if (!resp) return nil;
-                if ([resp hasPrefix:@"ERR"]) {
-                    *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp}];
-                    return nil;
-                }
-                return @{@"ok":@YES, @"enabled":@YES};
-            } else {
-                NSString *resp = [self _executeLocalCmd:@"screen.subscribe off" timeoutMs:kLocalCmdDefaultTimeoutMs error:e];
-                if (!resp) return nil;
-                return @{@"ok":@YES, @"enabled":@NO};
-            }
-        }];
-    subCap.menuLevel = @"internal";
-    subCap.scenes = @[@"ai"];
-    subCap.batchSupport = NO;
-}
-
-/**
- * 解析 screen.diff 命令响应（"OK distance=N threshold=N changed=N hash=XXXX"）。
- * 功能：将 46752 端口返回的文本响应解析为字典。
- * 参数：resp - 响应字符串
- * 返回值：NSDictionary* - {ok, distance, threshold, changed, currentHash}
- */
-- (NSDictionary *)_parseScreenDiffResponse:(NSString *)resp {
-    NSMutableDictionary *result = [NSMutableDictionary dictionary];
-    result[@"ok"] = @YES;
-    NSArray *tokens = [resp componentsSeparatedByString:@" "];
-    for (NSString *token in tokens) {
-        if ([token hasPrefix:@"distance="]) {
-            result[@"distance"] = @([[token substringFromIndex:9] integerValue]);
-        } else if ([token hasPrefix:@"threshold="]) {
-            result[@"threshold"] = @([[token substringFromIndex:10] integerValue]);
-        } else if ([token hasPrefix:@"changed="]) {
-            result[@"changed"] = @([[token substringFromIndex:8] integerValue] != 0);
-        } else if ([token hasPrefix:@"hash="]) {
-            result[@"currentHash"] = [token substringFromIndex:5];
-        }
-    }
-    return result;
-}
-
-/**
- * 解析 screen.waitStable 命令响应（"OK stable=N frames=N durationMs=N hash=XXXX"）。
- * 功能：将 46752 端口返回的文本响应解析为字典。
- * 参数：resp - 响应字符串
- * 返回值：NSDictionary* - {ok, stable, frameCount, durationMs, lastHash}
- */
-- (NSDictionary *)_parseScreenWaitStableResponse:(NSString *)resp {
-    NSMutableDictionary *result = [NSMutableDictionary dictionary];
-    result[@"ok"] = @YES;
-    NSArray *tokens = [resp componentsSeparatedByString:@" "];
-    for (NSString *token in tokens) {
-        if ([token hasPrefix:@"stable="]) {
-            result[@"stable"] = @([[token substringFromIndex:7] integerValue] != 0);
-        } else if ([token hasPrefix:@"frames="]) {
-            result[@"frameCount"] = @([[token substringFromIndex:7] integerValue]);
-        } else if ([token hasPrefix:@"durationMs="]) {
-            result[@"durationMs"] = @([[token substringFromIndex:11] doubleValue]);
-        } else if ([token hasPrefix:@"hash="]) {
-            result[@"lastHash"] = [token substringFromIndex:5];
-        }
-    }
-    return result;
 }
 
 /**
@@ -1200,7 +1470,7 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     [self _registerConfig:@"DeferWindowSec" title:@"延迟窗口" type:@"number" min:@0 max:@0.5 step:@0.005 reload:TRConfigReloadHot];
     [self _registerConfig:@"MaxInflight" title:@"最大并行帧" type:@"number" min:@0 max:@8 step:@1 reload:TRConfigReloadHot];
     // Phase 8.3：PerformanceMode 枚举合并（替代 TileSize/MaxRects/FullscreenThresholdPercent/AsyncSwap 独立配置）
-    // 4 项底层参数仍保留注册，仅在 custom 模式下由 UI 暴露（见 TVNCSettingsViewController visibleWhen 标记）
+    // 4 项底层参数仍保留注册，仅在 custom 模式下由设置页 UI 暴露（visibleWhen 标记）
     [self _registerConfig:@"PerformanceMode" title:@"性能模式" type:@"enum"
         enumValues:@[@"balanced", @"quality", @"performance", @"custom"]
         enumTitles:@[@"均衡", @"画质", @"性能", @"自定义"] reload:TRConfigReloadHot];
@@ -1222,16 +1492,13 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     [self _registerConfig:@"ClipboardEnabled" title:@"剪贴板同步" type:@"bool" reload:TRConfigReloadInstant];
     [self _registerConfig:@"FullPassword" title:@"完全访问密码" type:@"password" reload:TRConfigReloadRestart];
     [self _registerConfig:@"ViewOnlyPassword" title:@"只读密码" type:@"password" reload:TRConfigReloadRestart];
-    // 连接
-    [self _registerConfig:@"Port" title:@"TCP 端口" type:@"number" min:@1 max:@65535 step:@1 reload:TRConfigReloadRestart];
+    // 连接（端口固定不可调：5901/5801/18081 写死，不注册 Port/HttpPort/GatewayPort）
     [self _registerConfig:@"BindHost" title:@"绑定地址" type:@"string" reload:TRConfigReloadRestart];
     [self _registerConfig:@"BonjourEnabled" title:@"自动发现" type:@"bool" reload:TRConfigReloadGateway];
-    [self _registerConfig:@"HttpPort" title:@"HTTP 端口" type:@"number" min:@0 max:@65535 step:@1 reload:TRConfigReloadRestart];
     [self _registerConfig:@"HttpDir" title:@"HTTP 根目录" type:@"string" reload:TRConfigReloadRestart];
     // Phase 8.1 补齐：网关与 SSL（服务开关 / 网关接入 / SSL 证书）
     [self _registerConfig:@"Enabled" title:@"服务启用" type:@"bool" reload:TRConfigReloadRestart];
     [self _registerConfig:@"GatewayHost" title:@"网关地址" type:@"string" reload:TRConfigReloadGateway];
-    [self _registerConfig:@"GatewayPort" title:@"网关端口" type:@"number" min:@1 max:@65535 step:@1 reload:TRConfigReloadGateway];
     [self _registerConfig:@"GatewayToken" title:@"网关令牌" type:@"password" reload:TRConfigReloadGateway];
     [self _registerConfig:@"SslCertFile" title:@"SSL证书文件" type:@"string" reload:TRConfigReloadRestart];
     [self _registerConfig:@"SslKeyFile" title:@"SSL私钥文件" type:@"string" reload:TRConfigReloadRestart];
@@ -1284,11 +1551,6 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 
 #pragma mark - 能力查询
 
-/** 所有控制型能力 ID（供上报 capabilities[]） */
-- (NSArray<NSString *> *)allCapabilityIds {
-    return _controlCaps.allKeys;
-}
-
 /** 所有控制型能力完整元数据（含 id/title/icon/route/params） */
 - (NSArray<NSDictionary *> *)allControlMetadata {
     NSMutableArray *arr = [NSMutableArray array];
@@ -1296,12 +1558,6 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
         [arr addObject:[self _controlMetadata:cap]];
     }
     return arr;
-}
-
-/** 按能力 ID 查询元数据 */
-- (NSDictionary *)metadataForId:(NSString *)capId {
-    TRControlCap *cap = _controlCaps[capId];
-    return cap ? [self _controlMetadata:cap] : nil;
 }
 
 /**
@@ -1344,9 +1600,9 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     if ([capId hasPrefix:@"clients."]) return @"system";
     // Phase 11.3：应用与启动
     if ([capId hasPrefix:@"app."]) return @"app";
-    // Phase 11.4：屏幕感知（screen.hash/diff/waitStable/subscribe）
+    // Phase 11.4：屏幕感知（screen.hash/diff/waitStable）
     if ([capId hasPrefix:@"screen.hash"] || [capId hasPrefix:@"screen.diff"] ||
-        [capId hasPrefix:@"screen.waitStable"] || [capId hasPrefix:@"screen.subscribe"]) {
+        [capId hasPrefix:@"screen.waitStable"]) {
         return @"screen";
     }
     // Phase 11.2：自动化编排
@@ -1455,12 +1711,6 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     return cfg;
 }
 
-/** 按配置 key 查询 schema */
-- (NSDictionary *)schemaForKey:(NSString *)key {
-    TRConfigCap *cap = _configCaps[key];
-    return cap ? [self _configSchemaDict:cap] : nil;
-}
-
 /** 构建配置 schema 字典 */
 - (NSDictionary *)_configSchemaDict:(TRConfigCap *)cap {
     NSMutableDictionary *d = [NSMutableDictionary dictionary];
@@ -1499,11 +1749,11 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     }
     if ([cap.type isEqualToString:@"number"]) {
         NSDictionary *defs = @{
-            @"Scale": @1.0, @"Port": @5901, @"HttpPort": @0, @"OrientationPadFix": @0,
+            @"Scale": @1.0, @"OrientationPadFix": @0,
             @"DeferWindowSec": @0.015, @"MaxInflight": @2, @"TileSize": @32,
             @"FullscreenThresholdPercent": @0, @"MaxRects": @256,
             @"WheelStepPx": @48.0, @"KeepAliveSec": @0,
-            @"GatewayPort": @18081, @"ThumbInterval": @5,
+            @"ThumbInterval": @5,
         };
         return defs[key] ?: @0;
     }
@@ -1733,66 +1983,178 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     return CGPointMake(nx * pw, ny * ph);
 }
 
-/** 执行本地控制端口命令（同步 socket 连 127.0.0.1:46752，自定义超时）
- 功能：建立 TCP 连接，发送命令+\n，读取响应，关闭连接。
-       Phase 11.4 统一接口：所有 46752 命令桥接均通过此方法，超时由调用方显式指定。
-       短命令（count/list/disconnect/block/unblock/subscribe/blocked.list/screen.hash/screen.diff）
-       使用 kLocalCmdDefaultTimeoutMs 常量；长耗时命令（screen.waitStable）传动态值 MAX(maxMs+2000, 5000)。
- 参数：cmd       - 命令字符串（不含换行符，如 "count" / "screen.waitStable 3000 500 200 3"）
-      timeoutMs - 收发超时毫秒数（<=0 时回退 kLocalCmdDefaultTimeoutMs）
-      error     - 失败时设置错误（连接失败/发送失败/读取失败）
- 返回值：NSString* - 响应字符串（已 trim 换行和空白）；失败返回 nil
+#pragma mark - RFB 扩展消息桥接（5901，type 0x50/0x80）
+
+/** 持久 RFB 连接状态（管理客户端连接，复用直至断开/失败；invoke 在网关 worker 串行执行，无需加锁） */
+static int sRfbFd = -1;
+
+/**
+ * 建立 RFB 连接（含握手：ProtocolVersion → Security → ClientInit → ServerInit → cap.hello）
+ * 功能：连接 127.0.0.1:5901，完成 RFB 3.8 握手并以管理客户端身份发送 cap.hello
+ *      （服务端据此标记豁免：不计入客户端数、不推帧）。握手完成后连接保持复用。
+ * 参数：error - 失败时设置错误（任一步失败均 close(fd) 并返回 -1）
+ * 返回值：int - 成功返回连接 fd；失败返回 -1
  */
-- (nullable NSString *)_executeLocalCmd:(NSString *)cmd timeoutMs:(NSTimeInterval)timeoutMs error:(NSError **)error {
+static int tvRfbConnect(NSError **error) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
-        if (error) *error = [NSError errorWithDomain:@"TRCap" code:10 userInfo:@{NSLocalizedDescriptionKey:@"创建 socket 失败"}];
-        return nil;
+        if (error) *error = [NSError errorWithDomain:@"TRCap" code:10
+            userInfo:@{NSLocalizedDescriptionKey:@"创建 socket 失败"}];
+        return -1;
     }
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
+    struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(kLocalCmdPort);
+    addr.sin_port = htons(kRfbPort);
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    // 自定义收发超时（毫秒 → 秒+微秒），防止 invoke 阻塞
-    if (timeoutMs <= 0) timeoutMs = 3000;
-    struct timeval tv = {
-        .tv_sec = (time_t)(timeoutMs / 1000),
-        .tv_usec = (suseconds_t)((fmod(timeoutMs, 1000.0)) * 1000)
-    };
+    struct timeval tv = {.tv_sec = 5, .tv_usec = 0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(fd);
-        if (error) *error = [NSError errorWithDomain:@"TRCap" code:11 userInfo:@{NSLocalizedDescriptionKey:@"连接 46752 控制端口失败（trollvncserver 可能未运行）"}];
+        if (error) *error = [NSError errorWithDomain:@"TRCap" code:11
+            userInfo:@{NSLocalizedDescriptionKey:@"连接 5901 RFB 端口失败（trollvncserver 可能未运行）"}];
+        return -1;
+    }
+    // --- RFB 握手 ---
+    char buf[256];
+    // 1. 读 ProtocolVersion（12 字节 "RFB 003.008\n"）
+    ssize_t n = recv(fd, buf, 12, MSG_WAITALL);
+    if (n != 12 || strncmp(buf, "RFB", 3) != 0) {
+        close(fd);
+        if (error) *error = [NSError errorWithDomain:@"TRCap" code:12
+            userInfo:@{NSLocalizedDescriptionKey:@"RFB 握手失败：ProtocolVersion"}];
+        return -1;
+    }
+    // 发送 ProtocolVersion
+    send(fd, "RFB 003.008\n", 12, 0);
+    // 2. 读 Security types（1 字节 count + count 字节 types；LibVNCServer 3.8 始终发送 count+list）
+    uint8_t secCount = 0;
+    if (recv(fd, &secCount, 1, MSG_WAITALL) != 1) { close(fd); if (error) *error = [NSError errorWithDomain:@"TRCap" code:12 userInfo:@{NSLocalizedDescriptionKey:@"RFB 握手失败：Security types"}]; return -1; }
+    if (secCount > 0) {
+        // 读 secCount 字节，选 type=1（None）；clamp 防越界（自有服务端最多 2 种）
+        uint8_t secTypes[32] = {0};
+        uint8_t readCount = MIN(secCount, (uint8_t)sizeof(secTypes));
+        recv(fd, secTypes, readCount, MSG_WAITALL);
+        uint8_t chosen = 1; // SecurityTypeNone（无认证）
+        send(fd, &chosen, 1, 0);
+        // 读 SecurityResult（4 字节，0=OK）
+        uint32_t secResult = 0;
+        if (recv(fd, &secResult, 4, MSG_WAITALL) != 4) { close(fd); if (error) *error = [NSError errorWithDomain:@"TRCap" code:12 userInfo:@{NSLocalizedDescriptionKey:@"RFB 握手失败：SecurityResult"}]; return -1; }
+        if (ntohl(secResult) != 0) { close(fd); if (error) *error = [NSError errorWithDomain:@"TRCap" code:12 userInfo:@{NSLocalizedDescriptionKey:@"RFB 握手失败：认证未通过"}]; return -1; }
+    }
+    // 3. ClientInit（shared=1）
+    uint8_t shared = 1;
+    send(fd, &shared, 1, 0);
+    // 4. 读 ServerInit：width(2) + height(2) + pixformat(16) + nameLen(4) + name
+    uint8_t initBuf[24];
+    if (recv(fd, initBuf, 24, MSG_WAITALL) != 24) { close(fd); if (error) *error = [NSError errorWithDomain:@"TRCap" code:12 userInfo:@{NSLocalizedDescriptionKey:@"RFB 握手失败：ServerInit"}]; return -1; }
+    uint32_t nameLen = 0;
+    memcpy(&nameLen, initBuf + 20, 4);
+    nameLen = ntohl(nameLen);
+    if (nameLen > 0 && nameLen < sizeof(buf)) {
+        recv(fd, buf, nameLen, MSG_WAITALL);
+    }
+    // 5. 发送 cap.hello 标记为管理客户端
+    NSDictionary *hello = @{@"op": @"cap.hello", @"params": @{@"mgmt": @YES}};
+    NSData *json = [NSJSONSerialization dataWithJSONObject:hello options:0 error:nil];
+    uint8_t header[8];
+    header[0] = 0x50;
+    memset(header + 1, 0, 3);
+    uint32_t payloadLen = htonl((uint32_t)json.length);
+    memcpy(header + 4, &payloadLen, 4);
+    send(fd, header, 8, 0);
+    send(fd, json.bytes, json.length, 0);
+    // 读 cap.hello 响应（8 字节头 + payload）
+    uint8_t respHeader[8];
+    if (recv(fd, respHeader, 8, MSG_WAITALL) != 8) { close(fd); if (error) *error = [NSError errorWithDomain:@"TRCap" code:12 userInfo:@{NSLocalizedDescriptionKey:@"RFB 握手失败：cap.hello 无响应"}]; return -1; }
+    uint32_t respLen = 0;
+    memcpy(&respLen, respHeader + 4, 4);
+    respLen = ntohl(respLen);
+    if (respLen > 0 && respLen < sizeof(buf)) {
+        recv(fd, buf, respLen, MSG_WAITALL);
+    }
+    TVLog(@"RFB 管理连接已建立 (fd=%d)", fd);
+    return fd;
+}
+
+/**
+ * 发送 RFB 扩展消息并读取响应（复用持久连接）
+ * 功能：以 JSON 请求 {op, params} 封装为 0x50 帧发送到 5901，读取 0x80 帧解析 JSON 响应。
+ *      连接失效（sRfbFd<0 或发送失败）时自动重连一次再发送。持久连接跨多次调用复用。
+ * 参数：op        - 扩展操作名（如 "clients.count" / "screen.hash"）
+ *      params    - 请求参数字典（可为空）
+ *      timeoutMs - 收发超时毫秒数（<=0 时回退 kRfbDefaultTimeoutMs）
+ *      error     - 失败时设置错误（连接失败/发送失败/读取失败/响应异常）
+ * 返回值：NSDictionary* - 服务端 JSON 响应（含 ok 字段）；失败返回 nil
+ */
+- (nullable NSDictionary *)_rfbCommand:(NSString *)op
+                                 params:(NSDictionary *)params
+                              timeoutMs:(NSTimeInterval)timeoutMs
+                                 error:(NSError **)error {
+    // 确保连接存活
+    if (sRfbFd < 0) {
+        sRfbFd = tvRfbConnect(error);
+        if (sRfbFd < 0) return nil;
+    }
+    // 设置超时
+    if (timeoutMs <= 0) timeoutMs = kRfbDefaultTimeoutMs;
+    struct timeval tv = {
+        .tv_sec = (time_t)(timeoutMs / 1000),
+        .tv_usec = (suseconds_t)(fmod(timeoutMs, 1000.0) * 1000)
+    };
+    setsockopt(sRfbFd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sRfbFd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    // 构造消息
+    NSDictionary *req = @{@"op": op, @"params": params ?: @{}};
+    NSData *json = [NSJSONSerialization dataWithJSONObject:req options:0 error:nil];
+    if (!json) {
+        if (error) *error = [NSError errorWithDomain:@"TRCap" code:13
+            userInfo:@{NSLocalizedDescriptionKey:@"JSON 序列化失败"}];
         return nil;
     }
-    // 发送命令 + \n
-    NSString *line = [cmd stringByAppendingString:@"\n"];
-    const char *data = [line UTF8String];
-    size_t total = strlen(data);
-    ssize_t sent = 0;
-    while (sent < (ssize_t)total) {
-        ssize_t n = send(fd, data + sent, total - sent, 0);
-        if (n <= 0) {
-            close(fd);
-            if (error) *error = [NSError errorWithDomain:@"TRCap" code:12 userInfo:@{NSLocalizedDescriptionKey:@"发送命令失败"}];
-            return nil;
-        }
-        sent += n;
+    uint8_t header[8];
+    header[0] = 0x50;
+    memset(header + 1, 0, 3);
+    uint32_t payloadLen = htonl((uint32_t)json.length);
+    memcpy(header + 4, &payloadLen, 4);
+    // 发送
+    if (send(sRfbFd, header, 8, 0) != 8 ||
+        send(sRfbFd, json.bytes, json.length, 0) != (ssize_t)json.length) {
+        // 连接断开，重连一次再发
+        close(sRfbFd); sRfbFd = -1;
+        sRfbFd = tvRfbConnect(error);
+        if (sRfbFd < 0) return nil;
+        // 重连后重新设置收发超时（tvRfbConnect 内部固定 5 秒，按调用方 timeoutMs 重设）
+        setsockopt(sRfbFd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(sRfbFd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        send(sRfbFd, header, 8, 0);
+        send(sRfbFd, json.bytes, json.length, 0);
     }
-    // 读取响应（遇到 \n 即结束，与 trollvncserver 命令处理协议一致）
-    NSMutableData *resp = [NSMutableData data];
-    char buf[1024];
-    while (YES) {
-        ssize_t n = recv(fd, buf, sizeof(buf), 0);
-        if (n <= 0) break;
-        [resp appendBytes:buf length:n];
-        if (memchr(resp.bytes, '\n', resp.length)) break;
+    // 读响应
+    uint8_t respHeader[8];
+    ssize_t n = recv(sRfbFd, respHeader, 8, MSG_WAITALL);
+    if (n != 8 || respHeader[0] != 0x80) {
+        close(sRfbFd); sRfbFd = -1;
+        if (error) *error = [NSError errorWithDomain:@"TRCap" code:14
+            userInfo:@{NSLocalizedDescriptionKey:@"读取扩展响应失败"}];
+        return nil;
     }
-    close(fd);
-    NSString *result = [[NSString alloc] initWithData:resp encoding:NSUTF8StringEncoding];
-    return [result stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    uint32_t respLen = 0;
+    memcpy(&respLen, respHeader + 4, 4);
+    respLen = ntohl(respLen);
+    if (respLen == 0 || respLen > 1024 * 1024) {
+        if (error) *error = [NSError errorWithDomain:@"TRCap" code:15
+            userInfo:@{NSLocalizedDescriptionKey:@"响应长度异常"}];
+        return nil;
+    }
+    NSMutableData *respData = [NSMutableData dataWithLength:respLen];
+    if (recv(sRfbFd, respData.mutableBytes, respLen, MSG_WAITALL) != (ssize_t)respLen) {
+        close(sRfbFd); sRfbFd = -1;
+        if (error) *error = [NSError errorWithDomain:@"TRCap" code:14
+            userInfo:@{NSLocalizedDescriptionKey:@"读取响应 payload 失败"}];
+        return nil;
+    }
+    return [NSJSONSerialization JSONObjectWithData:respData options:0 error:nil];
 }
 
 @end

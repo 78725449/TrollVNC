@@ -21,29 +21,6 @@
 
 #define TVNC_NOTIFY_PREFS_CHANGED "com.82flex.trollvnc.prefs-changed"
 
-/// 格式化设备"最后在线时间"字段（网关可能返回字符串或毫秒时间戳 NSNumber）。
-/// 类型安全：NSString 原样返回；NSNumber 按毫秒时间戳格式化为 "MM-dd HH:mm"；其它/空返回 @""。
-/// @param raw 原始字段值（d[@"lastSeen"] 或 d[@"lastOnline"]，可为 nil/NSNull/NSNumber/NSString）
-/// @return 可展示文本；无有效值返回空串
-NS_INLINE NSString *TVNCFormatLastSeen(id raw) {
-    if ([raw isKindOfClass:[NSString class]]) {
-        return [(NSString *)raw length] ? (NSString *)raw : @"";
-    }
-    if ([raw isKindOfClass:[NSNumber class]]) {
-        double ms = [(NSNumber *)raw doubleValue];
-        if (ms <= 0) return @"";
-        NSDate *date = [NSDate dateWithTimeIntervalSince1970:ms / 1000.0];
-        static NSDateFormatter *fmt = nil;
-        static dispatch_once_t onceToken;
-        dispatch_once(&onceToken, ^{
-            fmt = [[NSDateFormatter alloc] init];
-            fmt.dateFormat = @"MM-dd HH:mm";
-        });
-        return [fmt stringFromDate:date];
-    }
-    return @"";
-}
-
 /// 读取设备端 DeviceUUID（用于卡片墙过滤自身 / 注册状态判定）。
 /// 设备端 trollvncmanager 以 root 运行（TVNCServiceCoordinator spawnService setUserIdentifier:0），
 /// UUID 生成并写入 root 用户 preferences（/var/root/Library/Preferences/com.82flex.trollvnc.plist），

@@ -30,26 +30,6 @@
 		</dict>
 		<dict>
 			<key>cell</key>
-			<string>PSEditTextCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>GatewayPort</string>
-			<key>label</key>
-			<string>网关注册端口</string>
-			<key>default</key>
-			<integer>18081</integer>
-			<key>isNumeric</key>
-			<true/>
-			<key>decimal</key>
-			<true/>
-			<key>noAutoCorrect</key>
-			<true/>
-			<key>placeholder</key>
-			<string>18081</string>
-		</dict>
-		<dict>
-			<key>cell</key>
 			<string>PSSecureEditTextCell</string>
 			<key>defaults</key>
 			<string>com.82flex.trollvnc</string>
@@ -74,31 +54,11 @@
 			<key>label</key>
 			<string>直连参数</string>
 			<key>footerText</key>
-			<string>局域网直连：手机作为 VNC 服务器，客户端主动连接；反向连接参数在 App「连接 → 反向连接」页配置。</string>
+			<string>局域网直连：手机作为 VNC 服务器，客户端主动连接（端口固定 5801/5901 不可调整）。</string>
 		</dict>
 		
 		
 		
-		<dict>
-			<key>cell</key>
-			<string>PSEditTextCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>Port</string>
-			<key>label</key>
-			<string>TCP Port</string>
-			<key>default</key>
-			<integer>5901</integer>
-			<key>decimal</key>
-			<true/>
-			<key>isNumeric</key>
-			<true/>
-			<key>noAutoCorrect</key>
-			<true/>
-			<key>placeholder</key>
-			<string>5901</string>
-		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSEditTextCell</string>
@@ -526,24 +486,6 @@
 			<true/>
 			<key>format</key>
 			<string>%.0fs</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSEditTextCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>HttpPort</string>
-			<key>label</key>
-			<string>HTTP Port</string>
-			<key>default</key>
-			<integer>5801</integer>
-			<key>isNumeric</key>
-			<true/>
-			<key>noAutoCorrect</key>
-			<true/>
-			<key>placeholder</key>
-			<string>5801</string>
 		</dict>
 		<dict>
 			<key>cell</key>

@@ -189,21 +189,8 @@
   </div>
 </div>
 
-<!-- PC 端侧边栏 -->
-<div id="bar">
-  <button data-op="home">Home</button>
-  <button data-op="power">电源</button>
-  <button data-op="volup">Vol+</button>
-  <button data-op="voldn">Vol−</button>
-  <button data-op="mute">静音</button>
-  <button data-op="briup">亮+</button>
-  <button data-op="bridn">亮−</button>
-  <button data-op="kb">键盘</button>
-  <button data-op="clip">剪贴板</button>
-  <button data-op="fit">适配</button>
-  <button data-op="full">全屏</button>
-  <button data-op="disc">断开</button>
-</div>
+<!-- PC 端侧边栏（按钮由 renderKeys 按 BAR_KEYS 常量渲染） -->
+<div id="bar"></div>
 
 <!-- 手机端悬浮信号按钮（WiFi 白底，拖动调整位置，点击展开操作） -->
 <button id="fab" aria-label="设备信号（拖动调整位置，点击展开操作）">
@@ -214,19 +201,7 @@
   </svg>
 </button>
 <div id="panel" role="menu">
-  <button data-op="home"><span>🏠</span><span>Home 键</span></button>
-  <button data-op="power"><span>⏻</span><span>电源</span></button>
-  <button data-op="volup"><span>🔊</span><span>音量 +</span></button>
-  <button data-op="voldn"><span>🔉</span><span>音量 −</span></button>
-  <button data-op="mute"><span>🔇</span><span>静音</span></button>
-  <button data-op="briup"><span>☀️</span><span>亮度 +</span></button>
-  <button data-op="bridn"><span>🌙</span><span>亮度 −</span></button>
-  <button data-op="kb"><span>⌨️</span><span>键盘</span></button>
-  <button data-op="clip"><span>📋</span><span>剪贴板</span></button>
-  <button data-op="fit"><span>⛶</span><span>适配画面</span></button>
-  <button data-op="full"><span>⤢</span><span>全屏</span></button>
-  <button class="panel-close" data-op="close">收起菜单</button>
-  <button data-op="disc" style="color:#ff6b6b;border-color:#5a2a2a"><span>✕</span><span>断开连接</span></button>
+  <!-- 按钮由 renderKeys 按 BAR_KEYS 常量渲染（末尾追加「收起菜单」close 按钮） -->
 </div>
 
 <!-- 剪贴板手动输入浮层（HTTP 环境降级：Clipboard API 被拒绝时使用） -->
@@ -260,6 +235,71 @@ import RFB from './novnc/core/rfb.js';
   rfb.scaleViewport = true;
   rfb.resizeSession = false;
   rfb.showDotCursor = true;
+
+  // ===== 按键常量 + 统一渲染（07 §4.4：一份数据，PC #bar 与手机 #panel 共用） =====
+
+  /**
+   * 按键清单（一份定义，PC #bar 与手机 #panel 共用渲染，消除双份静态 HTML）：
+   * op    - data-op 操作标识（与 dispatchOp / caps.js CAP_META 对齐）
+   * label - 按钮文案（PC 栏文本 + 面板文字 + 悬浮提示）
+   * icon  - 面板图标（emoji）
+   */
+  var BAR_KEYS = [
+    { op: 'home',  label: 'Home',   icon: '🏠' },
+    { op: 'power', label: '电源',   icon: '⏻' },
+    { op: 'volup', label: 'Vol+',   icon: '🔊' },
+    { op: 'voldn', label: 'Vol−',   icon: '🔉' },
+    { op: 'mute',  label: '静音',   icon: '🔇' },
+    { op: 'briup', label: '亮+',    icon: '☀️' },
+    { op: 'bridn', label: '亮−',    icon: '🌙' },
+    { op: 'kb',    label: '键盘',   icon: '⌨️' },
+    { op: 'clip',  label: '剪贴板', icon: '📋' },
+    { op: 'fit',   label: '适配',   icon: '⛶' },
+    { op: 'full',  label: '全屏',   icon: '⤢' },
+    { op: 'disc',  label: '断开',   icon: '✕' }
+  ];
+
+  /**
+   * 渲染按键到容器（PC 栏纯文本 / 面板图标+文字，结构与原静态 HTML 兼容，
+   * caps.js 增强依赖：bar 用 textContent 覆盖、panel 用 spans[1] 更新）。
+   * @param {string} containerId - 容器 id（'bar' 或 'panel'）
+   * @returns {void}
+   */
+  function renderKeys(containerId) {
+    var c = document.getElementById(containerId);
+    if (!c) return;
+    c.innerHTML = '';
+    BAR_KEYS.forEach(function (k) {
+      var b = document.createElement('button');
+      b.setAttribute('data-op', k.op);
+      b.title = k.label;
+      if (containerId === 'panel') {
+        // 面板：图标 span + 文字 span（与原始 #panel 结构一致）
+        var s1 = document.createElement('span');
+        s1.textContent = k.icon;
+        b.appendChild(s1);
+        var s2 = document.createElement('span');
+        s2.textContent = k.label;
+        b.appendChild(s2);
+        if (k.op === 'disc') { b.style.color = '#ff6b6b'; b.style.borderColor = '#5a2a2a'; }
+      } else {
+        // PC 栏：纯文本（与原始 #bar 结构一致）
+        b.textContent = k.label;
+      }
+      c.appendChild(b);
+    });
+    // 面板末尾追加「收起菜单」按钮（panel 专属，不在 BAR_KEYS 中）
+    if (containerId === 'panel') {
+      var cb = document.createElement('button');
+      cb.className = 'panel-close';
+      cb.setAttribute('data-op', 'close');
+      cb.textContent = '收起菜单';
+      c.appendChild(cb);
+    }
+  }
+
+  renderKeys('bar');
+  renderKeys('panel');
 
   /**
    * 显示中央状态浮层（连接中/已连接等待/已断开/连接失败）
@@ -374,6 +414,19 @@ import RFB from './novnc/core/rfb.js';
   }
 
   /**
+   * 发送长按按键（按下保持 holdMs 再抬起）——长按 Home 时 down 保持期间
+   * iOS 系统识别长按（kbdAddEvent 收到 down 调 menuDown、up 调 menuUp，时序分离）。
+   * @param {number} ks     - X11 keysym
+   * @param {string} code   - 键码名
+   * @param {number} holdMs - 保持时长（毫秒，默认 800）
+   * @returns {void}
+   */
+  function tapKeyHold(ks, code, holdMs) {
+    try { rfb.sendKey(ks, code, true); } catch (e) { return; }
+    setTimeout(function () { try { rfb.sendKey(ks, code, false); } catch (e) {} }, holdMs || 800);
+  }
+
+  /**
    * 直接注入 RFB PointerEvent（type=5）：中键=电源（TrollVNC 映射）
    * @param {number} mask - 按钮掩码（2=中键按下，0=释放）
    * @returns {void}
@@ -388,13 +441,30 @@ import RFB from './novnc/core/rfb.js';
   }
 
   /**
+   * 长按电源：中键（电源键）按下保持 holdMs 再释放——保持期间 iOS 系统识别长按。
+   * @param {number} holdMs - 保持时长（毫秒，默认 800）
+   * @returns {void}
+   */
+  function pointerHold(holdMs) {
+    try {
+      var b = new Uint8Array(6);
+      b[0] = 5; b[1] = 2; b[2] = 0; b[3] = 1; b[4] = 0; b[5] = 1;
+      rfb._sock.send(b.buffer);
+      setTimeout(function () { pointer(0); }, holdMs || 800);
+    } catch (e) {}
+  }
+
+  /**
    * 按 data-op 派发对应操作
    * @param {string} op - 操作标识（home/power/volup/.../fit/full/disc/close）
    * @returns {void}
    */
   function dispatchOp(op) {
     switch (op) {
+      // home/power 已走 attachKeyPress 按压识别路径（单击/双击/长按），统一绑定时跳过 click 防双触发；
+      // 此分支为兜底（如未来出现未经 attachKeyPress 绑定的 data-op=home 元素）。
       case 'home':  tapKey(0xff50, 'Home'); break;
+      // 同上：power 常规短按=中键指针注入（长按走 pointerHold），本分支为兜底路径。
       case 'power': pointer(2); break;
       case 'voldn': tapKey(0x1008ff11, 'AudioVolumeDown'); break;
       case 'volup': tapKey(0x1008ff13, 'AudioVolumeUp'); break;
@@ -490,17 +560,86 @@ import RFB from './novnc/core/rfb.js';
     if (e.target === clipOverlay) closeClipModal();
   });
 
-  // 统一绑定所有 data-op 按钮（PC 栏 + 手机面板）
-  document.querySelectorAll('[data-op]').forEach(function (btn) {
-    btn.addEventListener('click', function (e) {
-      // 面板内按钮点击后收起面板（PC 栏按钮无需处理面板）
-      var op = btn.getAttribute('data-op');
-      dispatchOp(op);
-      if (op === 'close') {
-        panel.classList.remove('show');
-      } else if (panel.contains(btn)) {
-        panel.classList.remove('show');
+  /**
+   * 为按钮附加按压识别（home/power 专用）：
+   * 短按（<800ms）：抬起即触发 tap——快速两次点击即两次 tap 时序（iOS 识别双击 Home/电源）；
+   *                tap 后延迟 300ms 收起所在面板（保留双击窗口，第二次点击仍能命中按钮）；
+   * 长按（≥800ms）：down 保持期间触发 hold（tapKeyHold/pointerHold 保持 800ms 再抬起，iOS 识别长按）。
+   * pointerdown 时设置指针捕获（setPointerCapture，浏览器不支持时忽略）：按住拖出按钮后
+   * pointerup 仍派发到本按钮，800ms 定时器正常清理，避免移出松开误发长按。
+   * @param {HTMLElement} btn - 目标按钮
+   * @param {Function} tap    - 短按动作（单击/双击均经此，双击=两次 keysym/指针时序）
+   * @param {Function} hold   - 长按动作（按下保持后再抬起）
+   * @returns {void}
+   */
+  function attachKeyPress(btn, tap, hold) {
+    var pressTimer = null;
+    var closeTimer = null;   // 面板收起延迟定时器（保留双击窗口）
+    var holdFired = false;
+
+    // 延迟收起面板：tap 后留 300ms 双击窗口（第二次点击仍能命中按钮）；
+    // 每次触发先清旧 timer 再设新，避免多次点击堆积多个定时器。
+    function scheduleClose() {
+      if (closeTimer) clearTimeout(closeTimer);
+      closeTimer = setTimeout(function () { closeTimer = null; closePanelIfInside(btn); }, 300);
+    }
+
+    btn.addEventListener('pointerdown', function (e) {
+      try { e.preventDefault(); } catch (err) {}   // 阻止 iOS 长按系统菜单/文本选择
+      // 指针捕获：按住后拖出按钮，pointerup 仍派发到本按钮，保证 800ms 定时器被清理，避免误发长按
+      if (btn.setPointerCapture) { try { btn.setPointerCapture(e.pointerId); } catch (err) {} }
+      holdFired = false;
+      pressTimer = setTimeout(function () { holdFired = true; hold(); }, 800);
+    });
+    btn.addEventListener('pointerup', function () {
+      if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+      if (holdFired) return;   // 长按已触发，抬起不再补发单击
+      tap();
+      scheduleClose();
+    });
+    btn.addEventListener('pointercancel', function () {
+      if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+      if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }   // 手势取消：取消挂起的面板收起
+    });
+    // 键盘兜底：Tab+Enter/Space 触发 tap（home/power 改 pointer 事件后原生 click 不触发）
+    btn.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        tap();
+        scheduleClose();
       }
+    });
+  }
+
+  /**
+   * 若按钮位于已展开的面板内则收起面板（PC 栏按钮无面板，忽略）。
+   * @param {HTMLElement} btn - 触发操作的按钮
+   * @returns {void}
+   */
+  function closePanelIfInside(btn) {
+    if (panel.classList.contains('show') && panel.contains(btn)) panel.classList.remove('show');
+  }
+
+  // 统一绑定 data-op 按钮（PC 栏 + 手机面板）。
+  // home/power 走 attachKeyPress 按压识别（单击/双击/长按），跳过 click 统一绑定避免双触发；
+  // 其余按钮保持原 click → dispatchOp + 面板收起逻辑。
+  document.querySelectorAll('[data-op]').forEach(function (btn) {
+    var op = btn.getAttribute('data-op');
+    if (op === 'home') {
+      attachKeyPress(btn,
+        function () { tapKey(0xff50, 'Home'); },                        // 面板收起由 attachKeyPress 延迟处理（双击窗口）
+        function () { tapKeyHold(0xff50, 'Home', 800); closePanelIfInside(btn); });
+      return;
+    }
+    if (op === 'power') {
+      attachKeyPress(btn,
+        function () { pointer(2); },                                    // 面板收起由 attachKeyPress 延迟处理（双击窗口）
+        function () { pointerHold(800); closePanelIfInside(btn); });
+      return;
+    }
+    btn.addEventListener('click', function () {
+      dispatchOp(op);
+      closePanelIfInside(btn);
     });
   });
 

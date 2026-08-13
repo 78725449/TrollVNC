@@ -143,8 +143,8 @@ jobs:
             build 2>&1 | tee /tmp/tvnc-diag.log
           RC=${PIPESTATUS[0]}
           echo "===== diagnostic exit: $RC ====="
-          echo "----- TVNCControllerViewController / error context -----"
-          grep -n -B2 -A25 -E "TVNC(Controller|Viewer)?ViewController|error:|fatal error" /tmp/tvnc-diag.log | tail -n 200
+          echo "----- TVNCConsoleWebViewController / error context -----"
+          grep -n -B2 -A25 -E "TVNCConsoleWebViewController|error:|fatal error" /tmp/tvnc-diag.log | tail -n 200
           echo "----- last 40 lines -----"
           tail -n 40 /tmp/tvnc-diag.log
           echo "----- crash reports -----"

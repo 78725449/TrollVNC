@@ -9,14 +9,12 @@
 
 #import "TVNCGatewayClient.h"
 
-/// 网关 HTTP 控制台端口默认值（trollvnc-farm FARM_PORT）
+/// 网关 HTTP 控制台端口（固定 8080 不可调，trollvnc-farm FARM_PORT）
 static const NSInteger kGatewayDefaultConsolePort = 8080;
 /// 配置 Suite（与全项目一致）
 static NSString *const kGatewayDefaultsSuite = @"com.82flex.trollvnc";
 /// 网关地址配置键
 static NSString *const kGatewayHostKey = @"GatewayHost";
-/// 网关 HTTP 端口配置键
-static NSString *const kGatewayConsolePortKey = @"TVNCConsolePort";
 /// 网关 Token 配置键
 static NSString *const kGatewayTokenKey = @"GatewayToken";
 
@@ -39,11 +37,9 @@ static NSString *const kGatewayTokenKey = @"GatewayToken";
     return [d stringForKey:kGatewayHostKey];
 }
 
-/// 读取当前网关 HTTP 端口（未配置回退默认 8080）。
+/// 读取当前网关 HTTP 端口（固定 8080 不可调）。
 - (NSInteger)gatewayPort {
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kGatewayDefaultsSuite];
-    NSInteger port = [d integerForKey:kGatewayConsolePortKey];
-    return (port > 0) ? port : kGatewayDefaultConsolePort;
+    return kGatewayDefaultConsolePort;
 }
 
 /// 读取当前网关 Token（可为空字符串）。
@@ -118,179 +114,6 @@ static NSString *const kGatewayTokenKey = @"GatewayToken";
         }
         [self dispatchOnMain:^{
             if (completion) completion(devices, err);
-        }];
-    }];
-    [task resume];
-}
-
-- (void)fetchChangedDevicesSince:(NSTimeInterval)sinceMs
-                      completion:(void (^)(NSArray<NSDictionary *> *_Nullable devices))completion {
-    NSString *path = [NSString stringWithFormat:@"/api/devices?changedSince=%.0f", sinceMs];
-    NSURL *url = [self apiURLWithPath:path];
-    if (!url) {
-        [self dispatchOnMain:^{
-            if (completion) completion(nil);
-        }];
-        return;
-    }
-    NSURLRequest *req = [self requestWithURL:url method:@"GET" body:nil];
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
-                                                                 completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
-        NSArray<NSDictionary *> *devices = nil;
-        if (!err && data) {
-            NSDictionary *json = [self parseJSONDictionary:data];
-            id list = json[@"devices"];
-            if ([list isKindOfClass:[NSArray class]]) devices = list;
-        }
-        [self dispatchOnMain:^{
-            if (completion) completion(devices);
-        }];
-    }];
-    [task resume];
-}
-
-- (void)invokeCap:(NSString *)capId
-           params:(NSDictionary *_Nullable)params
-        forDevice:(NSString *)deviceId
-       completion:(void (^)(NSDictionary *_Nullable ack))completion {
-    if (!capId.length || !deviceId.length) {
-        [self dispatchOnMain:^{
-            if (completion) completion(nil);
-        }];
-        return;
-    }
-    NSString *path = [NSString stringWithFormat:@"/api/devices/%@/invoke", deviceId];
-    NSURL *url = [self apiURLWithPath:path];
-    if (!url) {
-        [self dispatchOnMain:^{
-            if (completion) completion(nil);
-        }];
-        return;
-    }
-    NSDictionary *body = @{@"cap": capId, @"params": params ?: @{}};
-    NSData *bodyData = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
-    if (!bodyData) {
-        [self dispatchOnMain:^{
-            if (completion) completion(nil);
-        }];
-        return;
-    }
-    NSURLRequest *req = [self requestWithURL:url method:@"POST" body:bodyData];
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
-                                                                 completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
-        NSDictionary *ack = nil;
-        if (!err && data) {
-            NSDictionary *json = [self parseJSONDictionary:data];
-            id a = json[@"ack"];
-            if ([a isKindOfClass:[NSDictionary class]]) ack = a;
-        }
-        [self dispatchOnMain:^{
-            if (completion) completion(ack);
-        }];
-    }];
-    [task resume];
-}
-
-- (void)pingDevice:(NSString *)deviceId completion:(void (^)(NSTimeInterval ms))completion {
-    if (!deviceId.length) {
-        [self dispatchOnMain:^{
-            if (completion) completion(-1);
-        }];
-        return;
-    }
-    NSString *path = [NSString stringWithFormat:@"/api/devices/%@/ping", deviceId];
-    NSURL *url = [self apiURLWithPath:path];
-    if (!url) {
-        [self dispatchOnMain:^{
-            if (completion) completion(-1);
-        }];
-        return;
-    }
-    NSMutableURLRequest *req = [self requestWithURL:url method:@"POST" body:nil];
-    req.timeoutInterval = 4.0;
-    NSDate *t0 = [NSDate date];
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
-                                                                 completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
-        NSTimeInterval ms = -1;
-        if (!err) {
-            NSHTTPURLResponse *hr = (NSHTTPURLResponse *)resp;
-            if (hr.statusCode == 200) ms = [[NSDate date] timeIntervalSinceDate:t0] * 1000;
-        }
-        [self dispatchOnMain:^{
-            if (completion) completion(ms);
-        }];
-    }];
-    [task resume];
-}
-
-- (void)fetchCapsForDevice:(NSString *)deviceId completion:(void (^)(NSArray<NSDictionary *> *_Nullable caps))completion {
-    [self fetchDeviceCapsPath:[NSString stringWithFormat:@"/api/devices/%@/caps", deviceId]
-                       field:@"capMetadata"
-                  completion:completion];
-}
-
-- (void)fetchConfigSchemaForDevice:(NSString *)deviceId completion:(void (^)(NSArray<NSDictionary *> *_Nullable schema))completion {
-    [self fetchDeviceCapsPath:[NSString stringWithFormat:@"/api/devices/%@/caps", deviceId]
-                       field:@"configSchema"
-                  completion:completion];
-}
-
-/// 拉取设备 /caps 端点指定字段（capMetadata / configSchema），失败 nil。
-- (void)fetchDeviceCapsPath:(NSString *)path
-                      field:(NSString *)field
-                 completion:(void (^)(NSArray<NSDictionary *> *_Nullable list))completion {
-    NSURL *url = [self apiURLWithPath:path];
-    if (!url) {
-        [self dispatchOnMain:^{
-            if (completion) completion(nil);
-        }];
-        return;
-    }
-    NSURLRequest *req = [self requestWithURL:url method:@"GET" body:nil];
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
-                                                                 completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
-        NSArray *list = nil;
-        if (!err && data) {
-            NSDictionary *json = [self parseJSONDictionary:data];
-            id m = json[field];
-            if ([m isKindOfClass:[NSArray class]]) list = m;
-        }
-        [self dispatchOnMain:^{
-            if (completion) completion(list);
-        }];
-    }];
-    [task resume];
-}
-
-- (void)setConfig:(NSString *)key value:(NSString *)value forDevice:(NSString *)deviceId completion:(void (^)(BOOL ok))completion {
-    if (!key.length || !deviceId.length) {
-        [self dispatchOnMain:^{
-            if (completion) completion(NO);
-        }];
-        return;
-    }
-    NSString *path = [NSString stringWithFormat:@"/api/devices/%@/config", deviceId];
-    NSURL *url = [self apiURLWithPath:path];
-    if (!url) {
-        [self dispatchOnMain:^{
-            if (completion) completion(NO);
-        }];
-        return;
-    }
-    NSDictionary *body = @{@"key": key, @"value": value ?: @""};
-    NSData *bodyData = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
-    if (!bodyData) {
-        [self dispatchOnMain:^{
-            if (completion) completion(NO);
-        }];
-        return;
-    }
-    NSURLRequest *req = [self requestWithURL:url method:@"POST" body:bodyData];
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
-                                                                 completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
-        BOOL ok = (!err && ((NSHTTPURLResponse *)resp).statusCode == 200);
-        [self dispatchOnMain:^{
-            if (completion) completion(ok);
         }];
     }];
     [task resume];

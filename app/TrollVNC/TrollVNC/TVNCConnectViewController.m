@@ -378,10 +378,10 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
 }
 
 - (void)generateQRAsync {
-    NSInteger httpPort = [self.defaults integerForKey:@"HttpPort"];
+    NSInteger httpPort = 5801; // 端口固定不可调（5801 = 前端入口）
     NSString *ip = TVNCEn0IPv4();
-    if (httpPort <= 0 || !ip.length) {
-        self.qrAddrLabel.text = httpPort <= 0 ? @"HTTP 网页未开启（设置 → 直连参数 → HTTP 端口）" : @"未获取到 IP";
+    if (!ip.length) {
+        self.qrAddrLabel.text = @"未获取到 IP";
         self.qrImageView.hidden = YES;
         return;
     }
@@ -482,9 +482,9 @@ static UIImage *TVNCQRCodeImage(NSString *content) {
 #pragma mark - U3 操作
 
 - (NSString *)directURL {
-    NSInteger httpPort = [self.defaults integerForKey:@"HttpPort"];
+    NSInteger httpPort = 5801; // 端口固定不可调（5801 = 前端入口）
     NSString *ip = TVNCEn0IPv4();
-    if (httpPort <= 0 || !ip.length) return nil;
+    if (!ip.length) return nil;
     return [NSString stringWithFormat:@"http://%@:%ld", ip, (long)httpPort];
 }
 

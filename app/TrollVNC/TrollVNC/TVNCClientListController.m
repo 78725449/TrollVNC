@@ -20,14 +20,10 @@
 
 #import <UIKit/UIKit.h>
 #import <arpa/inet.h>
-#import <errno.h>
 #import <netinet/in.h>
-#import <netinet/tcp.h>
 #import <string.h>
 #import <sys/socket.h>
 #import <unistd.h>
-
-#import "Control.h"
 
 #pragma mark - Networking
 
@@ -40,65 +36,105 @@ static inline BOOL TVNCIsEmptyItemId(NSString *_Nullable itemId) {
     return itemId != nil && [itemId isEqualToString:kTVNCEmptyItemId];
 }
 
-static NSData *TVNCReadAll(int fd, double timeoutSec) {
-    NSMutableData *md = [NSMutableData data];
-    struct timeval tv;
-    tv.tv_sec = (int)timeoutSec;
-    tv.tv_usec = (int)((timeoutSec - tv.tv_sec) * 1e6);
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    uint8_t buf[2048];
-    for (;;) {
-        ssize_t n = recv(fd, buf, sizeof(buf), 0);
-        if (n < 0) {
-            // EAGAIN/EWOULDBLOCK means timeout fired — no more data available
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-                break;
-            if (errno == EINTR)
-                continue;
-            break; // real error
-        }
-        if (n == 0)
-            break; // peer closed / EOF
-        [md appendBytes:buf length:(NSUInteger)n];
-    }
-    return md;
-}
+// ===== 5901 RFB 扩展消息客户端（与 TRCapabilityRegistry._rfbCommand 协议对齐）=====
+static const int kTVNCControlRfbPort = 5901;
 
-static int TVNCSendLine(int fd, NSString *line) {
-    NSString *ln = [line hasSuffix:@"\n"] ? line : [line stringByAppendingString:@"\n"];
-    NSData *d = [ln dataUsingEncoding:NSUTF8StringEncoding];
-    const uint8_t *p = d.bytes;
-    size_t left = d.length;
-    while (left > 0) {
-        ssize_t n = send(fd, p, left, 0);
-        if (n < 0) {
-            if (errno == EINTR)
-                continue;
-            return -1;
-        }
-        if (n == 0)
-            break;
-        p += (size_t)n;
-        left -= (size_t)n;
-    }
-    return 0;
-}
-
-static int TVNCConnect(void) {
+/**
+ * 建立 5901 连接并完成 RFB 3.8 握手 + cap.hello 管理豁免
+ * 功能：连接 127.0.0.1:5901，完成 ProtocolVersion → Security → ClientInit → ServerInit 握手，
+ *       随后发送 cap.hello（mgmt=YES）将本连接标记为管理客户端（豁免客户端计数/帧推送/互斥）。
+ *       帧格式与 TRCapabilityRegistry tvRfbConnect 完全对齐（0x50 请求 / 8 字节大端头）。
+ * 参数：无
+ * 返回值：int - 成功返回已就绪的 fd；任一步失败返回 -1（内部已 close）
+ */
+static int TVNCControlConnect(void) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0)
-        return -1;
+    if (fd < 0) return -1;
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
-    addr.sin_len = sizeof(addr);
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(kTvDefaultCtlPort);
+    addr.sin_port = htons(kTVNCControlRfbPort);
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        close(fd);
-        return -1;
+    struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) { close(fd); return -1; }
+    // --- RFB 3.8 握手（与 TRCapabilityRegistry tvRfbConnect 对齐）---
+    char buf[256];
+    ssize_t n = recv(fd, buf, 12, MSG_WAITALL);
+    if (n != 12 || strncmp(buf, "RFB", 3) != 0) { close(fd); return -1; }
+    send(fd, "RFB 003.008\n", 12, 0);
+    uint8_t secCount = 0;
+    if (recv(fd, &secCount, 1, MSG_WAITALL) != 1) { close(fd); return -1; }
+    if (secCount > 0) {
+        uint8_t secTypes[32] = {0};
+        if (secCount > sizeof(secTypes)) secCount = (uint8_t)sizeof(secTypes);  // clamp 防越界
+        if (recv(fd, secTypes, secCount, MSG_WAITALL) != secCount) { close(fd); return -1; }
+        uint8_t chosen = 1;  // None
+        if (send(fd, &chosen, 1, 0) != 1) { close(fd); return -1; }
+        uint32_t secResult = 0;
+        if (recv(fd, &secResult, 4, MSG_WAITALL) != 4) { close(fd); return -1; }
+        if (ntohl(secResult) != 0) { close(fd); return -1; }
     }
+    uint8_t shared = 1;
+    send(fd, &shared, 1, 0);
+    uint8_t initBuf[24];
+    if (recv(fd, initBuf, 24, MSG_WAITALL) != 24) { close(fd); return -1; }
+    uint32_t nameLen = 0;
+    memcpy(&nameLen, initBuf + 20, 4);
+    nameLen = ntohl(nameLen);
+    if (nameLen > 0 && nameLen < sizeof(buf)) recv(fd, buf, nameLen, MSG_WAITALL);
+    // cap.hello：标记为管理客户端（豁免计数/帧推送/互斥）
+    NSDictionary *hello = @{@"op": @"cap.hello", @"params": @{@"mgmt": @YES}};
+    NSData *helloJson = [NSJSONSerialization dataWithJSONObject:hello options:0 error:nil];
+    if (!helloJson) { close(fd); return -1; }
+    uint8_t hdr[8];
+    hdr[0] = 0x50;
+    memset(hdr + 1, 0, 3);
+    uint32_t helloLen = htonl((uint32_t)helloJson.length);
+    memcpy(hdr + 4, &helloLen, 4);
+    if (send(fd, hdr, 8, 0) != 8) { close(fd); return -1; }
+    if (send(fd, helloJson.bytes, helloJson.length, 0) != (ssize_t)helloJson.length) { close(fd); return -1; }
+    uint8_t respHdr[8];
+    if (recv(fd, respHdr, 8, MSG_WAITALL) != 8 || respHdr[0] != 0x80) { close(fd); return -1; }
+    uint32_t respLen = 0;
+    memcpy(&respLen, respHdr + 4, 4);
+    respLen = ntohl(respLen);
+    if (respLen > 0 && respLen < sizeof(buf)) recv(fd, buf, respLen, MSG_WAITALL);
     return fd;
+}
+
+/**
+ * 发送扩展消息并读取 JSON 响应
+ * 功能：以 {op, params} 封装为 0x50 帧发送到 5901，读取 0x80 帧解析 JSON 响应。
+ *       每次调用新建连接（本地回环开销可忽略；与 TRCapabilityRegistry._rfbCommand 帧格式对齐）。
+ * 参数：op     - 扩展操作名（如 "clients.list" / "clients.block"）
+ *       params - 请求参数字典（可为空）
+ * 返回值：NSDictionary* - 服务端 JSON 响应字典（含 ok 字段）；连接/解析失败返回 nil
+ */
+static NSDictionary *TVNCControlInvoke(NSString *op, NSDictionary *params) {
+    int fd = TVNCControlConnect();
+    if (fd < 0) return nil;
+    NSDictionary *req = @{@"op": op ?: @"", @"params": params ?: @{}};
+    NSData *json = [NSJSONSerialization dataWithJSONObject:req options:0 error:nil];
+    if (!json) { close(fd); return nil; }
+    uint8_t hdr[8];
+    hdr[0] = 0x50;
+    memset(hdr + 1, 0, 3);
+    uint32_t len = htonl((uint32_t)json.length);
+    memcpy(hdr + 4, &len, 4);
+    if (send(fd, hdr, 8, 0) != 8 || send(fd, json.bytes, json.length, 0) != (ssize_t)json.length) { close(fd); return nil; }
+    uint8_t respHdr[8];
+    ssize_t n = recv(fd, respHdr, 8, MSG_WAITALL);
+    if (n != 8 || respHdr[0] != 0x80) { close(fd); return nil; }
+    uint32_t respLen = 0;
+    memcpy(&respLen, respHdr + 4, 4);
+    respLen = ntohl(respLen);
+    if (respLen == 0 || respLen > 1024 * 1024) { close(fd); return nil; }
+    NSMutableData *respData = [NSMutableData dataWithLength:respLen];
+    if (recv(fd, respData.mutableBytes, respLen, MSG_WAITALL) != (ssize_t)respLen) { close(fd); return nil; }
+    close(fd);
+    return [NSJSONSerialization JSONObjectWithData:respData options:0 error:nil];
 }
 
 #pragma mark - Private Interface
@@ -112,14 +148,9 @@ static int TVNCConnect(void) {
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary *> *clientLookup;     // id -> dict
 @property(nonatomic, strong) NSMutableSet<NSString *> *frozenHosts;                                   // 冻结 host 集合（持久化）
 
-// Subscription (long-lived connection)
-@property(nonatomic, assign) int subFd;
-@property(nonatomic, strong) dispatch_source_t subReadSource;
-
-// Reconnection state
-@property(nonatomic, strong) dispatch_source_t subReconnectTimer;
-@property(nonatomic, assign) NSTimeInterval subReconnectDelay;
-@property(nonatomic, assign) BOOL subIntentionallyStopped;
+// 5901 RFB 控制通道状态
+@property(nonatomic, assign) BOOL controlAvailable;                 // 控制服务可达（clients.list 探测结果）
+@property(nonatomic, strong) NSTimer *pollTimer;                    // 列表轮询定时器（原订阅推送的替代）
 
 @end
 
@@ -168,18 +199,45 @@ static int TVNCConnect(void) {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    self.subIntentionallyStopped = NO;
-    self.subReconnectDelay = 1.0;
-    [self startSubscriptionIfNeeded];
+    [self startPolling];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
-    [self stopSubscription];
+    [self stopPolling];
 }
 
 - (void)dealloc {
-    [self stopSubscription];
+    [self stopPolling];
+}
+
+/**
+ * 启动列表轮询定时器
+ * 功能：每 5 秒调用一次 refresh 拉取 clients.list（替代原订阅长连接推送）。
+ * 参数：无
+ * 返回值：void
+ */
+- (void)startPolling {
+    if (self.pollTimer)
+        return;
+    self.pollTimer = [NSTimer scheduledTimerWithTimeInterval:5.0
+                                                      target:self
+                                                    selector:@selector(refresh)
+                                                    userInfo:nil
+                                                     repeats:YES];
+    // 滚动等 UI 事件期间也保持轮询（可选，保持列表实时性）
+    [[NSRunLoop mainRunLoop] addTimer:self.pollTimer forMode:UITrackingRunLoopCommonModes];
+}
+
+/**
+ * 停止列表轮询定时器
+ * 功能：视图消失或控制器销毁时释放定时器，避免后台空轮询。
+ * 参数：无
+ * 返回值：void
+ */
+- (void)stopPolling {
+    [self.pollTimer invalidate];
+    self.pollTimer = nil;
 }
 
 #pragma mark - Getters
@@ -206,132 +264,6 @@ static int TVNCConnect(void) {
     return _disconnectItem;
 }
 
-#pragma mark - Subscription (Plan B)
-
-- (void)startSubscriptionIfNeeded {
-    if (self.subFd > 0 || self.subReadSource)
-        return;
-
-    int fd = TVNCConnect();
-    if (fd < 0)
-        return;
-
-    if (TVNCSendLine(fd, @"subscribe on") < 0) {
-        close(fd);
-        return;
-    }
-
-    // Verify server acknowledged the subscription
-    NSData *okData = TVNCReadAll(fd, 0.5);
-    if (!okData || okData.length < 2 || memmem(okData.bytes, okData.length, "OK", 2) == NULL) {
-        close(fd);
-        return;
-    }
-
-    // Enable TCP keepalive to detect dead connections promptly
-    int yes = 1;
-    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
-#ifdef TCP_KEEPALIVE
-    int idle = 5; // Start probing after 5s idle
-    setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &idle, sizeof(idle));
-#endif
-#ifdef TCP_KEEPINTVL
-    int intvl = 2; // Probe every 2s
-    setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
-#endif
-#ifdef TCP_KEEPCNT
-    int cnt = 3; // Give up after 3 failed probes (~11s total)
-    setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
-#endif
-
-    self.subFd = fd;
-
-    dispatch_queue_t q = dispatch_get_main_queue();
-    dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, (uintptr_t)fd, 0, q);
-    __weak typeof(self) weakSelf = self;
-    dispatch_source_set_event_handler(src, ^{
-        [weakSelf onSubscriptionReadable];
-    });
-
-    dispatch_source_set_cancel_handler(src, ^{
-        if (weakSelf.subFd > 0) {
-            close(weakSelf.subFd);
-            weakSelf.subFd = 0;
-        }
-    });
-
-    self.subReadSource = src;
-    dispatch_resume(src);
-}
-
-- (void)teardownSubscriptionConnection {
-    if (self.subReadSource) {
-        dispatch_source_cancel(self.subReadSource);
-        self.subReadSource = nil;
-    }
-    if (self.subFd > 0) {
-        close(self.subFd);
-        self.subFd = 0;
-    }
-}
-
-- (void)stopSubscription {
-    [self cancelReconnect];
-    self.subIntentionallyStopped = YES;
-    self.subReconnectDelay = 1.0;
-
-    [self teardownSubscriptionConnection];
-}
-
-- (void)scheduleReconnect {
-    if (self.subIntentionallyStopped)
-        return;
-    if (self.subReconnectTimer)
-        return;
-
-    // Add ±20% jitter to avoid thundering herd
-    NSTimeInterval base = self.subReconnectDelay;
-    if (base < 1.0)
-        base = 1.0;
-    double jitter = base * 0.2 * ((double)arc4random_uniform(UINT32_MAX) / UINT32_MAX * 2.0 - 1.0);
-    NSTimeInterval delay = base + jitter;
-
-    dispatch_queue_t q = dispatch_get_main_queue();
-    dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);
-    uint64_t delayNs = (uint64_t)(delay * NSEC_PER_SEC);
-    dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, delayNs), DISPATCH_TIME_FOREVER, delayNs / 10);
-
-    __weak typeof(self) weakSelf = self;
-    dispatch_source_set_event_handler(t, ^{
-        typeof(self) strongSelf = weakSelf;
-        if (!strongSelf)
-            return;
-
-        strongSelf.subReconnectTimer = nil;
-
-        [strongSelf startSubscriptionIfNeeded];
-        if (strongSelf.subFd > 0) {
-            // Reconnected successfully — reset backoff and pull fresh data
-            strongSelf.subReconnectDelay = 1.0;
-            [strongSelf refresh];
-        } else {
-            // Still failing — exponential backoff, cap at 30s
-            strongSelf.subReconnectDelay = MIN(strongSelf.subReconnectDelay * 2.0, 30.0);
-            [strongSelf scheduleReconnect];
-        }
-    });
-
-    self.subReconnectTimer = t;
-    dispatch_resume(t);
-}
-
-- (void)cancelReconnect {
-    if (self.subReconnectTimer) {
-        dispatch_source_cancel(self.subReconnectTimer);
-        self.subReconnectTimer = nil;
-    }
-}
-
 #pragma mark - Actions
 
 - (void)dismiss {
@@ -344,18 +276,21 @@ static int TVNCConnect(void) {
 
 // Removed index-based disconnect; use -disconnectClientWithId:block: instead.
 
+/**
+ * 断开单个客户端（可选加黑名单）
+ * 功能：经 5901 RFB 扩展消息执行 clients.block（断连+黑名单）或 clients.disconnect（仅断连）。
+ * 参数：cid        - 客户端 ID（8 字符）
+ *       shouldBlock - YES 走 clients.block（断开+临时黑名单）；NO 走 clients.disconnect
+ * 返回值：void
+ */
 - (void)disconnectClientWithId:(NSString *)cid block:(BOOL)shouldBlock {
     if (cid.length == 0)
         return;
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        int fd = TVNCConnect();
-        if (fd >= 0) {
-            NSString *cmd = shouldBlock ? @"block" : @"disconnect";
-            TVNCSendLine(fd, [NSString stringWithFormat:@"%@ %@", cmd, cid]);
-            (void)TVNCReadAll(fd, 2.0);
-            close(fd);
-        }
+        NSDictionary *resp = shouldBlock ? TVNCControlInvoke(@"clients.block", @{@"id": cid})
+                                         : TVNCControlInvoke(@"clients.disconnect", @{@"id": cid});
+        (void)resp; // 失败静默（与旧行为一致：连不上不提示）
 
         dispatch_async(dispatch_get_main_queue(), ^{
             [self refresh];
@@ -363,15 +298,17 @@ static int TVNCConnect(void) {
     });
 }
 
+/**
+ * 断开全部客户端
+ * 功能：经 5901 RFB 扩展消息执行 clients.disconnect（id=ALL）。
+ * 参数：无
+ * 返回值：void
+ */
 - (void)disconnectAll {
     [self.disconnectItem setEnabled:NO];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        int fd = TVNCConnect();
-        if (fd >= 0) {
-            TVNCSendLine(fd, @"disconnect ALL");
-            (void)TVNCReadAll(fd, 2.0);
-            close(fd);
-        }
+        NSDictionary *resp = TVNCControlInvoke(@"clients.disconnect", @{@"id": @"ALL"});
+        (void)resp; // 失败静默
 
         dispatch_async(dispatch_get_main_queue(), ^{
             [self refresh];
@@ -417,6 +354,12 @@ static int TVNCConnect(void) {
     [self disconnectClientWithId:cid block:YES];
 }
 
+/**
+ * 解冻主机
+ * 功能：本地 frozenHosts 记录移除 + 经 5901 RFB 扩展消息执行 clients.unblock（host）。
+ * 参数：host - 待解封的主机地址
+ * 返回值：void
+ */
 - (void)unfreezeHost:(NSString *)host {
     if (!host.length)
         return;
@@ -424,12 +367,9 @@ static int TVNCConnect(void) {
     [self persistFrozenHosts];
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        int fd = TVNCConnect();
-        if (fd >= 0) {
-            TVNCSendLine(fd, [NSString stringWithFormat:@"unblock %@", host]);
-            (void)TVNCReadAll(fd, 2.0);
-            close(fd);
-        }
+        NSDictionary *resp = TVNCControlInvoke(@"clients.unblock", @{@"host": host});
+        (void)resp; // 失败静默（host 不在黑名单时服务端返回 ok:NO，属正常）
+
         dispatch_async(dispatch_get_main_queue(), ^{
             [self refresh];
         });
@@ -520,35 +460,6 @@ static int TVNCConnect(void) {
 
 #pragma mark - Helpers (Networking)
 
-- (NSArray<NSDictionary *> *)parseTSV:(NSString *)tsv {
-    if (tsv.length == 0)
-        return @[];
-    NSArray<NSString *> *lines = [tsv componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
-    NSMutableArray<NSDictionary *> *rows =
-        [NSMutableArray arrayWithCapacity:MAX((NSInteger)0, (NSInteger)lines.count - 1)];
-    BOOL first = YES;
-    for (NSString *ln in lines) {
-        if (ln.length == 0)
-            continue;
-        if (first) {
-            first = NO;
-            continue;
-        } // skip header
-        NSArray *cols = [ln componentsSeparatedByString:@"\t"];
-        if (cols.count < 5)
-            continue;
-        NSMutableDictionary *row = [NSMutableDictionary dictionaryWithDictionary:@{
-            @"id" : cols[0],
-            @"host" : cols[1],
-            @"viewOnly" : cols[2],
-            @"connectedAt" : cols[3],
-            @"durationSec" : cols[4]
-        }];
-        [rows addObject:row];
-    }
-    return rows;
-}
-
 - (void)applyRows:(NSArray<NSDictionary *> *)rows {
     [self.clientLookup removeAllObjects];
 
@@ -593,48 +504,30 @@ static int TVNCConnect(void) {
     }
 }
 
+/**
+ * 从服务端拉取客户端列表
+ * 功能：后台队列经 5901 RFB 扩展消息执行 clients.list，成功后取 resp[@"clients"]（JSON 数组，
+ *       元素含 id/host/viewOnly/connectedAt/durationSec）回主线程 applyRows。
+ *       同时刷新 controlAvailable 状态（成功 YES / 失败 NO），供右滑能力判定。
+ * 参数：无
+ * 返回值：void
+ */
 - (void)reloadDataFromServer {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        int fd = TVNCConnect();
-        if (fd < 0) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self.refreshControl endRefreshing];
-                [self applyRows:@[]];
-            });
-            return;
+        NSDictionary *resp = TVNCControlInvoke(@"clients.list", nil);
+        NSArray<NSDictionary *> *rows = nil;
+        BOOL ok = [resp isKindOfClass:[NSDictionary class]] && [resp[@"ok"] boolValue];
+        if (ok) {
+            id clients = resp[@"clients"];
+            if ([clients isKindOfClass:[NSArray class]])
+                rows = clients;
         }
-
-        TVNCSendLine(fd, @"list");
-        NSData *data = TVNCReadAll(fd, 2.0);
-        close(fd);
-
-        NSString *tsv = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"";
-        NSArray<NSDictionary *> *rows = [self parseTSV:tsv];
         dispatch_async(dispatch_get_main_queue(), ^{
+            self.controlAvailable = ok;
             [self.refreshControl endRefreshing];
-            [self applyRows:rows];
+            [self applyRows:rows ?: @[]];
         });
     });
-}
-
-- (void)onSubscriptionReadable {
-    int fd = self.subFd;
-    if (fd <= 0) {
-        return;
-    }
-    uint8_t buf[256];
-    ssize_t n = recv(fd, buf, sizeof(buf) - 1, 0);
-    if (n <= 0) {
-        // Connection lost — tear down and schedule reconnect
-        [self teardownSubscriptionConnection];
-        [self scheduleReconnect];
-        return;
-    }
-    buf[n] = '\0';
-    // Any line containing "changed" triggers a refresh
-    if (memmem(buf, (size_t)n, "changed", 7) != NULL) {
-        [self refresh];
-    }
 }
 
 #pragma mark - Table
@@ -646,7 +539,7 @@ static int TVNCConnect(void) {
  * 功能：依据当前行的客户端状态（在线 / 冻结）返回对应右滑按钮：
  *   - 在线行：冻结🟠（橙色）+ 断开🔴（红色 destructive）
  *   - 冻结行：仅解冻🟢（绿色）
- *   - 控制端口未连接（能力不可用）：返回"能力不可用"按钮，点击弹提示，不执行动作
+ *   - 控制服务未连接（能力不可用）：返回"能力不可用"按钮，点击弹提示，不执行动作
  * 参数：tableView  - 表格视图
  *       indexPath - 行索引
  * 返回值：UISwipeActionsConfiguration* - 右滑按钮配置；nil 表示无操作
@@ -660,8 +553,8 @@ static int TVNCConnect(void) {
 
     // 检查 clients.freeze/unfreeze/disconnect 能力是否可用：
     // IPA 端无法直接访问 TRCapabilityRegistry，但底层 freeze/unfreeze/disconnect
-    // 均经本地命令通道（46752 端口）执行；订阅 socket（subFd）活跃即代表通道可达
-    BOOL capabilityAvailable = (self.subFd > 0);
+    // 均经 5901 RFB 扩展消息执行；controlAvailable 由 clients.list 探测结果驱动
+    BOOL capabilityAvailable = self.controlAvailable;
 
     if (!capabilityAvailable) {
         // 能力不可用：仅显示一个禁用样式的提示按钮，点击弹 toast，不执行实际动作
@@ -737,14 +630,14 @@ static int TVNCConnect(void) {
 
 /**
  * 显示"能力不可用"提示弹窗（toast 风格）。
- * 功能：当控制端口未连接（clients.freeze/unfreeze/disconnect 能力实质不可用）时，
+ * 功能：当 5901 RFB 控制服务不可达（clients.freeze/unfreeze/disconnect 能力实质不可用）时，
  *       弹出短暂提示告知用户，1.2 秒后自动消失。
  * 参数：无
  * 返回值：void
  */
 - (void)showCapabilityUnavailableHint {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:nil
-                                                                    message:@"能力不可用（控制端口未连接）"
+                                                                    message:@"能力不可用（控制服务未连接）"
                                                              preferredStyle:UIAlertControllerStyleAlert];
     [self presentViewController:alert animated:YES completion:nil];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),

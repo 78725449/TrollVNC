@@ -2,10 +2,10 @@
   TRGatewayClient.mm - 内网群控网关注册/心跳客户端（BSD socket / TCP JSON 行协议）
   协议（宪法 7.1/7.3）：
     -> {"type":"register","deviceId":"<uuid>","name":"<真实设备名>","vncPort":5901,
-        "capabilities":[...],"configs":{...},"screen":{"width":..,"height":..},"httpPort":..}
+        "configs":{...},"screen":{"width":..,"height":..},"httpPort":..}
     <- {"type":"ack","deviceId":"...","name":"..."}
     -> {"type":"hello"}   每 30s
-  断线退避重连（2s 起，上限 30s）；设置变更时重发 register 保持能力清单新鲜。
+  断线退避重连（2s 起，上限 30s）；设置变更时重发 register 同步最新连接信息/配置值。
 */
 #import "TRGatewayClient.h"
 #import "TRCapabilityRegistry.h"
@@ -27,17 +27,12 @@
 static NSString *const kDefaultsSuite = @"com.82flex.trollvnc";
 static NSString *const kDeviceUUIDKey = @"DeviceUUID";
 static NSString *const kGatewayHostKey = @"GatewayHost";
-static NSString *const kGatewayPortKey = @"GatewayPort";
 static NSString *const kDesktopNameKey = @"DesktopName";
-static NSString *const kPortKey = @"Port";
 
 static const NSTimeInterval kHelloInterval = 30.0;
 static const NSTimeInterval kReadTimeout = 5.0;
 static const NSTimeInterval kMinRetryDelay = 2.0;
 static const NSTimeInterval kMaxRetryDelay = 30.0;
-
-/// Phase C：本地 trollvncserver 控制端口（46752），用于 screen.subscribe 画面变化订阅
-static const int kLocalScreenCtlPort = 46752;
 
 // 预置读取：未显式设置时回退 Root.plist 默认值（避免 boolForKey 无法区分“未设置/显式 NO”）
 static BOOL TVNCBoolPref(NSUserDefaults *d, NSString *key, BOOL def) {
@@ -68,7 +63,6 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     NSTimeInterval _retryDelay;
     NSString *_deviceId;
     NSString *_deviceName;
-    NSInteger _vncPort;
 }
 
 - (NSString *)_gatewayHost;
@@ -86,7 +80,6 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 - (NSDictionary *)_buildAckForCommand:(NSDictionary *)msg;
 - (void)_sendAck:(NSDictionary *)ack fd:(int)fd;
 - (NSData *)_registerData;
-- (NSArray<NSString *> *)_capabilities;
 - (NSDictionary *)_configs;
 - (NSDictionary *)_screenInfo;
 - (void)_defaultsChanged;
@@ -135,13 +128,8 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 }
 
 - (NSInteger)_gatewayPort {
-    const char *envPort = getenv("TVNC_GATEWAY_PORT");
-    if (envPort && envPort[0]) {
-        NSInteger p = atoi(envPort);
-        if (p > 0 && p < 65536) return p;
-    }
-    NSInteger port = [_defaults integerForKey:kGatewayPortKey];
-    return (port > 0 && port < 65536) ? port : 18081;
+    // 端口固定不可调（18081 = 网关注册端口），忽略 env/NSUserDefaults 覆盖
+    return 18081;
 }
 
 /**
@@ -223,24 +211,16 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 }
 
 - (NSInteger)_vncPort {
-    if (_vncPort == 0) {
-        NSInteger port = [_defaults integerForKey:kPortKey];
-        _vncPort = (port > 0 && port < 65536) ? port : 5901;
-    }
-    return _vncPort;
+    // 端口固定不可调（5901 = VNC 后端入口），忽略 NSUserDefaults 覆盖
+    return 5901;
 }
 
 - (NSInteger)_httpPort {
-    NSInteger http = [_defaults integerForKey:@"HttpPort"];
-    return (http > 0 && http < 65536) ? http : 0;
+    // 端口固定不可调（5801 = 前端入口），忽略 NSUserDefaults 覆盖
+    return 5801;
 }
 
-#pragma mark - 能力清单（Phase 4.1：从 TRCapabilityRegistry 自动生成）
-
-- (NSArray<NSString *> *)_capabilities {
-    // 控制型能力 ID 由注册表自动生成，不再硬编码
-    return [[TRCapabilityRegistry sharedRegistry] allCapabilityIds];
-}
+#pragma mark - 配置值读取
 
 - (NSDictionary *)_configs {
     // 配置值由注册表统一读取（覆盖 Root.plist 全字段，密码只报存在性）
@@ -258,14 +238,14 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 }
 
 - (NSData *)_registerData {
+    // 2026-08-13：去除能力/配置 schema 上报（capabilities/capMetadata/configSchema），
+    // 仅上报身份/连接信息 + 当前配置值（configs 供前端读取当前参数）。
+    // 前端自包含定义直发（KEY_DEFS/ACT_DEFS/BATCH_CAPS/CONFIG_DEFS），新增能力=设备端注册+前端加定义。
     NSMutableDictionary *reg = [NSMutableDictionary dictionary];
     reg[@"type"] = @"register";
     reg[@"deviceId"] = [self _deviceId];
     reg[@"name"] = [self _deviceName];
     reg[@"vncPort"] = @([self _vncPort]);
-    reg[@"capabilities"] = [self _capabilities];
-    reg[@"capMetadata"] = [[TRCapabilityRegistry sharedRegistry] allControlMetadata];
-    reg[@"configSchema"] = [[TRCapabilityRegistry sharedRegistry] allConfigSchema];
     reg[@"configs"] = [self _configs];
     reg[@"screen"] = [self _screenInfo];
     reg[@"httpPort"] = @([self _httpPort]);
@@ -324,8 +304,7 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
         if (!_started && [self _gatewayHost]) {
             [self start];
         }
-        _deviceName = nil;  // 允许下次 register 读取新名称
-        _vncPort = 0;       // 允许下次 register 读取新端口（deviceId 保持稳定）
+        _deviceName = nil;  // 允许下次 register 读取新名称（端口固定，deviceId 保持稳定）
     }
 }
 
@@ -367,7 +346,7 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     }
     TVLog(@"[gw] connected to %@:%ld", host, (long)[self _gatewayPort]);
 
-    // register（含能力清单）
+    // register（连接信息 + 配置值）
     NSData *regData = [self _registerData];
     if (!regData) {
         close(fd);
@@ -384,32 +363,21 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     // 此处重置标志，允许本次连接的首个 ack 触发 _startTunnel
     _tunnelStarted = NO;
 
-    // Phase C：本地 46752 订阅画面变化（screen.subscribe）→ 变化时经注册通道上报网关 screen_changed
-    int subFd = [self _connectScreenSubscribe];
-    if (subFd >= 0) TVLog(@"[gw] screen.subscribe established (local %d)", kLocalScreenCtlPort);
-
     // 读线程循环：读 ack/任意数据；每 kHelloInterval 发 hello；select 超时检测
     // 命令通道行缓冲：接收网关注册通道下发的 JSON 行（cmd 命令，宪法 7.4）
     char inBuf[1024];
     size_t inLen = 0;
-    char subBuf[1024];
-    size_t subLen = 0;
     time_t lastHello = time(NULL);
     while (_started && ![[NSThread currentThread] isCancelled]) {
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(fd, &rfds);
         int maxFd = fd;
-        if (subFd >= 0) {
-            FD_SET(subFd, &rfds);
-            maxFd = MAX(maxFd, subFd);
-        }
         struct timeval tv;
         tv.tv_sec = (time_t)kReadTimeout;
         tv.tv_usec = 0;
         int sel = select(maxFd + 1, &rfds, NULL, NULL, &tv);
         if (sel < 0) {
-            if (subFd >= 0) close(subFd);
             close(fd);
             return NO;
         }
@@ -424,7 +392,6 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
             if (rereg) {
                 NSData *fresh = [self _registerData];
                 if (fresh && write(fd, fresh.bytes, fresh.length) < 0) {
-                    if (subFd >= 0) close(subFd);
                     close(fd);
                     return NO;
                 }
@@ -437,41 +404,9 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
             }
             continue;
         }
-        // 订阅通道：screen.event → 上报网关 screen_changed（变化事件，控制端增量拉图）
-        if (subFd >= 0 && FD_ISSET(subFd, &rfds)) {
-            ssize_t sn = read(subFd, subBuf + subLen, sizeof(subBuf) - subLen - 1);
-            if (sn <= 0) {
-                close(subFd);
-                subFd = -1; // 订阅断开：本连接内不再上报（下轮重连注册时重建）
-                subLen = 0;
-            } else {
-                subLen += (size_t)sn;
-                subBuf[subLen] = '\0';
-                size_t sStart = 0;
-                for (size_t i = 0; i < subLen; i++) {
-                    if (subBuf[i] == '\n') {
-                        subBuf[i] = '\0';
-                        if (strstr(subBuf + sStart, "screen.event") != NULL) {
-                            [self _reportScreenChanged:fd];
-                        }
-                        sStart = i + 1;
-                    }
-                }
-                if (sStart > 0) {
-                    memmove(subBuf, subBuf + sStart, subLen - sStart);
-                    subLen -= sStart;
-                    subBuf[subLen] = '\0';
-                } else if (subLen >= sizeof(subBuf) - 1) {
-                    // 超长无换行数据：丢弃整段，防止阻塞
-                    subLen = 0;
-                    subBuf[0] = '\0';
-                }
-            }
-        }
         if (FD_ISSET(fd, &rfds)) {
             ssize_t n = read(fd, inBuf + inLen, sizeof(inBuf) - inLen - 1);
             if (n <= 0) {
-                if (subFd >= 0) close(subFd);
                 close(fd);
                 return NO;
             }
@@ -498,7 +433,6 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
         }
     }
 
-    if (subFd >= 0) close(subFd);
     close(fd);
     return YES;
 }
@@ -653,48 +587,6 @@ static NSString *TVNCStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
     if (n < 0) {
         // 写失败说明连接已断，read 循环会尽快退出
     }
-}
-
-/**
- * 建立本地 46752 画面变化订阅（Phase C）。
- * 连接本机 trollvncserver 控制端口并发送 screen.subscribe on（throttle=150ms、minDistance=8），
- * 保持连接以持续接收 screen.event 推送（TRScreenHasher 检测到画面变化时由 46752 广播）。
- * @return 订阅 socket fd；失败返回 -1
- */
-- (int)_connectScreenSubscribe {
-    int s = socket(AF_INET, SOCK_STREAM, 0);
-    if (s < 0) return -1;
-    struct sockaddr_in a;
-    memset(&a, 0, sizeof(a));
-    a.sin_len = sizeof(a);
-    a.sin_family = AF_INET;
-    a.sin_port = htons((uint16_t)kLocalScreenCtlPort);
-    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (connect(s, (struct sockaddr *)&a, sizeof(a)) < 0) {
-        close(s);
-        return -1;
-    }
-    const char *cmd = "screen.subscribe on 150 8\n";
-    if (write(s, cmd, strlen(cmd)) < 0) {
-        close(s);
-        return -1;
-    }
-    return s;
-}
-
-/**
- * 经注册通道向网关上报告画面变化事件（Phase C）。
- * 控制端据此做 changedSince 增量查询拉图，替代对每台设备的高频 hash 轮询。
- * @param regFd 注册通道 socket fd
- */
-- (void)_reportScreenChanged:(int)regFd {
-    NSDictionary *msg = @{ @"type": @"screen_changed", @"deviceId": [self _deviceId] ?: @"" };
-    NSData *json = [NSJSONSerialization dataWithJSONObject:msg options:0 error:NULL];
-    if (!json) return;
-    NSMutableData *md = [json mutableCopy];
-    const char nl = '\n';
-    [md appendBytes:&nl length:1];
-    write(regFd, md.bytes, md.length);
 }
 
 #pragma mark - Phase 7：隧道客户端
