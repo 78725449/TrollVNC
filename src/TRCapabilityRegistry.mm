@@ -64,12 +64,15 @@ static NSString *TRStrPref(NSUserDefaults *d, NSString *key, NSString *def) {
 //       ZTSelfSignedCertificate.m 逐行对齐移植等价逻辑（同为 Security 私有函数路径）。
 
 // Security 私有符号（与 ZTSelfSignedCertificate.m 一致，SecGenerateSelfSignedCertificate 为私有函数）
+// extern "C" 保证 C 链接（.mm C++ 下默认名字修饰会导致链接找不到 _SecGenerateSelfSignedCertificate）
+extern "C" {
 extern SecCertificateRef SecGenerateSelfSignedCertificate(CFArrayRef subject, CFDictionaryRef __nullable parameters,
                                                           SecKeyRef publicKey, SecKeyRef privateKey);
 extern const CFStringRef kSecOidCommonName;
 extern const CFStringRef kSecCSRBasicContraintsPathLen;
 extern const CFStringRef kSecCertificateKeyUsage;
 extern const CFStringRef kSecCertificateExtensionsEncoded;
+} // extern "C"
 
 // keyUsage bit 定义（对齐 SecCertificatePriv.h / ZTSelfSignedCertificate.m）
 enum {
