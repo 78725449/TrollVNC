@@ -19,6 +19,7 @@
 #import "TVNCGatewayClient.h"
 #import "TVNCUtil.h"
 
+#import <Security/Security.h>
 #import <WebKit/WebKit.h>
 
 /// 未配置网关时，轮询检测网关配置出现的间隔（秒）
@@ -150,8 +151,8 @@ static const NSTimeInterval kConsoleConfigPollInterval = 3.0;
 
 /**
  * 创建并配置 WKWebView：禁用返回手势，允许页面滚动（设备墙滚动由 H5 内部处理）。
- * 容器加载远程 http 页面，无需 file 访问权限；若加载被 ATS 拦截需在 Info.plist 配置
- * NSAllowsLocalNetworking（见 NSAppTransportSecurity）。
+ * 容器加载网关 https 页面（§2.3m，自签证书由 didReceiveAuthenticationChallenge 信任）；
+ * ATS 已配 NSAllowsArbitraryLoads（Info.plist）兜底，兼容设备端 5801 http 直连页。
  */
 - (void)setupWebView {
     WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
@@ -166,6 +167,7 @@ static const NSTimeInterval kConsoleConfigPollInterval = 3.0;
 /**
  * 构造 H5 控制台 URL。
  * 配置键与原生网关客户端一致（com.82flex.trollvnc suite：GatewayHost/GatewayToken/TVNCConsolePort）。
+ * 网关默认启用 https（自签证书，见 trollvnc-farm §2.3m）；自签信任由 didReceiveAuthenticationChallenge 处理。
  * @return URL 字符串；网关未配置返回 nil
  */
 - (nullable NSString *)buildConsoleURL {
@@ -173,7 +175,7 @@ static const NSTimeInterval kConsoleConfigPollInterval = 3.0;
     NSString *host = [client gatewayHost];
     if (!host.length) return nil;
     NSInteger port = [client gatewayPort];
-    NSMutableString *url = [NSMutableString stringWithFormat:@"http://%@:%ld/?container=ipa", host, (long)port];
+    NSMutableString *url = [NSMutableString stringWithFormat:@"https://%@:%ld/?container=ipa", host, (long)port];
 
     // token：网关 API 鉴权（H5 app.js 优先读 URL 参数，其次 localStorage）
     NSString *token = [client gatewayToken];
@@ -326,6 +328,24 @@ static const NSTimeInterval kConsoleConfigPollInterval = 3.0;
 }
 
 #pragma mark - WKNavigationDelegate
+
+/**
+ * TLS 挑战处理：网关为内网自签证书（https 无感剪贴板依赖，见 trollvnc-farm §2.3m），
+ * 无条件信任 serverTrust（内网自签边界，MITM 风险与"无鉴权内网"设计一致；挑战处理优先于 ATS）。
+ * @param challenge 认证挑战
+ * @param completionHandler 完成回调（disposition + credential）
+ */
+- (void)webView:(WKWebView *)webView didReceiveAuthenticationChallenge:(NSURLAuthenticationChallenge *)challenge
+  completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential *credential))completionHandler {
+    if ([challenge.protectionSpace.authenticationMethod isEqualToString:NSURLAuthenticationMethodServerTrust]) {
+        SecTrustRef trust = challenge.protectionSpace.serverTrust;
+        if (trust) {
+            completionHandler(NSURLSessionAuthChallengeUseCredential, [NSURLCredential credentialForTrust:trust]);
+            return;
+        }
+    }
+    completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
+}
 
 /**
  * 主页面加载完成：隐藏加载指示器。

@@ -4,10 +4,10 @@
 <dict>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<!-- Phase 13 Web 容器化：控制 Tab 的 WKWebView 需加载 http:// 网关页面（内网/局域网裸 IP 与 .local）。
-		     URLSession 访问裸 IP 本就豁免 ATS（API 一直正常）；NSAllowsLocalNetworking 覆盖本地网络明文加载，
-		     若真机验证仍被拦再升级 NSAllowsArbitraryLoads（内网可信边界，宪法 1.3）。 -->
-		<key>NSAllowsLocalNetworking</key>
+		<!-- §2.3m https 化：网关控制台改 https（自签证书，无感剪贴板依赖）。WKWebView 与 URLSession 均已用
+		     challenge 处理信任自签 serverTrust；NSAllowsArbitraryLoads 兜底确保 ATS 不预拦（内网可信边界，宪法 1.3）。
+		     设备端 5801 直连页仍为 http 明文，同样依赖该豁免。 -->
+		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
 	<key>NSBonjourServices</key>

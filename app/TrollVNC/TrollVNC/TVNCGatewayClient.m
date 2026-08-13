@@ -9,6 +9,8 @@
 
 #import "TVNCGatewayClient.h"
 
+#import <Security/Security.h>
+
 /// 网关 HTTP 控制台端口（固定 8080 不可调，trollvnc-farm FARM_PORT）
 static const NSInteger kGatewayDefaultConsolePort = 8080;
 /// 配置 Suite（与全项目一致）
@@ -17,6 +19,9 @@ static NSString *const kGatewayDefaultsSuite = @"com.82flex.trollvnc";
 static NSString *const kGatewayHostKey = @"GatewayHost";
 /// 网关 Token 配置键
 static NSString *const kGatewayTokenKey = @"GatewayToken";
+
+@interface TVNCGatewayClient () <NSURLSessionDelegate>
+@end
 
 @implementation TVNCGatewayClient
 
@@ -50,13 +55,44 @@ static NSString *const kGatewayTokenKey = @"GatewayToken";
 
 #pragma mark - 请求构造
 
-/// 构造网关基础 URL：http://host:port/api/...（host 未配置返回 nil）。
+/// 构造网关基础 URL：https://host:port/api/...（host 未配置返回 nil）。
+/// 网关默认启用 https（自签证书，见 trollvnc-farm §2.3m）；证书信任由 tlsTrustingSession 的 challenge 处理。
 - (nullable NSURL *)apiURLWithPath:(NSString *)path {
     NSString *host = [self gatewayHost];
     if (!host.length) return nil;
     NSInteger port = [self gatewayPort];
-    NSString *urlStr = [NSString stringWithFormat:@"http://%@:%ld%@", host, (long)port, path];
+    NSString *urlStr = [NSString stringWithFormat:@"https://%@:%ld%@", host, (long)port, path];
     return [NSURL URLWithString:urlStr];
+}
+
+/// 懒加载 URLSession：信任网关自签证书（内网自签边界，与"无鉴权内网"设计一致）。
+/// @return 带自签信任的 URLSession
+- (NSURLSession *)tlsTrustingSession {
+    static NSURLSession *session = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration defaultSessionConfiguration];
+        cfg.timeoutIntervalForRequest = 6.0;
+        session = [NSURLSession sessionWithConfiguration:cfg delegate:self delegateQueue:nil];
+    });
+    return session;
+}
+
+/**
+ * TLS 挑战处理：网关为内网自签证书，信任 serverTrust。
+ * @param challenge 认证挑战
+ * @param completionHandler 完成回调
+ */
+- (void)URLSession:(NSURLSession *)session didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
+ completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential *credential))completionHandler {
+    if ([challenge.protectionSpace.authenticationMethod isEqualToString:NSURLAuthenticationMethodServerTrust]) {
+        SecTrustRef trust = challenge.protectionSpace.serverTrust;
+        if (trust) {
+            completionHandler(NSURLSessionAuthChallengeUseCredential, [NSURLCredential credentialForTrust:trust]);
+            return;
+        }
+    }
+    completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
 }
 
 /// 构造通用请求：注入 Bearer Token 与 JSON 头。
@@ -104,7 +140,7 @@ static NSString *const kGatewayTokenKey = @"GatewayToken";
         return;
     }
     NSURLRequest *req = [self requestWithURL:url method:@"GET" body:nil];
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
+    NSURLSessionDataTask *task = [[self tlsTrustingSession] dataTaskWithRequest:req
                                                                  completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
         NSArray<NSDictionary *> *devices = nil;
         if (!err && data) {
