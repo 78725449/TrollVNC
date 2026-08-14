@@ -29,7 +29,7 @@ static const NSTimeInterval kConsoleConfigPollInterval = 3.0;
 /// 系统剪贴板变化 Darwin 通知（与设备端 ClipboardManager 同源）
 static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteboard.notify.changed";
 
-@interface TVNCConsoleWebViewController () <WKNavigationDelegate>
+@interface TVNCConsoleWebViewController () <WKNavigationDelegate, WKScriptMessageHandler>
 
 @property(nonatomic, strong) WKWebView *webView;                 // H5 手机控制台容器
 @property(nonatomic, strong) UIActivityIndicatorView *spinner;   // 加载中指示器
@@ -173,6 +173,10 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
  */
 - (void)setupWebView {
     WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
+    // 2026-08-14：Web→原生桥（farmBridge）。设备→控制端剪贴板写入在 iOS WebKit 非用户手势下
+    // writeText 会被拒（NotAllowedError，手机 Safari 与 WKWebView 同受限，电脑 Chrome 无此限制），
+    // 故容器模式改走原生写 UIPasteboard（无手势/安全上下文限制）。需在 dealloc/cleanup 移除 handler 防循环引用。
+    [config.userContentController addScriptMessageHandler:self name:@"farmBridge"];
     self.webView = [[WKWebView alloc] initWithFrame:self.view.bounds configuration:config];
     self.webView.translatesAutoresizingMaskIntoConstraints = NO;
     self.webView.navigationDelegate = self;
@@ -180,6 +184,30 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
     self.webView.allowsBackForwardNavigationGestures = NO;
     [self.view addSubview:self.webView];
 }
+
+#pragma mark - WKScriptMessageHandler（Web → 原生桥）
+
+/**
+ * 接收 Web 层消息（2026-08-14）：
+ * - {type:'writeClipboard', text} 设备→控制端剪贴板同步写入（RFB clipboard 事件 → 原生写 UIPasteboard，
+ *   绕开 iOS WebKit 非手势 writeText 被拒的平台限制；写入后同步基线抑制本机监听回显推送）。
+ */
+- (void)userContentController:(WKUserContentController *)userContentController
+      didReceiveScriptMessage:(WKScriptMessage *)message {
+    if (![message.name isEqualToString:@"farmBridge"]) return;
+    if (![message.body isKindOfClass:[NSDictionary class]]) return;
+    NSString *type = message.body[@"type"];
+    if ([type isEqualToString:@"writeClipboard"]) {
+        NSString *text = message.body[@"text"];
+        if (![text isKindOfClass:[NSString class]] || !text.length) return;
+        UIPasteboard *pb = [UIPasteboard generalPasteboard];
+        self.clipboardLastCount = pb.changeCount;   // 写入前基线：写入触发的 Darwin 通知视为回显
+        self.clipboardLastPushed = text;            // 回显抑制：同文本不再推回 Web（防 RFB 循环）
+        pb.string = text;
+        NSLog(@"[Console] native writeClipboard (%lu chars)", (unsigned long)text.length);
+    }
+}
+
 
 /**
  * 构造 H5 控制台 URL。
@@ -493,6 +521,12 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
                                                   object:nil];
     WKWebView *wv = self.webView;
     if (!wv) return;
+    // 2026-08-14：移除 WKScriptMessageHandler（addScriptMessageHandler:self 会强引用 self，必须显式移除防泄漏）
+    @try {
+        [wv.configuration.userContentController removeScriptMessageHandlerForName:@"farmBridge"];
+    } @catch (NSException *e) {
+        NSLog(@"[Console] removeScriptMessageHandler exception: %@", e);
+    }
     [wv stopLoading];
     [wv loadHTMLString:@"" baseURL:nil];
 }
