@@ -268,6 +268,14 @@ export default class GestureHandler {
     }
 
     _touchEnd(id, x, y) {
+        // [farm patch 2026-08-14] 记录松手坐标：gestureend 的释放位置取自 avg.last（tracked.lastX/lastY），
+        // 原实现 touchend 不更新 lastX/lastY → 释放点停留在最后一次 touchmove，长按拖动快速松手会偏差/无效。
+        let endTouch = this._tracked.find(t => t.id === id);
+        if (endTouch !== undefined) {
+            endTouch.lastX = x;
+            endTouch.lastY = y;
+        }
+
         // Check if this is an ignored touch
         if (this._ignored.indexOf(id) !== -1) {
             // Remove this touch from ignored
