@@ -1573,26 +1573,6 @@ static inline uint32_t hidUsageCodeForCharacter(NSString *key) {
     [self sendMarkerHIDEvent];
 }
 
-/**
- * 注入外接硬件键盘连接/断开事件（HID attach hack，2026-08-14）：
- * iOS 检测到外接键盘连接（kIOHIDEventFieldKeyboardAttached=1）时，若系统设置
- * 「连接实体键盘时自动隐藏软键盘」（默认开启）会强制隐藏当前软键盘——这是 iOS 上
- * 唯一"显式隐藏软键盘"（非 toggle）的手段；attached=0 恢复断开状态，之后聚焦输入框
- * 正常弹软键盘。用于控制端键盘输入源互斥：切控制端键盘时隐藏被控设备软键盘。
- * @param attached YES=外接键盘已连接（软键盘被隐藏），NO=断开（恢复）
- * @returns {void}
- */
-- (void)setHardwareKeyboardAttached:(BOOL)attached {
-    IOHIDEventRef eventRef = IOHIDEventCreateKeyboardEvent(kCFAllocatorDefault, mach_absolute_time(),
-                                                           kHIDPage_KeyboardOrKeypad, 0,
-                                                           false, kIOHIDEventOptionNone);
-    if (!eventRef) return;
-    IOHIDEventSetIntegerValue(eventRef, kIOHIDEventFieldKeyboardAttached, attached ? 1 : 0);
-    _sendHIDEvent(eventRef, _hidEventQueue);
-    CFRelease(eventRef);
-    [self sendMarkerHIDEvent];
-}
-
 - (void)toggleSpotlight {
     struct timespec pressDelay = {0, (long)(fingerLiftDelay * nanosecondsPerSecond)};
 

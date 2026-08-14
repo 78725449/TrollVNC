@@ -431,18 +431,6 @@ static NSDictionary *TRSearchGatewaySync(void) {
     [self _registerControl:@"keyboard"   title:@"键盘"    icon:@"⌨️" route:TRCapRouteHID params:@[] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
         [hid toggleOnScreenKeyboard]; return @{@"ok":@YES};
     }];
-    // 键盘显式显示/隐藏（2026-08-14 HID attach hack）：iOS 无显式软键盘控制 API，
-    // 注入"外接硬件键盘连接/断开"事件让系统强制隐藏/恢复软键盘（依赖系统默认设置
-    // 「连接实体键盘时自动隐藏软键盘」）。供控制端键盘输入源互斥：visible=NO 隐藏被控
-    // 设备软键盘（切控制端键盘时），visible=YES 恢复（切被控端/退出控制时）。
-    [self _registerControl:@"keyboard.set" title:@"设置键盘显隐" icon:@"⌨️" route:TRCapRouteHID
-        params:@[@{@"name":@"visible",@"type":@"boolean",@"required":@YES}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSNumber *vis = p[@"visible"];
-            if (![vis isKindOfClass:[NSNumber class]]) { if (e) *e = [NSError errorWithDomain:@"cap" code:1 userInfo:@{NSLocalizedDescriptionKey:@"visible 参数缺失"}]; return nil; }
-            [hid setHardwareKeyboardAttached:![vis boolValue]];
-            return @{@"ok":@YES};
-        }];
     // Batch 1：无参数 HID 能力批量注册（24 项，数组驱动避免重复模式代码）
     NSArray<NSDictionary *> *hidNoParam = @[
         @{@"id":@"spotlight",   @"title":@"搜索",       @"icon":@"🔍",  @"sel":NSStringFromSelector(@selector(toggleSpotlight))},
