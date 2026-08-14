@@ -6,8 +6,8 @@
     - 前端（trollvnc-farm web）自包含定义批量菜单与按键（caps.js BATCH_CAPS/KEY_DEFS），
       设备端不再维护 menu/scenes/batch 等 UI/AI 元数据；
     - AI 接入 = 上报信息 + 控制方法（invoke/set 通道），无需主动声明能力场景，
-      原 menuLevel/scenes/batchSupport（AI 专用标注）与 AI 原语类能力（touch.*/stylus.*/notify.*
-      /consumer.*/hid.*/key.*/screen.capture.*/sys.* 查询等）全部删除。
+      原 menuLevel/scenes/batchSupport（AI 专用标注）与 AI 原语类能力
+      （touch、stylus、notify、consumer、hid、key、screen.capture、sys 查询等）全部删除。
 */
 #import "TRCapabilityRegistry.h"
 #import "STHIDEventGenerator.h"
@@ -728,8 +728,8 @@ static NSDictionary *TRSearchGatewaySync(void) {
         }];
 }
 
-/** 注册 ScreenCapturer 扩展能力（2026-08-15 删除：screen.capture.*/screen.fps/resolution/forceRefresh
- *  为 AI 专用采集原语，无任何消费方；单帧截图保留为 screenshot（_registerNativeCapabilities）） */
+/** 注册 ScreenCapturer 扩展能力（2026-08-15 删除：screen.capture、screen.fps、screen.resolution、
+ *  screen.forceRefresh 为 AI 专用采集原语，无任何消费方；单帧截图保留为 screenshot（_registerNativeCapabilities）） */
 
 /** 注册网关客户端能力（保留连接查询/手动重连，设备元数据随 register 上报，无独立 invoke 入口） */
 - (void)_registerGatewayCapabilities {
