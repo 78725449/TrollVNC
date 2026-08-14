@@ -64,10 +64,10 @@ typedef NS_ENUM(NSInteger, TRConfigReload) {
 #pragma mark - 能力调用（invoke 统一入口）
 
 /**
- * 调用控制型能力（按 capId 查 route 自动分发）
- * @param capId  能力 ID（如 "home" / "touch.tap"）
- * @param params 参数字典（如 touch.tap 的 {x:0.5, y:0.5}）
- * @param error  失败时设置错误（无 RFB 依赖，直接 HID 注入）
+ * 调用控制型能力（按 capId 查 executor 分发）
+ * @param capId  能力 ID（如 "home" / "service.restart" / "screenshot"）
+ * @param params 参数字典
+ * @param error  失败时设置错误
  * @return 成功返回结果字典（含 ok/result），失败返回 nil
  */
 - (nullable NSDictionary *)invoke:(NSString *)capId

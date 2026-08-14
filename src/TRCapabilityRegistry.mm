@@ -1,7 +1,13 @@
 /*
-  TRCapabilityRegistry.mm - 能力即服务注册表实现（Phase 4.1）
+  TRCapabilityRegistry.mm - 能力注册表实现（Phase 4.1，2026-08-15 架构精简）
   数据驱动设计：能力/配置以表项注册，新增能力只需加一行 _registerControl/_registerConfig。
   执行路由：HID 注入 / 触控（归一化坐标）/ 本地命令 / 原生调用，不写 if/else 业务分支。
+  精简说明（2026-08-15）：仅保留被实际消费的 executor 注册表——
+    - 前端（trollvnc-farm web）自包含定义批量菜单与按键（caps.js BATCH_CAPS/KEY_DEFS），
+      设备端不再维护 menu/scenes/batch 等 UI/AI 元数据；
+    - AI 接入 = 上报信息 + 控制方法（invoke/set 通道），无需主动声明能力场景，
+      原 menuLevel/scenes/batchSupport（AI 专用标注）与 AI 原语类能力（touch.*/stylus.*/notify.*
+      /consumer.*/hid.*/key.*/screen.capture.*/sys.* 查询等）全部删除。
 */
 #import "TRCapabilityRegistry.h"
 #import "STHIDEventGenerator.h"
@@ -9,7 +15,6 @@
 #import "ScreenCapturer.h"
 #import "TRGatewayClient.h"
 #import "TRWatchDog.h"
-#import "BulletinManager.h"
 #import "Logging.h"
 #import <UIKit/UIKit.h>
 #import <Security/Security.h>
@@ -19,17 +24,14 @@
 #import <netdb.h>
 #import <unistd.h>
 
-// trollvncserver.mm 公开访问函数（供系统查询能力调用）
-extern NSDictionary *tvGetInflightStats(void);
-extern NSDictionary *tvGetBonjourTXT(void);
-// Phase 4.4：trollvncserver 配置热重载入口（hot 级别 key 更新 C 全局变量 + 副作用）
+// trollvncserver 配置热重载入口（hot 级别 key 更新 C 全局变量 + 副作用，setConfig 使用）
 extern int tvReloadConfigForKey(const char *key);
 
 static NSString *const kDefaultsSuite = @"com.82flex.trollvnc";
 // Phase 2：RFB 端口（原 46752 控制端口已收敛，能力经 5901 RFB 扩展消息 type 0x50/0x80 承载）
 static const int kRfbPort = 5901;
 // RFB 扩展消息超时常量（毫秒，统一管理）
-// 短命令默认超时：count/list/disconnect/block/unblock/blocked.list/screen.hash/screen.diff 等
+// 短命令默认超时：count/list/disconnect/block/unblock/blocked.list/screen.hash 等
 // 本地回环实际响应 <50ms，3 秒超时已含极端 CPU 满载余量
 static const NSTimeInterval kRfbDefaultTimeoutMs = 3000;
 
@@ -314,13 +316,9 @@ static NSDictionary *TRSearchGatewaySync(void) {
 @property(nonatomic, copy) NSString *capId;
 @property(nonatomic, copy) NSString *title;
 @property(nonatomic, copy) NSString *icon;
-@property(nonatomic, copy) NSString *category;  // Phase 10.3：能力分类（hid/touch/stylus/system/native/service/gateway）
+@property(nonatomic, copy) NSString *category;  // 能力分类（hid/touch/system/native/service/gateway/screen）
 @property(nonatomic, assign) TRCapRouteType routeType;
 @property(nonatomic, copy) NSArray *params;
-// Phase 11.1：场景化分层字段
-@property(nonatomic, copy) NSString *menuLevel;  // primary/secondary/internal（默认 primary）
-@property(nonatomic, copy) NSArray *scenes;      // [single,batch,ai] 子集（默认 [single]）
-@property(nonatomic, assign) BOOL batchSupport;  // scenes 含 batch 的快捷判断
 @property(nonatomic, copy) NSDictionary * _Nullable (^executor)(NSDictionary *params, NSError **error);
 @end
 @implementation TRControlCap @end
@@ -376,32 +374,13 @@ static NSDictionary *TRSearchGatewaySync(void) {
 - (void)_registerAllCapabilities {
     [self _registerHIDCapabilities];
     [self _registerTouchCapabilities];
-    [self _registerStylusCapabilities];
     [self _registerNativeCapabilities];
     [self _registerSettingsActions];
-    [self _registerBulletinCapabilities];
-    [self _registerWatchdogCapabilities];
     [self _registerLocalCmdCapabilities];
     [self _registerSystemQueryCapabilities];
-    [self _registerScreenExtCapabilities];
     [self _registerGatewayCapabilities];
     [self _registerScreenHashCapabilities];
     [self _registerConfigSchemas];
-
-    // 调试/运维向能力：菜单不显示（internal），invoke 仍可用（运维/自动化可调）
-    // 2026-08-12：卡片 ⋯ 菜单收窄为「常用管理」，调试类收敛出菜单
-    NSSet *debugCaps = [NSSet setWithArray:@[
-        @"service.signal", @"service.state", @"service.info", @"service.isActive",
-        @"service.isThrottled", @"service.validate",
-        @"sys.configSnapshot", @"sys.stats.inflight",
-        @"notify.banner", @"notify.banner.update", @"notify.revoke", @"notify.revokeAll",
-        @"gateway.deviceInfo",
-        @"screen.forceRefresh",
-        @"clients.freeze", @"clients.unfreeze",
-    ]];
-    for (TRControlCap *cap in [_controlCaps allValues]) {
-        if ([debugCaps containsObject:cap.capId]) cap.menuLevel = @"internal";
-    }
 }
 
 /** 注册 HID 硬件注入能力（Home/电源/音量/亮度/键盘等） */
@@ -431,7 +410,7 @@ static NSDictionary *TRSearchGatewaySync(void) {
     [self _registerControl:@"keyboard"   title:@"键盘"    icon:@"⌨️" route:TRCapRouteHID params:@[] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
         [hid toggleOnScreenKeyboard]; return @{@"ok":@YES};
     }];
-    // Batch 1：无参数 HID 能力批量注册（24 项，数组驱动避免重复模式代码）
+    // 无参数 HID 能力批量注册（9 项，数组驱动避免重复模式代码）
     NSArray<NSDictionary *> *hidNoParam = @[
         @{@"id":@"spotlight",   @"title":@"搜索",       @"icon":@"🔍",  @"sel":NSStringFromSelector(@selector(toggleSpotlight))},
         @{@"id":@"home.double", @"title":@"双击Home",   @"icon":@"🏠",  @"sel":NSStringFromSelector(@selector(menuDoublePress))},
@@ -439,122 +418,26 @@ static NSDictionary *TRSearchGatewaySync(void) {
         @{@"id":@"power.double",@"title":@"双击电源",   @"icon":@"⏻",  @"sel":NSStringFromSelector(@selector(powerDoublePress))},
         @{@"id":@"power.triple",@"title":@"三击电源",   @"icon":@"⏻",  @"sel":NSStringFromSelector(@selector(powerTriplePress))},
         @{@"id":@"power.long",  @"title":@"长按电源",   @"icon":@"⏻",  @"sel":NSStringFromSelector(@selector(powerLongPress))},
-        @{@"id":@"snapshot",    @"title":@"Home+Power截屏", @"icon":@"📸", @"sel":NSStringFromSelector(@selector(snapshotPress))},
-        @{@"id":@"home.down",   @"title":@"Home按下",   @"icon":@"🏠",  @"sel":NSStringFromSelector(@selector(menuDown)), @"menu":@"internal"},
-        @{@"id":@"home.up",     @"title":@"Home抬起",   @"icon":@"🏠",  @"sel":NSStringFromSelector(@selector(menuUp)), @"menu":@"internal"},
-        @{@"id":@"power.down",  @"title":@"电源按下",   @"icon":@"⏻",  @"sel":NSStringFromSelector(@selector(powerDown)), @"menu":@"internal"},
-        @{@"id":@"power.up",    @"title":@"电源抬起",   @"icon":@"⏻",  @"sel":NSStringFromSelector(@selector(powerUp)), @"menu":@"internal"},
-        @{@"id":@"volup.down",  @"title":@"音量+按下",  @"icon":@"🔊",  @"sel":NSStringFromSelector(@selector(volumeIncrementDown)), @"menu":@"internal"},
-        @{@"id":@"volup.up",    @"title":@"音量+抬起",  @"icon":@"🔊",  @"sel":NSStringFromSelector(@selector(volumeIncrementUp)), @"menu":@"internal"},
-        @{@"id":@"voldn.down",  @"title":@"音量−按下",  @"icon":@"🔉",  @"sel":NSStringFromSelector(@selector(volumeDecrementDown)), @"menu":@"internal"},
-        @{@"id":@"voldn.up",    @"title":@"音量−抬起",  @"icon":@"🔉",  @"sel":NSStringFromSelector(@selector(volumeDecrementUp)), @"menu":@"internal"},
-        @{@"id":@"mute.down",   @"title":@"静音按下",   @"icon":@"🔇",  @"sel":NSStringFromSelector(@selector(muteDown)), @"menu":@"internal"},
-        @{@"id":@"mute.up",     @"title":@"静音抬起",   @"icon":@"🔇",  @"sel":NSStringFromSelector(@selector(muteUp)), @"menu":@"internal"},
-        @{@"id":@"briup.down",  @"title":@"亮度+按下",  @"icon":@"☀️",  @"sel":NSStringFromSelector(@selector(displayBrightnessIncrementDown)), @"menu":@"internal"},
-        @{@"id":@"briup.up",    @"title":@"亮度+抬起",  @"icon":@"☀️",  @"sel":NSStringFromSelector(@selector(displayBrightnessIncrementUp)), @"menu":@"internal"},
-        @{@"id":@"bridn.down",  @"title":@"亮度−按下",  @"icon":@"🌙",  @"sel":NSStringFromSelector(@selector(displayBrightnessDecrementDown)), @"menu":@"internal"},
-        @{@"id":@"bridn.up",    @"title":@"亮度−抬起",  @"icon":@"🌙",  @"sel":NSStringFromSelector(@selector(displayBrightnessDecrementUp)), @"menu":@"internal"},
         @{@"id":@"hwlock",      @"title":@"硬件键盘锁", @"icon":@"🔒",  @"sel":NSStringFromSelector(@selector(hardwareLock))},
         @{@"id":@"hwunlock",    @"title":@"硬件键盘解锁",@"icon":@"🔓", @"sel":NSStringFromSelector(@selector(hardwareUnlock))},
         @{@"id":@"releasekeys", @"title":@"释放所有按键",@"icon":@"🙊", @"sel":NSStringFromSelector(@selector(releaseEveryKeys))},
     ];
     for (NSDictionary *item in hidNoParam) {
         SEL sel = NSSelectorFromString(item[@"sel"]);
-        NSString *capId = item[@"id"];
-        TRControlCap *cap = [self _registerControl:capId title:item[@"title"] icon:item[@"icon"] route:TRCapRouteHID params:@[] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+        [self _registerControl:item[@"id"] title:item[@"title"] icon:item[@"icon"] route:TRCapRouteHID params:@[] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             ((void(*)(id,SEL))[hid methodForSelector:sel])(hid, sel);
             return @{@"ok":@YES};
         }];
-        // 按下/抬起原语为 AI 自动化专用，不进人工菜单（数组内其余条目保持默认菜单层级）
-        if (item[@"menu"]) cap.menuLevel = item[@"menu"];
     }
-    // screenshot.system：系统截屏（存相册，与静默 screenshot 区分）
-    [self _registerControl:@"screenshot.system" title:@"系统截屏" icon:@"📸" route:TRCapRouteHID params:@[] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-        [hid snapshotPress]; return @{@"ok":@YES};
-    }];
-    // Consumer 用法（3 项）：params {usage:int}
-    NSArray *consumerIds = @[@"consumer.press", @"consumer.down", @"consumer.up"];
-    NSArray *consumerSels = @[@"otherConsumerUsagePress:", @"otherConsumerUsageDown:", @"otherConsumerUsageUp:"];
-    for (NSUInteger i = 0; i < consumerIds.count; i++) {
-        NSString *capId = consumerIds[i]; SEL sel = NSSelectorFromString(consumerSels[i]);
-        TRControlCap *cap = [self _registerControl:capId title:(i==0?@"Consumer按下":(i==1?@"Consumer按下":@"Consumer抬起"))
-                          icon:@"🎛" route:TRCapRouteHID
-            params:@[@{@"name":@"usage",@"type":@"number",@"min":@0,@"max":@0xFFFFFFFF,@"required":@YES}]
-            executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-                uint32_t usage = (uint32_t)[p[@"usage"] unsignedIntValue];
-                ((void(*)(id,SEL,uint32_t))[hid methodForSelector:sel])(hid, sel, usage);
-                return @{@"ok":@YES, @"usage":@(usage)};
-            }];
-        // Consumer 用法原语为 AI 自动化专用，不进人工菜单
-        cap.menuLevel = @"internal";
-    }
-    // 任意页+用法（3 项）：params {page:int, usage:int}
-    NSArray *hidPageIds = @[@"hid.press", @"hid.down", @"hid.up"];
-    NSArray *hidPageSels = @[@"otherPage:usagePress:", @"otherPage:usageDown:", @"otherPage:usageUp:"];
-    for (NSUInteger i = 0; i < hidPageIds.count; i++) {
-        NSString *capId = hidPageIds[i]; SEL sel = NSSelectorFromString(hidPageSels[i]);
-        TRControlCap *cap = [self _registerControl:capId title:(i==0?@"HID按下":(i==1?@"HID按下":@"HID抬起"))
-                          icon:@"🕹" route:TRCapRouteHID
-            params:@[@{@"name":@"page",@"type":@"number",@"min":@0,@"max":@0xFFFF,@"required":@YES},
-                     @{@"name":@"usage",@"type":@"number",@"min":@0,@"max":@0xFFFF,@"required":@YES}]
-            executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-                uint32_t page = (uint32_t)[p[@"page"] unsignedIntValue];
-                uint32_t usage = (uint32_t)[p[@"usage"] unsignedIntValue];
-                ((void(*)(id,SEL,uint32_t,uint32_t))[hid methodForSelector:sel])(hid, sel, page, usage);
-                return @{@"ok":@YES, @"page":@(page), @"usage":@(usage)};
-            }];
-        // HID 页/用法原语为 AI 自动化专用，不进人工菜单
-        cap.menuLevel = @"internal";
-    }
-    // 键盘按下/抬起（2 项）：params {char:string(1)}（AI 自动化原语，不进人工菜单）
-    TRControlCap *keyDownCap = [self _registerControl:@"key.down" title:@"按键按下" icon:@"⬇" route:TRCapRouteHID
-        params:@[@{@"name":@"char",@"type":@"string",@"required":@YES}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSString *c = p[@"char"];
-            if (c.length != 1) { *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"char 需为单字符"}]; return nil; }
-            [hid keyDown:c]; return @{@"ok":@YES};
-        }];
-    keyDownCap.menuLevel = @"internal";
-    TRControlCap *keyUpCap = [self _registerControl:@"key.up" title:@"按键抬起" icon:@"⬆" route:TRCapRouteHID
-        params:@[@{@"name":@"char",@"type":@"string",@"required":@YES}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSString *c = p[@"char"];
-            if (c.length != 1) { *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"char 需为单字符"}]; return nil; }
-            [hid keyUp:c]; return @{@"ok":@YES};
-        }];
-    keyUpCap.menuLevel = @"internal";
 }
 
-/** 注册触控类能力（归一化 0-1 坐标，设备侧转原生像素） */
+/**
+ * 注册触控类能力（归一化 0-1 坐标，设备侧转原生像素）
+ * 2026-08-15 精简：touch.* 画布直操/AI 原语（tap/swipe/多点触控/手势/捏合/事件流等 18 项）无前端与
+ * 运维消费，全部删除；仅保留被实际调用的 type.paste（前端 Ctrl+V / 移动端粘贴按钮走 invoke 通道）。
+ */
 - (void)_registerTouchCapabilities {
     STHIDEventGenerator *hid = [STHIDEventGenerator sharedGenerator];
-    // 单点触控：params {x:0-1, y:0-1}（画布直操语义：触控能力不进人工菜单，AI/画布经 invoke 使用）
-    TRControlCap *tapCap = [self _registerControl:@"touch.tap" title:@"点击" icon:@"👆" route:TRCapRouteTouch
-        params:@[@{@"name":@"x",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-                 @{@"name":@"y",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            CGPoint pt = [self _denormalizePoint:p error:e];
-            if (pt.x < 0) return nil;
-            [hid tap:pt]; return @{@"ok":@YES};
-        }];
-    tapCap.menuLevel = @"internal";
-    // 滑动：params {x1,y1,x2,y2,duration}（画布直操语义：不进人工菜单，AI/画布经 invoke 使用）
-    TRControlCap *swipeCap = [self _registerControl:@"touch.swipe" title:@"滑动" icon:@"↔" route:TRCapRouteTouch
-        params:@[@{@"name":@"x1",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-                 @{@"name":@"y1",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-                 @{@"name":@"x2",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-                 @{@"name":@"y2",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-                 @{@"name":@"duration",@"type":@"number",@"min":@0.1,@"max":@5.0,@"default":@0.5}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            CGPoint s = [self _denormalizePoint:@{@"x":p[@"x1"],@"y":p[@"y1"]} error:e];
-            if (s.x < 0) return nil;
-            CGPoint ed = [self _denormalizePoint:@{@"x":p[@"x2"],@"y":p[@"y2"]} error:e];
-            if (ed.x < 0) return nil;
-            NSTimeInterval dur = [p[@"duration"] doubleValue] ?: 0.5;
-            [hid dragLinearWithStartPoint:s endPoint:ed duration:dur];
-            return @{@"ok":@YES};
-        }];
-    swipeCap.menuLevel = @"internal";
     // 2026-08-14 移除 type.text 注册：HID keyPress 仅支持 ASCII（c<128），中文/emoji 静默丢弃；
     // 前端 ACT_DEFS/BATCH_CAPS 均无调用入口，type.paste 是完整的替代方案（支持中文/emoji）
     // Batch 3：粘贴输入（任意文本，支持中文/emoji）
@@ -592,213 +475,6 @@ static NSDictionary *TRSearchGatewaySync(void) {
             });
             return @{@"ok":@YES, @"length":@(text.length)};
         }];
-    // Batch 1：多点触控与手势（12 项）
-    // 双击/双指/三指/长按：params {x,y}
-    NSArray *tapIds = @[@"touch.doubleTap", @"touch.twoFingerTap", @"touch.threeFingerTap", @"touch.longPress"];
-    NSArray *tapSels = @[@"doubleTap:", @"twoFingerTap:", @"threeFingerTap:", @"longPress:"];
-    NSArray *tapTitles = @[@"双击", @"双指点击", @"三指点击", @"长按"];
-    NSArray *tapIcons = @[@"👆×2", @"✌️", @"🖐️", @"👆⌛"];
-    for (NSUInteger i = 0; i < tapIds.count; i++) {
-        SEL sel = NSSelectorFromString(tapSels[i]);
-        TRControlCap *cap = [self _registerControl:tapIds[i] title:tapTitles[i] icon:tapIcons[i] route:TRCapRouteTouch
-            params:@[@{@"name":@"x",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-                 @{@"name":@"y",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES}] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-                CGPoint pt = [self _denormalizePoint:p error:e];
-                if (pt.x < 0) return nil;
-                ((void(*)(id,SEL,CGPoint))[hid methodForSelector:sel])(hid, sel, pt);
-                return @{@"ok":@YES};
-            }];
-        // 手势原语为画布直操/AI 自动化专用（双击/双指/三指/长按），不进人工菜单
-        cap.menuLevel = @"internal";
-    }
-    // 曲线滑动：params {x1,y1,x2,y2,duration?}（AI 手势原语，不进人工菜单）
-    TRControlCap *curveCap = [self _registerControl:@"touch.curveSwipe" title:@"曲线滑动" icon:@"〰" route:TRCapRouteTouch
-        params:@[@{@"name":@"x1",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-                 @{@"name":@"y1",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-                 @{@"name":@"x2",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-                 @{@"name":@"y2",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-                 @{@"name":@"duration",@"type":@"number",@"min":@0.1,@"max":@5.0,@"default":@0.5}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            CGPoint s = [self _denormalizePoint:@{@"x":p[@"x1"],@"y":p[@"y1"]} error:e];
-            if (s.x < 0) return nil;
-            CGPoint ed = [self _denormalizePoint:@{@"x":p[@"x2"],@"y":p[@"y2"]} error:e];
-            if (ed.x < 0) return nil;
-            NSTimeInterval dur = [p[@"duration"] doubleValue] ?: 0.5;
-            [hid dragCurveWithStartPoint:s endPoint:ed duration:dur];
-            return @{@"ok":@YES};
-        }];
-    curveCap.menuLevel = @"internal";
-    // 捏合缩放：params {bounds:{x,y,w,h}, scale, angle, duration}（AI 手势原语，不进人工菜单）
-    TRControlCap *pinchCap = [self _registerControl:@"touch.pinch" title:@"捏合缩放" icon:@"🤏" route:TRCapRouteTouch
-        params:@[@{@"name":@"bounds",@"type":@"object",@"required":@YES},
-                 @{@"name":@"scale",@"type":@"number",@"min":@0.1,@"max":@10.0,@"required":@YES},
-                 @{@"name":@"angle",@"type":@"number",@"min":@0,@"max":@(M_PI*2),@"default":@0},
-                 @{@"name":@"duration",@"type":@"number",@"min":@0.1,@"max":@5.0,@"default":@0.5}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSDictionary *b = p[@"bounds"];
-            if (!b) { *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"bounds 缺失"}]; return nil; }
-            // bounds 的 x/y/w/h 均为归一化 0-1，转原生像素（复用 _denormalizePoint 同款 UIScreen 获取方式）
-            CGPoint o = [self _denormalizePoint:@{@"x":b[@"x"],@"y":b[@"y"]} error:e];
-            if (o.x < 0) return nil;
-            UIScreen *scr = [UIScreen mainScreen];
-            CGFloat scale = [scr respondsToSelector:@selector(nativeScale)] ? [scr nativeScale] : [scr scale];
-            if (scale <= 0) scale = 1.0;
-            CGFloat w = [b[@"w"] doubleValue] * scr.bounds.size.width * scale;
-            CGFloat h = [b[@"h"] doubleValue] * scr.bounds.size.height * scale;
-            CGRect bounds = CGRectMake(o.x, o.y, w, h);
-            CGFloat pinchScale = [p[@"scale"] doubleValue];
-            CGFloat angle = [p[@"angle"] doubleValue] ?: 0;
-            NSTimeInterval dur = [p[@"duration"] doubleValue] ?: 0.5;
-            [hid pinchLinearInBounds:bounds scale:pinchScale angle:angle duration:dur];
-            return @{@"ok":@YES};
-        }];
-    pinchCap.menuLevel = @"internal";
-    // 触摸按下/抬起：params {x,y}（AI 自动化原语，不进人工菜单）
-    TRControlCap *touchDownCap = [self _registerControl:@"touch.down" title:@"触摸按下" icon:@"👇" route:TRCapRouteTouch
-        params:@[@{@"name":@"x",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-                 @{@"name":@"y",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES}] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            CGPoint pt = [self _denormalizePoint:p error:e];
-            if (pt.x < 0) return nil;
-            [hid touchDown:pt]; return @{@"ok":@YES};
-        }];
-    touchDownCap.menuLevel = @"internal";
-    TRControlCap *touchUpCap = [self _registerControl:@"touch.up" title:@"触摸抬起" icon:@"👆" route:TRCapRouteTouch
-        params:@[@{@"name":@"x",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-                 @{@"name":@"y",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES}] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            CGPoint pt = [self _denormalizePoint:p error:e];
-            if (pt.x < 0) return nil;
-            [hid liftUp:pt]; return @{@"ok":@YES};
-        }];
-    touchUpCap.menuLevel = @"internal";
-    // 多指同点按下/抬起：params {x,y,count}（AI 自动化原语，不进人工菜单）
-    TRControlCap *downMultiCap = [self _registerControl:@"touch.downMulti" title:@"多指按下" icon:@"👥" route:TRCapRouteTouch
-        params:@[@{@"name":@"x",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-                 @{@"name":@"y",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-                 @{@"name":@"count",@"type":@"number",@"min":@1,@"max":@30,@"required":@YES}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            CGPoint pt = [self _denormalizePoint:p error:e];
-            if (pt.x < 0) return nil;
-            NSUInteger count = [p[@"count"] unsignedIntegerValue];
-            if (count < 1 || count > HIDMaxTouchCount) {
-                *e = [NSError errorWithDomain:@"TRCap" code:3 userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"count 需在 1-%lu", (unsigned long)HIDMaxTouchCount]}];
-                return nil;
-            }
-            [hid touchDown:pt touchCount:count]; return @{@"ok":@YES, @"count":@(count)};
-        }];
-    downMultiCap.menuLevel = @"internal";
-    TRControlCap *upMultiCap = [self _registerControl:@"touch.upMulti" title:@"多指抬起" icon:@"👥" route:TRCapRouteTouch
-        params:@[@{@"name":@"x",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-                 @{@"name":@"y",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-                 @{@"name":@"count",@"type":@"number",@"min":@1,@"max":@30,@"required":@YES}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            CGPoint pt = [self _denormalizePoint:p error:e];
-            if (pt.x < 0) return nil;
-            NSUInteger count = [p[@"count"] unsignedIntegerValue];
-            if (count < 1 || count > HIDMaxTouchCount) {
-                *e = [NSError errorWithDomain:@"TRCap" code:3 userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"count 需在 1-%lu", (unsigned long)HIDMaxTouchCount]}];
-                return nil;
-            }
-            [hid liftUp:pt touchCount:count]; return @{@"ok":@YES, @"count":@(count)};
-        }];
-    upMultiCap.menuLevel = @"internal";
-    // Batch 4：多指异点按下/抬起（每个触点独立坐标，params {points:[{x,y},...]}，AI 自动化原语，不进人工菜单）
-    TRControlCap *downMultiAtCap = [self _registerControl:@"touch.downMultiAt" title:@"多指异点按下" icon:@"🖐️" route:TRCapRouteTouch
-        params:@[@{@"name":@"points",@"type":@"array",@"items":@{@"type":@"object",@"properties":@{@"x":@{@"type":@"number",@"min":@0,@"max":@1},@"y":@{@"type":@"number",@"min":@0,@"max":@1}},@"required":@[@"x",@"y"]},@"required":@YES}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSArray *pts = p[@"points"];
-            if (![pts isKindOfClass:[NSArray class]] || pts.count == 0) {
-                *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"points 需为非空数组"}];
-                return nil;
-            }
-            NSUInteger count = pts.count;
-            if (count > HIDMaxTouchCount) {
-                *e = [NSError errorWithDomain:@"TRCap" code:3 userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"触点数超过上限 %lu", (unsigned long)HIDMaxTouchCount]}];
-                return nil;
-            }
-            CGPoint *locations = (CGPoint *)malloc(count * sizeof(CGPoint));
-            if (!locations) { *e = [NSError errorWithDomain:@"TRCap" code:4 userInfo:@{NSLocalizedDescriptionKey:@"内存分配失败"}]; return nil; }
-            for (NSUInteger i = 0; i < count; i++) {
-                locations[i] = [self _denormalizePoint:pts[i] error:e];
-                if (locations[i].x < 0) { free(locations); return nil; }
-            }
-            [hid touchDownAtPoints:locations touchCount:count];
-            free(locations);
-            return @{@"ok":@YES, @"count":@(count)};
-        }];
-    downMultiAtCap.menuLevel = @"internal";
-    TRControlCap *upMultiAtCap = [self _registerControl:@"touch.upMultiAt" title:@"多指异点抬起" icon:@"🖐️" route:TRCapRouteTouch
-        params:@[@{@"name":@"points",@"type":@"array",@"items":@{@"type":@"object",@"properties":@{@"x":@{@"type":@"number",@"min":@0,@"max":@1},@"y":@{@"type":@"number",@"min":@0,@"max":@1}},@"required":@[@"x",@"y"]},@"required":@YES}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSArray *pts = p[@"points"];
-            if (![pts isKindOfClass:[NSArray class]] || pts.count == 0) {
-                *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"points 需为非空数组"}];
-                return nil;
-            }
-            NSUInteger count = pts.count;
-            if (count > HIDMaxTouchCount) {
-                *e = [NSError errorWithDomain:@"TRCap" code:3 userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"触点数超过上限 %lu", (unsigned long)HIDMaxTouchCount]}];
-                return nil;
-            }
-            CGPoint *locations = (CGPoint *)malloc(count * sizeof(CGPoint));
-            if (!locations) { *e = [NSError errorWithDomain:@"TRCap" code:4 userInfo:@{NSLocalizedDescriptionKey:@"内存分配失败"}]; return nil; }
-            for (NSUInteger i = 0; i < count; i++) {
-                locations[i] = [self _denormalizePoint:pts[i] error:e];
-                if (locations[i].x < 0) { free(locations); return nil; }
-            }
-            [hid liftUpAtPoints:locations touchCount:count];
-            free(locations);
-            return @{@"ok":@YES, @"count":@(count)};
-        }];
-    upMultiAtCap.menuLevel = @"internal";
-    // Batch 4：重置触摸状态（清除所有触点，AI 自动化原语，不进人工菜单）
-    TRControlCap *resetCap = [self _registerControl:@"touch.reset" title:@"重置触摸" icon:@"🔄" route:TRCapRouteTouch params:@[]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            [hid dispatchHandResetEvent]; return @{@"ok":@YES};
-        }];
-    resetCap.menuLevel = @"internal";
-    // Batch 4：单事件派发（透传 eventInfo 字典，AI 自动化原语，不进人工菜单）
-    TRControlCap *eventCap = [self _registerControl:@"touch.event" title:@"单事件派发" icon:@"🎞️" route:TRCapRouteTouch
-        params:@[@{@"name":@"eventInfo",@"type":@"object",@"required":@YES}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSDictionary *eventInfo = p[@"eventInfo"];
-            if (![eventInfo isKindOfClass:[NSDictionary class]]) {
-                *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"eventInfo 需为对象"}];
-                return nil;
-            }
-            [hid dispatchEventWithInfo:eventInfo];
-            return @{@"ok":@YES};
-        }];
-    eventCap.menuLevel = @"internal";
-    // 通用N击M指：params {x,y,tapCount,touchCount,delay}（AI 自动化原语，不进人工菜单）
-    TRControlCap *tapsCap = [self _registerControl:@"touch.taps" title:@"通用N击M指" icon:@"👆✖️N" route:TRCapRouteTouch
-        params:@[@{@"name":@"x",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-                 @{@"name":@"y",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-                 @{@"name":@"tapCount",@"type":@"number",@"min":@1,@"max":@50,@"required":@YES},
-                 @{@"name":@"touchCount",@"type":@"number",@"min":@1,@"max":@30,@"required":@YES},
-                 @{@"name":@"delay",@"type":@"number",@"min":@0,@"max":@2.0,@"default":@0.15}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            CGPoint pt = [self _denormalizePoint:p error:e];
-            if (pt.x < 0) return nil;
-            NSUInteger tapCount = [p[@"tapCount"] unsignedIntegerValue];
-            NSUInteger touchCount = [p[@"touchCount"] unsignedIntegerValue];
-            NSTimeInterval delay = [p[@"delay"] doubleValue] ?: 0.15;
-            [hid sendTaps:tapCount location:pt numberOfTouches:touchCount delayBetweenTaps:delay];
-            return @{@"ok":@YES, @"tapCount":@(tapCount), @"touchCount":@(touchCount)};
-        }];
-    tapsCap.menuLevel = @"internal";
-    // 自定义事件流：params {eventInfo}（透传给 STHIDEventGenerator.sendEventStream:，AI 自动化原语，不进人工菜单）
-    TRControlCap *eventStreamCap = [self _registerControl:@"touch.eventStream" title:@"自定义事件流" icon:@"🎞️" route:TRCapRouteTouch
-        params:@[@{@"name":@"eventInfo",@"type":@"object",@"required":@YES}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSDictionary *eventInfo = p[@"eventInfo"];
-            if (![eventInfo isKindOfClass:[NSDictionary class]]) {
-                *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"eventInfo 需为对象"}];
-                return nil;
-            }
-            [hid sendEventStream:eventInfo];
-            return @{@"ok":@YES};
-        }];
-    eventStreamCap.menuLevel = @"internal";
 }
 
 /** 注册原生调用能力（剪贴板/截屏等） */
@@ -915,164 +591,12 @@ static NSDictionary *TRSearchGatewaySync(void) {
         }];
 }
 
-/** 注册触控笔能力（Batch 1：4 项，归一化 0-1 坐标 + 方位/压力参数） */
-- (void)_registerStylusCapabilities {
-    STHIDEventGenerator *hid = [STHIDEventGenerator sharedGenerator];
-    NSArray *stylusParams = @[
-        @{@"name":@"x",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-        @{@"name":@"y",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-        @{@"name":@"azimuth",@"type":@"number",@"min":@0,@"max":@(M_PI*2),@"default":@0},
-        @{@"name":@"altitude",@"type":@"number",@"min":@0,@"max":@(M_PI_2),@"default":@(M_PI_2)},
-        @{@"name":@"pressure",@"type":@"number",@"min":@0,@"max":@1.0,@"default":@1.0},
-    ];
-    // tap/down/move 共享参数签名
-    NSArray *stylusIds = @[@"stylus.tap", @"stylus.down", @"stylus.move"];
-    NSArray *stylusSels = @[@"stylusTapAtPoint:azimuthAngle:altitudeAngle:pressure:",
-                            @"stylusDownAtPoint:azimuthAngle:altitudeAngle:pressure:",
-                            @"stylusMoveToPoint:azimuthAngle:altitudeAngle:pressure:"];
-    NSArray *stylusTitles = @[@"触控笔点击", @"触控笔按下", @"触控笔移动"];
-    for (NSUInteger i = 0; i < stylusIds.count; i++) {
-        SEL sel = NSSelectorFromString(stylusSels[i]);
-        TRControlCap *cap = [self _registerControl:stylusIds[i] title:stylusTitles[i] icon:@"✏️" route:TRCapRouteTouch
-            params:stylusParams executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-                CGPoint pt = [self _denormalizePoint:p error:e];
-                if (pt.x < 0) return nil;
-                CGFloat az = [p[@"azimuth"] doubleValue] ?: 0;
-                CGFloat alt = [p[@"altitude"] doubleValue] ?: M_PI_2;
-                CGFloat pressure = [p[@"pressure"] doubleValue] ?: 1.0;
-                ((void(*)(id,SEL,CGPoint,CGFloat,CGFloat,CGFloat))[hid methodForSelector:sel])(hid, sel, pt, az, alt, pressure);
-                return @{@"ok":@YES};
-            }];
-        // 触控笔原语为 AI 自动化专用，不进人工菜单
-        cap.menuLevel = @"internal";
-    }
-    // stylus.up 只需坐标（AI 自动化原语，不进人工菜单）
-    TRControlCap *stylusUpCap = [self _registerControl:@"stylus.up" title:@"触控笔抬起" icon:@"✏️" route:TRCapRouteTouch
-        params:@[@{@"name":@"x",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES},
-                 @{@"name":@"y",@"type":@"number",@"min":@0,@"max":@1,@"required":@YES}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            CGPoint pt = [self _denormalizePoint:p error:e];
-            if (pt.x < 0) return nil;
-            [hid stylusUpAtPoint:pt]; return @{@"ok":@YES};
-        }];
-    stylusUpCap.menuLevel = @"internal";
-}
+/** 注册触控笔能力（2026-08-15 删除：stylus.* 原语无任何消费方，属 AI 自动化预留） */
 
-/** 注册通知能力（Batch 1：4 项，调用 BulletinManager） */
-- (void)_registerBulletinCapabilities {
-    BulletinManager *bm = [BulletinManager sharedManager];
-    // 推送横幅：params {content, userInfo?}
-    [self _registerControl:@"notify.banner" title:@"推送横幅" icon:@"🔔" route:TRCapRouteNative
-        params:@[@{@"name":@"content",@"type":@"string",@"required":@YES},
-                 @{@"name":@"userInfo",@"type":@"object",@"required":@NO}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSString *content = p[@"content"];
-            if (!content) { *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"content 缺失"}]; return nil; }
-            [bm popBannerWithContent:content userInfo:p[@"userInfo"]];
-            return @{@"ok":@YES};
-        }];
-    // 更新横幅：params {content, badgeCount, userInfo?}
-    [self _registerControl:@"notify.banner.update" title:@"更新横幅" icon:@"🔔" route:TRCapRouteNative
-        params:@[@{@"name":@"content",@"type":@"string",@"required":@YES},
-                 @{@"name":@"badgeCount",@"type":@"number",@"required":@YES},
-                 @{@"name":@"userInfo",@"type":@"object",@"required":@NO}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSString *content = p[@"content"];
-            NSInteger badge = [p[@"badgeCount"] integerValue];
-            if (!content) { *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"content 缺失"}]; return nil; }
-            [bm updateSingleBannerWithContent:content badgeCount:badge userInfo:p[@"userInfo"]];
-            return @{@"ok":@YES};
-        }];
-    // 撤销单条通知
-    [self _registerControl:@"notify.revoke" title:@"撤销通知" icon:@"🔕" route:TRCapRouteNative params:@[]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            [bm revokeSingleNotification]; return @{@"ok":@YES};
-        }];
-    // 撤销全部通知
-    [self _registerControl:@"notify.revokeAll" title:@"撤销全部通知" icon:@"🔕" route:TRCapRouteNative params:@[]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            [bm revokeAllNotifications]; return @{@"ok":@YES};
-        }];
-}
+/** 注册通知能力（2026-08-15 删除：notify.* 横幅通知由 trollvncserver 内部事件驱动，无外部 invoke 入口） */
 
-/** 注册服务控制能力（Batch 1：6 项，通过 TRGatewayClient.watchdog 访问 gWatchDog） */
-- (void)_registerWatchdogCapabilities {
-    // service.signal：发送信号 params {signal:int}
-    [self _registerControl:@"service.signal" title:@"发送信号" icon:@"📡" route:TRCapRouteNative
-        params:@[@{@"name":@"signal",@"type":@"number",@"min":@1,@"max":@31,@"required":@YES}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            TRWatchDog *wd = [TRGatewayClient sharedClient].watchdog;
-            if (!wd) { *e = [NSError errorWithDomain:@"TRCap" code:5 userInfo:@{NSLocalizedDescriptionKey:@"watchdog 未注入"}]; return nil; }
-            int sig = (int)[p[@"signal"] intValue];
-            if (![wd sendSignal:sig]) {
-                *e = [NSError errorWithDomain:@"TRCap" code:6 userInfo:@{NSLocalizedDescriptionKey:@"发送信号失败（无运行进程或信号无效）"}];
-                return nil;
-            }
-            return @{@"ok":@YES, @"signal":@(sig)};
-        }];
-    // service.state：服务状态（返回状态字符串）
-    [self _registerControl:@"service.state" title:@"服务状态" icon:@"📊" route:TRCapRouteNative params:@[]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            TRWatchDog *wd = [TRGatewayClient sharedClient].watchdog;
-            if (!wd) { *e = [NSError errorWithDomain:@"TRCap" code:5 userInfo:@{NSLocalizedDescriptionKey:@"watchdog 未注入"}]; return nil; }
-            return @{@"ok":@YES, @"state":[self _watchdogStateName:wd.state]};
-        }];
-    // service.info：服务详情（9 个 readonly 属性聚合）
-    [self _registerControl:@"service.info" title:@"服务详情" icon:@"ℹ️" route:TRCapRouteNative params:@[]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            TRWatchDog *wd = [TRGatewayClient sharedClient].watchdog;
-            if (!wd) { *e = [NSError errorWithDomain:@"TRCap" code:5 userInfo:@{NSLocalizedDescriptionKey:@"watchdog 未注入"}]; return nil; }
-            return @{@"ok":@YES,
-                @"pid":@(wd.processIdentifier),
-                @"restartCount":@(wd.restartCount),
-                @"uptime":@(wd.totalUptime),
-                @"lastExitTime":wd.lastExitTime ?: [NSNull null],
-                @"lastExitStatus":@(wd.lastExitStatus),
-                @"lastUncaughtSignal":@(wd.lastUncaughtSignal),
-                @"lastTerminationReason":@(wd.lastTerminationReason),
-                @"timeUntilNextRestart":@(wd.timeUntilNextRestart),
-                @"state":[self _watchdogStateName:wd.state],
-            };
-        }];
-    // service.isActive：是否活跃
-    [self _registerControl:@"service.isActive" title:@"是否活跃" icon:@"🟢" route:TRCapRouteNative params:@[]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            TRWatchDog *wd = [TRGatewayClient sharedClient].watchdog;
-            if (!wd) { *e = [NSError errorWithDomain:@"TRCap" code:5 userInfo:@{NSLocalizedDescriptionKey:@"watchdog 未注入"}]; return nil; }
-            return @{@"ok":@YES, @"active":@(wd.isActive)};
-        }];
-    // service.isThrottled：是否限流
-    [self _registerControl:@"service.isThrottled" title:@"是否限流" icon:@"⏳" route:TRCapRouteNative params:@[]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            TRWatchDog *wd = [TRGatewayClient sharedClient].watchdog;
-            if (!wd) { *e = [NSError errorWithDomain:@"TRCap" code:5 userInfo:@{NSLocalizedDescriptionKey:@"watchdog 未注入"}]; return nil; }
-            return @{@"ok":@YES, @"throttled":@(wd.isThrottled)};
-        }];
-    // service.validate：校验配置
-    [self _registerControl:@"service.validate" title:@"校验配置" icon:@"✅" route:TRCapRouteNative params:@[]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            TRWatchDog *wd = [TRGatewayClient sharedClient].watchdog;
-            if (!wd) { *e = [NSError errorWithDomain:@"TRCap" code:5 userInfo:@{NSLocalizedDescriptionKey:@"watchdog 未注入"}]; return nil; }
-            NSError *verr = nil;
-            BOOL ok = [wd validateConfigurationWithError:&verr];
-            NSMutableDictionary *r = [@{@"ok":@YES, @"valid":@(ok)} mutableCopy];
-            if (verr) r[@"error"] = verr.localizedDescription;
-            return r;
-        }];
-}
-
-/** TRWatchDogState 枚举转状态名称字符串 */
-- (NSString *)_watchdogStateName:(TRWatchDogState)state {
-    switch (state) {
-        case TRWatchDogStateStopped:   return @"stopped";
-        case TRWatchDogStateStarting:  return @"starting";
-        case TRWatchDogStateRunning:   return @"running";
-        case TRWatchDogStateStopping:  return @"stopping";
-        case TRWatchDogStateCrashed:   return @"crashed";
-        case TRWatchDogStateThrottled: return @"throttled";
-    }
-    return @"unknown";
-}
+/** 注册服务控制能力（2026-08-15 删除：service.* 状态查询/信号为运维调试原语，无前端与 App 消费；
+ *  服务重启保留为 service.restart（_registerNativeCapabilities），批量重启走网关 batch/restart） */
 
 /** 注册本地命令能力（Batch 2：8 项，经 5901 RFB 扩展消息桥接 clients.* 命令） */
 - (void)_registerLocalCmdCapabilities {
@@ -1187,7 +711,11 @@ static NSDictionary *TRSearchGatewaySync(void) {
         }];
 }
 
-/** 注册系统查询能力（Batch 5：6 项，UIKit API + trollvncserver 公开函数） */
+/**
+ * 注册系统查询能力（2026-08-15 精简：仅保留被消费的 sys.version；
+ *  sys.configSnapshot/resolution/rotation/stats.inflight/bonjour.txt 等运维查询原语
+ *  无前端/App 消费，删除；设备基本信息已在网关注册上报中体现）
+ */
 - (void)_registerSystemQueryCapabilities {
     // sys.version：应用版本信息
     [self _registerControl:@"sys.version" title:@"版本信息" icon:@"🏷️" route:TRCapRouteNative params:@[]
@@ -1198,90 +726,12 @@ static NSDictionary *TRSearchGatewaySync(void) {
                 @"version":info[@"CFBundleShortVersionString"] ?: @"",
                 @"build":info[@"CFBundleVersion"] ?: @""};
         }];
-    // sys.configSnapshot：配置快照（复用 currentConfigs，34+ 字段）
-    [self _registerControl:@"sys.configSnapshot" title:@"配置快照" icon:@"⚙️" route:TRCapRouteNative params:@[]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            return @{@"ok":@YES, @"configs":[self currentConfigs]};
-        }];
-    // sys.resolution：屏幕分辨率
-    [self _registerControl:@"sys.resolution" title:@"屏幕分辨率" icon:@"📐" route:TRCapRouteNative params:@[]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            UIScreen *scr = [UIScreen mainScreen];
-            CGFloat scale = [scr respondsToSelector:@selector(nativeScale)] ? [scr nativeScale] : [scr scale];
-            return @{@"ok":@YES,
-                @"width":@(scr.bounds.size.width * scale),
-                @"height":@(scr.bounds.size.height * scale),
-                @"nativeScale":@(scale)};
-        }];
-    // sys.rotation：当前旋转方向（quad: 0=0°, 1=90°, 2=180°, 3=270°）
-    [self _registerControl:@"sys.rotation" title:@"当前旋转" icon:@"🔄" route:TRCapRouteNative params:@[]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            int quad = 0;
-            switch ([UIDevice currentDevice].orientation) {
-                case UIDeviceOrientationPortrait:          quad = 0; break;
-                case UIDeviceOrientationLandscapeLeft:     quad = 1; break;
-                case UIDeviceOrientationPortraitUpsideDown:quad = 2; break;
-                case UIDeviceOrientationLandscapeRight:    quad = 3; break;
-                default: quad = 0; break;
-            }
-            return @{@"ok":@YES, @"quad":@(quad)};
-        }];
-    // sys.stats.inflight：编码帧统计（调 trollvncserver 公开函数）
-    [self _registerControl:@"sys.stats.inflight" title:@"编码帧数" icon:@"📊" route:TRCapRouteNative params:@[]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSDictionary *stats = tvGetInflightStats();
-            int current = [stats[@"current"] intValue];
-            int max = [stats[@"max"] intValue];
-            return @{@"ok":@YES, @"current":@(current), @"max":@(max), @"isThrottled":@(current >= max)};
-        }];
-    // sys.bonjour.txt：Bonjour TXT 记录（调 trollvncserver 公开函数）
-    [self _registerControl:@"sys.bonjour.txt" title:@"Bonjour TXT" icon:@"📡" route:TRCapRouteNative params:@[]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            return @{@"ok":@YES, @"txt":tvGetBonjourTXT()};
-        }];
 }
 
-/** 注册 ScreenCapturer 扩展能力（Batch 5：5 项） */
-- (void)_registerScreenExtCapabilities {
-    ScreenCapturer *cap = [ScreenCapturer sharedCapturer];
-    // screen.capture.start：开始流式采集（传 no-op block，RFB 内核有自己的帧处理；AI 专用，不进人工菜单）
-    TRControlCap *captureStartCap = [self _registerControl:@"screen.capture.start" title:@"开始采集" icon:@"▶️" route:TRCapRouteNative params:@[]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            [cap startCaptureWithFrameHandler:^(CMSampleBufferRef sb){}];
-            return @{@"ok":@YES};
-        }];
-    captureStartCap.menuLevel = @"internal";
-    // screen.capture.stop：停止流式采集（AI 专用，不进人工菜单）
-    TRControlCap *captureStopCap = [self _registerControl:@"screen.capture.stop" title:@"停止采集" icon:@"⏹️" route:TRCapRouteNative params:@[]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            [cap endCapture]; return @{@"ok":@YES};
-        }];
-    captureStopCap.menuLevel = @"internal";
-    // screen.fps：设置帧率范围 params {min, preferred, max}
-    [self _registerControl:@"screen.fps" title:@"设置帧率" icon:@"🎬" route:TRCapRouteNative
-        params:@[@{@"name":@"min",@"type":@"number",@"min":@1,@"max":@120,@"default":@0},
-                 @{@"name":@"preferred",@"type":@"number",@"min":@1,@"max":@120,@"required":@YES},
-                 @{@"name":@"max",@"type":@"number",@"min":@1,@"max":@120,@"default":@0}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSInteger minFps = [p[@"min"] integerValue];
-            NSInteger prefFps = [p[@"preferred"] integerValue];
-            NSInteger maxFps = [p[@"max"] integerValue];
-            [cap setPreferredFrameRateWithMin:minFps preferred:prefFps max:maxFps];
-            return @{@"ok":@YES, @"min":@(minFps), @"preferred":@(prefFps), @"max":@(maxFps)};
-        }];
-    // screen.resolution：查询采集分辨率属性
-    [self _registerControl:@"screen.resolution" title:@"采集分辨率" icon:@"📐" route:TRCapRouteNative params:@[]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            return @{@"ok":@YES, @"properties":cap.renderProperties ?: @{}};
-        }];
-    // screen.forceRefresh：强制下一帧脏
-    [self _registerControl:@"screen.forceRefresh" title:@"强制刷新" icon:@"🔄" route:TRCapRouteNative params:@[]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            [cap forceNextFrameUpdate]; return @{@"ok":@YES};
-        }];
-}
+/** 注册 ScreenCapturer 扩展能力（2026-08-15 删除：screen.capture.*/screen.fps/resolution/forceRefresh
+ *  为 AI 专用采集原语，无任何消费方；单帧截图保留为 screenshot（_registerNativeCapabilities）） */
 
-/** 注册网关客户端能力（Batch 5：3 项） */
+/** 注册网关客户端能力（保留连接查询/手动重连，设备元数据随 register 上报，无独立 invoke 入口） */
 - (void)_registerGatewayCapabilities {
     // gateway.isConnected：网关连接状态
     [self _registerControl:@"gateway.isConnected" title:@"网关状态" icon:@"🟢" route:TRCapRouteNative params:@[]
@@ -1296,22 +746,16 @@ static NSDictionary *TRSearchGatewaySync(void) {
             [gw stop]; [gw start];
             return @{@"ok":@YES};
         }];
-    // gateway.deviceInfo：设备元数据
-    [self _registerControl:@"gateway.deviceInfo" title:@"设备元数据" icon:@"📱" route:TRCapRouteNative params:@[]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            return @{@"ok":@YES, @"info":[TRGatewayClient sharedClient].deviceInfo ?: @{}};
-        }];
 }
 
 /**
- * 注册屏幕感知能力（Phase 11.4：3 项，route=LocalCmd 转发到 5901 RFB 扩展消息）
- * 借鉴 hermes-android screen_hash/diff_screen/wait/event_stream。
- * pHash 计算在 trollvncserver 进程内执行（TRScreenHasher），经 5901 扩展消息桥接。
- * 全部标记为 internal（AI 专用，不进人工菜单），scenes=[ai]。
+ * 注册屏幕感知能力（2026-08-15 精简：仅保留被卡片墙消费的 screen.hash；
+ *  screen.diff/screen.waitStable 为 AI 轮询原语，无消费方，删除。
+ *  pHash 计算在 trollvncserver 进程内执行（TRScreenHasher），经 5901 扩展消息桥接。）
  */
 - (void)_registerScreenHashCapabilities {
-    // screen.hash：当前屏幕 pHash（16 字符 hex）
-    TRControlCap *hashCap = [self _registerControl:@"screen.hash" title:@"屏幕哈希" icon:@"#" route:TRCapRouteLocalCmd
+    // screen.hash：当前屏幕 pHash（16 字符 hex）——卡片墙哈希比对用
+    [self _registerControl:@"screen.hash" title:@"屏幕哈希" icon:@"#" route:TRCapRouteLocalCmd
         params:@[]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             NSDictionary *resp = [self _rfbCommand:@"screen.hash" params:@{} timeoutMs:kRfbDefaultTimeoutMs error:e];
@@ -1323,80 +767,18 @@ static NSDictionary *TRSearchGatewaySync(void) {
             NSString *hex = resp[@"hash"];
             return @{@"ok":@YES, @"hash":hex};
         }];
-    hashCap.menuLevel = @"internal";
-    hashCap.scenes = @[@"ai"];
-    hashCap.batchSupport = NO;
-
-    // screen.diff：与基线哈希比较
-    TRControlCap *diffCap = [self _registerControl:@"screen.diff" title:@"屏幕差异" icon:@"Δ" route:TRCapRouteLocalCmd
-        params:@[@{@"name":@"baselineHash",@"type":@"string",@"required":@YES},
-                 @{@"name":@"threshold",@"type":@"number",@"min":@0,@"max":@64,@"default":@5}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSString *baseline = p[@"baselineHash"] ?: @"";
-            NSInteger threshold = [p[@"threshold"] integerValue];
-            NSDictionary *resp = [self _rfbCommand:@"screen.diff" params:@{@"baseline":baseline, @"threshold":@(threshold)} timeoutMs:kRfbDefaultTimeoutMs error:e];
-            if (!resp) return nil;
-            if (![resp[@"ok"] boolValue]) {
-                if (e) *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp[@"error"] ?: @"screen.diff 失败"}];
-                return nil;
-            }
-            // 服务端 tvExtOk 将 data 平铺到顶层；hash → 保持旧返回键 currentHash（兼容既有消费方）
-            return @{@"ok":@YES,
-                     @"distance":resp[@"distance"],
-                     @"threshold":resp[@"threshold"],
-                     @"changed":resp[@"changed"],
-                     @"currentHash":resp[@"hash"]};
-        }];
-    diffCap.menuLevel = @"internal";
-    diffCap.scenes = @[@"ai"];
-    diffCap.batchSupport = NO;
-
-    // screen.waitStable：等待画面稳定
-    TRControlCap *waitCap = [self _registerControl:@"screen.waitStable" title:@"等待稳定" icon:@"⏳" route:TRCapRouteLocalCmd
-        params:@[@{@"name":@"maxMs",@"type":@"number",@"min":@0,@"max":@10000,@"default":@3000},
-                 @{@"name":@"stableMs",@"type":@"number",@"min":@0,@"max":@5000,@"default":@500},
-                 @{@"name":@"intervalMs",@"type":@"number",@"min":@50,@"max":@1000,@"default":@200},
-                 @{@"name":@"threshold",@"type":@"number",@"min":@0,@"max":@64,@"default":@3}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSTimeInterval maxMs = [p[@"maxMs"] doubleValue];
-            NSTimeInterval stableMs = [p[@"stableMs"] doubleValue];
-            NSTimeInterval intervalMs = [p[@"intervalMs"] doubleValue];
-            NSInteger threshold = [p[@"threshold"] integerValue];
-            // waitStable 超时 = maxMs + 2000ms 缓冲（含取帧/计算/网络耗时），最少 5 秒
-            // 避免默认 3 秒 socket 超时截断 maxMs=3000 的调用
-            NSTimeInterval timeoutMs = MAX(maxMs + 2000, 5000);
-            NSDictionary *resp = [self _rfbCommand:@"screen.waitStable"
-                                             params:@{@"maxMs":@(maxMs), @"stableMs":@(stableMs),
-                                                      @"intervalMs":@(intervalMs), @"threshold":@(threshold)}
-                                          timeoutMs:timeoutMs error:e];
-            if (!resp) return nil;
-            if (![resp[@"ok"] boolValue]) {
-                if (e) *e = [NSError errorWithDomain:@"TRCap" code:13 userInfo:@{NSLocalizedDescriptionKey:resp[@"error"] ?: @"screen.waitStable 失败"}];
-                return nil;
-            }
-            // 服务端 tvExtOk 将 data 平铺到顶层；frames/hash → 保持旧返回键 frameCount/lastHash（兼容既有消费方）
-            return @{@"ok":@YES,
-                     @"stable":resp[@"stable"],
-                     @"frameCount":resp[@"frames"],
-                     @"durationMs":resp[@"durationMs"],
-                     @"lastHash":resp[@"hash"]};
-        }];
-    waitCap.menuLevel = @"internal";
-    waitCap.scenes = @[@"ai"];
-    waitCap.batchSupport = NO;
 }
 
 /**
  * 注册控制型能力表项（内部辅助）
  * 功能：创建 TRControlCap 表项并存入注册表；若未显式指定 category，按 capId 前缀 + route 类型自动推断。
- *       Phase 11.1：menu/scenes/batch 默认值按 category 映射表自动填充。
  * 参数：capId    - 能力 ID
  *       title   - 能力标题（中文）
  *       icon    - 能力图标（emoji）
  *       route   - 路由类型（HID/Touch/LocalCmd/Native）
  *       params  - 参数 schema 数组
  *       executor- 执行 block
- * 返回值：TRControlCap* - 创建的表项（供调用方覆盖 menu/scenes/batch 等字段）
+ * 返回值：TRControlCap* - 创建的表项
  */
 - (TRControlCap *)_registerControl:(NSString *)capId title:(NSString *)title icon:(NSString *)icon
                   route:(TRCapRouteType)route params:(NSArray *)params
@@ -1404,62 +786,10 @@ static NSDictionary *TRSearchGatewaySync(void) {
     TRControlCap *cap = [TRControlCap new];
     cap.capId = capId; cap.title = title; cap.icon = icon;
     cap.routeType = route; cap.params = params; cap.executor = executor;
-    // Phase 10.3：未显式指定 category 时按 capId 前缀 + route 类型自动推断
+    // 未显式指定 category 时按 capId 前缀 + route 类型自动推断
     cap.category = [self _inferCategoryForCapId:capId route:route];
-    // Phase 11.1：menu/scenes/batch 默认值按 category 映射表填充
-    [self _applyDefaultSceneFields:cap];
     _controlCaps[capId] = cap;
     return cap;
-}
-
-/**
- * 为能力表项填充默认 menu/scenes/batch 字段（Phase 11.1）。
- * 功能：按 category 映射表自动设置场景字段，未显式指定时使用默认值。
- * 参数：cap - 控制型能力表项
- * 返回值：void
- */
-- (void)_applyDefaultSceneFields:(TRControlCap *)cap {
-    if (!cap.menuLevel) cap.menuLevel = [self _defaultMenuLevelForCategory:cap.category];
-    if (!cap.scenes) cap.scenes = [self _defaultScenesForCategory:cap.category];
-    if (!cap.batchSupport) cap.batchSupport = [cap.scenes containsObject:@"batch"];
-}
-
-/**
- * 按 category 返回默认 menu 层级（Phase 11.1 映射表）。
- * 功能：primary=一级菜单 / secondary=二级菜单 / internal=AI 专用隐藏。
- * 参数：category - 分类标识
- * 返回值：NSString* - primary/secondary/internal
- */
-- (NSString *)_defaultMenuLevelForCategory:(NSString *)category {
-    // 操作类一级：触控/硬件按键/文本/屏幕采集/应用启动
-    if ([category isEqualToString:@"touch"] || [category isEqualToString:@"hid"] ||
-        [category isEqualToString:@"text"] || [category isEqualToString:@"screen"] ||
-        [category isEqualToString:@"app"]) {
-        return @"primary";
-    }
-    // 管理类二级：客户端/服务/系统/网关/自动化编排
-    return @"secondary";
-}
-
-/**
- * 按 category 返回默认 scenes 数组（Phase 11.1 映射表）。
- * 功能：标记能力在哪些场景下可用（single/batch/ai）。
- * 参数：category - 分类标识
- * 返回值：NSArray* - 场景字符串数组
- */
-- (NSArray *)_defaultScenesForCategory:(NSString *)category {
-    // 批量有意义：硬件按键/屏幕采集/应用启动/客户端/服务/自动化编排
-    if ([category isEqualToString:@"hid"] || [category isEqualToString:@"screen"] ||
-        [category isEqualToString:@"app"] || [category isEqualToString:@"system"] ||
-        [category isEqualToString:@"service"] || [category isEqualToString:@"macro"]) {
-        return @[@"single", @"batch", @"ai"];
-    }
-    // 批量无意义：触控/文本/网关（查询类）
-    if ([category isEqualToString:@"gateway"]) {
-        return @[@"single", @"ai"];
-    }
-    // 默认：单控 + AI
-    return @[@"single", @"ai"];
 }
 
 #pragma mark - 配置 Schema 注册（覆盖 Root.plist 全字段）
@@ -1570,7 +900,6 @@ static NSDictionary *TRSearchGatewaySync(void) {
 /**
  * 构建控制型能力元数据字典
  * 功能：将 TRControlCap 表项转为对外暴露的元数据字典，包含 id/title/icon/category/categoryTitle/params/route。
- *       Phase 11.1：新增 menu/scenes/batch 三字段，供前端菜单分层与批量过滤。
  * 参数：cap - 控制型能力表项
  * 返回值：NSDictionary* - 元数据字典
  */
@@ -1584,10 +913,6 @@ static NSDictionary *TRSearchGatewaySync(void) {
         @"categoryTitle": [self _categoryTitle:category],
         @"params": cap.params ?: @[],
         @"route": @{ @"type": [self _routeTypeName:cap.routeType] },
-        // Phase 11.1：场景化分层字段
-        @"menu": cap.menuLevel ?: @"primary",
-        @"scenes": cap.scenes ?: @[@"single"],
-        @"batch": @(cap.batchSupport)
     };
 }
 
@@ -1605,15 +930,8 @@ static NSDictionary *TRSearchGatewaySync(void) {
     if ([capId hasPrefix:@"service."]) return @"service";
     if ([capId hasPrefix:@"gateway."]) return @"gateway";
     if ([capId hasPrefix:@"clients."]) return @"system";
-    // Phase 11.3：应用与启动
-    if ([capId hasPrefix:@"app."]) return @"app";
-    // Phase 11.4：屏幕感知（screen.hash/diff/waitStable）
-    if ([capId hasPrefix:@"screen.hash"] || [capId hasPrefix:@"screen.diff"] ||
-        [capId hasPrefix:@"screen.waitStable"]) {
-        return @"screen";
-    }
-    // Phase 11.2：自动化编排
-    if ([capId hasPrefix:@"macro."]) return @"macro";
+    // 屏幕感知（screen.hash）
+    if ([capId hasPrefix:@"screen."]) return @"screen";
     // 2. 按 route 类型推断
     switch (route) {
         case TRCapRouteHID:      return @"hid";
@@ -1635,16 +953,11 @@ static NSDictionary *TRSearchGatewaySync(void) {
     NSDictionary *titles = @{
         @"hid": @"硬件按键",
         @"touch": @"触控操作",
-        @"stylus": @"触控笔",
         @"system": @"系统管理",
         @"native": @"原生功能",
         @"service": @"服务管理",
         @"gateway": @"网关信息",
-        // Phase 11 新增
-        @"app": @"应用与启动",
-        @"macro": @"自动化编排",
         @"screen": @"屏幕与采集",
-        @"text": @"文本与剪贴板",
     };
     return titles[category] ?: category;
 }
@@ -1961,33 +1274,6 @@ static NSDictionary *TRSearchGatewaySync(void) {
         return YES;
     }
     return YES;
-}
-
-#pragma mark - 触控坐标转换（归一化 0-1 → 原生像素）
-
-/**
- * 归一化坐标转原生像素坐标
- * @param p     含 x(0-1)/y(0-1) 的字典
- * @param error 失败错误
- * @return 原生像素 CGPoint（失败返回 {-1,-1}）
- */
-- (CGPoint)_denormalizePoint:(NSDictionary *)p error:(NSError **)error {
-    id x = p[@"x"], y = p[@"y"];
-    if (!x || !y) {
-        if (error) *error = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"缺少 x/y 坐标"}];
-        return CGPointMake(-1, -1);
-    }
-    double nx = [x doubleValue], ny = [y doubleValue];
-    if (nx < 0 || nx > 1 || ny < 0 || ny > 1) {
-        if (error) *error = [NSError errorWithDomain:@"TRCap" code:3 userInfo:@{NSLocalizedDescriptionKey:@"坐标需在 0-1 范围"}];
-        return CGPointMake(-1, -1);
-    }
-    UIScreen *s = [UIScreen mainScreen];
-    CGFloat scale = [s respondsToSelector:@selector(nativeScale)] ? [s nativeScale] : [s scale];
-    if (scale <= 0) scale = 1.0;
-    CGFloat pw = s.bounds.size.width * scale;
-    CGFloat ph = s.bounds.size.height * scale;
-    return CGPointMake(nx * pw, ny * ph);
 }
 
 #pragma mark - RFB 扩展消息桥接（5901，type 0x50/0x80）
