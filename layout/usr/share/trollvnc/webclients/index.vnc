@@ -273,8 +273,8 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
           var d = Math.hypot(x - cx, y - cy);
           var i = (y * S + x) * 4;
           if (d <= R) {
-            rgba[i] = 169; rgba[i + 1] = 169; rgba[i + 2] = 169; // 灰
-            rgba[i + 3] = Math.round(166 * (0.9 - 0.55 * (d / R))); // 中心≈0.65 边缘渐隐
+            rgba[i] = 128; rgba[i + 1] = 128; rgba[i + 2] = 128; // 深灰（2026-08-14 加深）
+            rgba[i + 3] = Math.round(217 * (1.0 - 0.6 * (d / R))); // 中心≈0.85 边缘渐隐
           }
         }
       }

@@ -18,7 +18,9 @@ const GH_PINCH     = 64;
 
 const GH_INITSTATE = 127;
 
-const GH_MOVE_THRESHOLD = 50;
+// [farm patch 2026-08-14] 触控灵敏度：50px→12px。noVNC 默认触摸移动 <50px 不发送任何鼠标事件
+// （起始死区 + 精细移动丢失），PC 鼠标任意移动都发送——这是触控不如鼠标精准的根因。
+const GH_MOVE_THRESHOLD = 12;
 const GH_ANGLE_THRESHOLD = 90; // Degrees
 
 // Timeout when waiting for gestures (ms)
@@ -101,6 +103,22 @@ export default class GestureHandler {
             case 'touchcancel':
                 fn = this._touchEnd;
                 break;
+        }
+
+        // [farm patch 2026-08-14] iOS 16+ 触摸事件合并（coalesced）：浏览器把连续 touchmove 合并成一个
+        // 事件，默认只处理最后一个导致移动不平滑；逐个处理 getCoalescedEvents() 的合并前事件，
+        // 让每次底层采样都转发为鼠标移动，提升触控流畅度。
+        if (e.type === 'touchmove' && typeof e.getCoalescedEvents === 'function') {
+            const evts = e.getCoalescedEvents();
+            if (evts.length > 0) {
+                for (const ce of evts) {
+                    for (let i = 0; i < ce.changedTouches.length; i++) {
+                        let touch = ce.changedTouches[i];
+                        fn.call(this, touch.identifier, touch.clientX, touch.clientY);
+                    }
+                }
+                return;
+            }
         }
 
         for (let i = 0; i < e.changedTouches.length; i++) {
