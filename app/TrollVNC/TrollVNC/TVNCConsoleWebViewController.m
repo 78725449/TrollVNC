@@ -155,6 +155,8 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self loadConsoleIfNeeded];
+    // 2026-08-15：状态栏样式沿 VC 链转发，此处显式刷新确保浅色文字生效
+    [self setNeedsStatusBarAppearanceUpdate];
 }
 
 /**
@@ -182,7 +184,20 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
     self.webView.navigationDelegate = self;
     self.webView.backgroundColor = [UIColor systemBackgroundColor];
     self.webView.allowsBackForwardNavigationGestures = NO;
+    // 2026-08-15：禁用 UIScrollView 橡皮筋回弹（iOS bounce 会把页面顶部/底部拉出背景，
+    // 与 H5 内部固定布局冲突；H5 内部滚动（设备墙）不受影响）
+    self.webView.scrollView.bounces = NO;
     [self.view addSubview:self.webView];
+}
+
+/**
+ * 状态栏文字样式（2026-08-15）：控制 Tab 隐藏顶部导航栏后 webView 顶到状态栏，
+ * H5 为深色背景（#0f1420），状态栏文字须用浅色否则不可读。
+ * UINavigationController/UITabBarController 会沿 VC 链转发本方法（取 topViewController）。
+ * @return 浅色状态栏文字
+ */
+- (UIStatusBarStyle)preferredStatusBarStyle {
+    return UIStatusBarStyleLightContent;
 }
 
 #pragma mark - WKScriptMessageHandler（Web → 原生桥）

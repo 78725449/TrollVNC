@@ -48,12 +48,15 @@
 
     // Tab 2 控制：TVNCConsoleWebViewController（Web 容器化 Phase 13：WKWebView 加载网关 H5 手机控制台，
     // 设备墙/大屏/批量/能力菜单全部由 H5 渲染，原生设备墙 TVNCControllerViewController 已删除）
+    // 2026-08-15：隐藏本 Tab 顶部导航栏（UINavigationBar）——H5 自带 header（群控台标题 + 批量操作 +
+    // 布局切换），原生上标题会遮挡 webView 顶部画面；底部 TabBar（连接/控制/设置）保留，切换不受影响。
     TVNCConsoleWebViewController *console = [[TVNCConsoleWebViewController alloc] init];
     UINavigationController *controllerNav = [[UINavigationController alloc] initWithRootViewController:console];
     controllerNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"控制"
                                                               image:[UIImage systemImageNamed:@"square.grid.2x2"]
                                                       selectedImage:[UIImage systemImageNamed:@"square.grid.2x2.fill"]
                                                                 ];
+    [controllerNav setNavigationBarHidden:YES animated:NO];
     [self styleNav:controllerNav tint:tint];
 
     // Tab 3 设置：TVNCRootListController（配置，降为次要入口，PSRootController 包装）
