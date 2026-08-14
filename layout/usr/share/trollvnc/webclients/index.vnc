@@ -262,8 +262,27 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
     var cursorHide = function () {
       if (rfb._cursor && rfb._cursor._canvas) rfb._cursor._hideCursor();
     };
+    // 苹果风格触控光标（2026-08-14）：iOS 系统触摸指示器样式——半透明灰圆，
+    // 触屏点击/移动时显示、空闲 1.5s 自动隐藏。不显示服务端光标图像（白点黑边不合苹果风格）。
+    var APPLE_CURSOR_SIZE = 24, APPLE_CURSOR_R = 9;
+    var appleCursorRgba = (function () {
+      var S = APPLE_CURSOR_SIZE, cx = (S - 1) / 2, cy = (S - 1) / 2, R = APPLE_CURSOR_R;
+      var rgba = new Uint8Array(S * S * 4);
+      for (var y = 0; y < S; y++) {
+        for (var x = 0; x < S; x++) {
+          var d = Math.hypot(x - cx, y - cy);
+          var i = (y * S + x) * 4;
+          if (d <= R) {
+            rgba[i] = 169; rgba[i + 1] = 169; rgba[i + 2] = 169; // 灰
+            rgba[i + 3] = Math.round(166 * (0.9 - 0.55 * (d / R))); // 中心≈0.65 边缘渐隐
+          }
+        }
+      }
+      return rgba;
+    })();
     var cursorShow = function () {
-      rfb._refreshCursor(); // _refreshCursor 是 RFB 方法（内部调 _cursor.change 渲染服务端光标），非 Cursor 方法
+      rfb._cursor.change(appleCursorRgba, Math.round((APPLE_CURSOR_SIZE - 1) / 2),
+                         Math.round((APPLE_CURSOR_SIZE - 1) / 2), APPLE_CURSOR_SIZE, APPLE_CURSOR_SIZE);
     };
     var cursorPoke = function () {
       cursorShow();

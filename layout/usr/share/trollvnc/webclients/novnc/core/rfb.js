@@ -1277,7 +1277,9 @@ export default class RFB extends EventTargetMixin {
                         break;
                     case 'longpress':
                         this._fakeMouseMove(ev, pos.x, pos.y);
-                        this._handleMouseButton(pos.x, pos.y, true, 0x4);
+                        // [farm patch] 触控长按 = 传达被控设备长按：原 0x4（右键，设备端映射 Home/Menu）
+                        // 改为 0x1 左键按下保持，与电脑端鼠标按住一致，被控设备识别为长按
+                        this._handleMouseButton(pos.x, pos.y, true, 0x1);
                         break;
 
                     case 'twodrag':
@@ -1367,7 +1369,8 @@ export default class RFB extends EventTargetMixin {
                         break;
                     case 'longpress':
                         this._fakeMouseMove(ev, pos.x, pos.y);
-                        this._handleMouseButton(pos.x, pos.y, false, 0x4);
+                        // [farm patch] 长按松手：释放左键（0x0），结束长按
+                        this._handleMouseButton(pos.x, pos.y, false, 0x0);
                         break;
                 }
                 break;
