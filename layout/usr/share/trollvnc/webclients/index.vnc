@@ -1056,10 +1056,9 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
 
   /**
    * 计算面板弹出位置（2026-08-14：改为水平展开）：
-   * 按 FAB 所在半屏决定方向——左半屏向右展开、右半屏向左展开（该侧空间不足自动换侧）；
-   * 水平方向完全避开 FAB 区域。垂直方向（2026-08-15 用户拍板）不再与 FAB 顶部对齐，
-   * 改为智能上下展开：优先向 FAB 下方展开，下方空间不足自动翻到上方，
-   * 两侧都不足则取空间较大一侧并按可用空间裁剪 max-height，始终不出屏。
+   * 按 FAB 所在半屏决定水平方向——左半屏向右展开、右半屏向左展开（该侧空间不足自动换侧）。
+   * 垂直方向（2026-08-15 用户拍板）：面板顶部不限制贴哪里，垂直位置由「面板底部」决定——
+   * 底部贴屏幕下边界向上展开，与 FAB 垂直位置无关，任何情况下面板都完整可见、永不越界。
    * @returns {{left:number, top:number}} 面板左上角坐标（px）
    */
   function computePanelPos() {
@@ -1070,11 +1069,8 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
     panel.style.maxHeight = '';
     var pw = panel.offsetWidth || 168;
     var ph = panel.offsetHeight || 360;
-    // 垂直：FAB 上下两侧可用空间（含 gap + pad）
-    var spaceDown = vh - fr.bottom - gap - pad;
-    var spaceUp = fr.top - gap - pad;
-    // maxHeight 按空间较大一侧裁剪（面板高度不超可用空间，从根上避免越界）
-    var maxH = Math.max(80, Math.min(ph, Math.max(spaceUp, spaceDown, 80)));
+    // maxHeight 按视口高度裁剪（底部贴边时保证面板不超出上边界）
+    var maxH = Math.max(80, Math.min(ph, vh - pad * 2));
     panel.style.maxHeight = maxH + 'px';
     var mh = Math.min(ph, maxH);
     // 水平：FAB 在左半屏 → 右侧展开；右半屏 → 左侧展开；空间不足自动换侧，钳制在视口内
@@ -1086,16 +1082,9 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
     else left = spaceLeft >= pw ? fr.left - gap - pw : fr.right + gap;
     if (left < pad) left = pad;
     if (left + pw > vw - pad) left = vw - pw - pad;
-    // 垂直：优先向下（FAB 底部下方空间足够则面板顶部贴 FAB 底部），
-    // 向下不足自动向上（面板底部贴 FAB 顶部）；两侧都不足取空间较大一侧，
-    // 末次钳制到视口内保证永不越界。
-    var top;
-    if (spaceDown >= mh) top = fr.bottom + gap;
-    else if (spaceUp >= mh) top = fr.top - gap - mh;
-    else if (spaceDown >= spaceUp) top = fr.bottom + gap;
-    else top = fr.top - gap - mh;
+    // 垂直：面板底部贴屏幕下边界向上展开（与 FAB 垂直位置无关），末次钳制保证永不越界
+    var top = vh - mh - pad;
     if (top < pad) top = pad;
-    if (top + mh > vh - pad) top = vh - mh - pad;
     return { left: left, top: top };
   }
 
