@@ -148,7 +148,10 @@ static NSString *const kPasteboardDarwinNotification = @"com.apple.pasteboard.no
     // Baseline before set; and mark suppression to avoid echo
     self.lastLocalSetBaselineCount = pb.changeCount;
     self.lastSetValue = [text copy];
-    self.suppressNextCallbacks = 2; // 1 for immediate local callback, 1 for following system notify
+    // 2026-08-14 修复：仅吞写入本身触发的 1 次系统通知（本方法不主动回调）。
+    // 原 2 会连用户随后第一次真实复制一起吞掉（"被控端复制好几次才同步"根因）；
+    // 之后靠 lastSetValue 文本 echo 判断拦截同文本回显，不同文本（真实复制）立即发送。
+    self.suppressNextCallbacks = 1;
     TVLog("Remote setString length=%lu, baseline=%ld, suppression=%ld", (unsigned long)text.length,
           (long)self.lastLocalSetBaselineCount, (long)self.suppressNextCallbacks);
 
