@@ -213,13 +213,19 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
     if (![message.body isKindOfClass:[NSDictionary class]]) return;
     NSString *type = message.body[@"type"];
     if ([type isEqualToString:@"writeClipboard"]) {
-        NSString *text = message.body[@"text"];
-        if (![text isKindOfClass:[NSString class]] || !text.length) return;
-        UIPasteboard *pb = [UIPasteboard generalPasteboard];
-        self.clipboardLastCount = pb.changeCount;   // 写入前基线：写入触发的 Darwin 通知视为回显
-        self.clipboardLastPushed = text;            // 回显抑制：同文本不再推回 Web（防 RFB 循环）
-        pb.string = text;
-        NSLog(@"[Console] native writeClipboard (%lu chars)", (unsigned long)text.length);
+        @try {
+            NSString *text = message.body[@"text"];
+            if (![text isKindOfClass:[NSString class]] || !text.length) return;
+            UIPasteboard *pb = [UIPasteboard generalPasteboard];
+            self.clipboardLastCount = pb.changeCount;   // 写入前基线：写入触发的 Darwin 通知视为回显
+            self.clipboardLastPushed = text;            // 回显抑制：同文本不再推回 Web（防 RFB 循环）
+            pb.string = text;
+            NSLog(@"[Console] native writeClipboard (%lu chars)", (unsigned long)text.length);
+        } @catch (NSException *e) {
+            // 2026-08-15：UIPasteboard 写入在 iOS 16+ 粘贴权限/前台过渡期可能抛 NSException，
+            // 捕获后仅记录（桥调用失败由 JS 侧降级 writeText），不让 App 闪退。
+            NSLog(@"[Console] writeClipboard exception: %@ %@", e.name, e.reason);
+        }
     }
 }
 
@@ -431,9 +437,15 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
 /**
  * App 回到前台：补齐后台挂起期间可能错过的剪贴板变化
  * （覆盖「在其他 App 复制 → 切回 SuperPhone」场景，changeCount 未变则自然跳过）。
+ * 2026-08-15：延迟 0.4s 再读取——iOS 16+ 的 UIPasteboard 粘贴权限弹窗在 App 前台过渡
+ * 瞬间弹出可能抛 NSException（原实现直接闪退）；延后到前台动画完成后读取，避开过渡窗口。
  */
 - (void)appDidBecomeActive {
-    [self handleClipboardChanged];
+    __weak __typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong __typeof(weakSelf) selfRef = weakSelf;
+        if (selfRef) [selfRef handleClipboardChanged];
+    });
 }
 
 /**
@@ -441,21 +453,34 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
  * 回显抑制关键：控制端收到被控端剪贴板（RFB 'clipboard' 事件 → JS writeText 写本机剪贴板）
  * 同样触发 Darwin 通知；若推送同文本回 Web 会触发 clipboardPasteFrom 回发 → 死循环。
  * 用 clipboardLastPushed 记录上次桥出文本，同文本直接跳过（配合 Web 层 farmLastClipText 双保险）。
+ * 2026-08-15：UIPasteboard 访问整体 @try 包裹——iOS 16+ 在权限弹窗未决/前台过渡期读取
+ * 会抛 NSException（原实现无保护直接闪退）；异常时重设 changeCount 基线防重复触发。
  */
 - (void)handleClipboardChanged {
-    UIPasteboard *pb = [UIPasteboard generalPasteboard];
-    NSInteger count = pb.changeCount;
-    if (count == self.clipboardLastCount) return; // 重复/无变化通知
-    self.clipboardLastCount = count;
-    NSString *text = pb.string;
-    if (!text.length) return;
-    if (self.clipboardLastPushed && [self.clipboardLastPushed isEqualToString:text]) return; // RFB 写入回显
-    self.clipboardLastPushed = text;
-    [self pushClipboardToWeb:text];
+    @try {
+        UIPasteboard *pb = [UIPasteboard generalPasteboard];
+        NSInteger count = pb.changeCount;
+        if (count == self.clipboardLastCount) return; // 重复/无变化通知
+        self.clipboardLastCount = count;
+        NSString *text = pb.string;
+        if (!text.length) return;
+        if (self.clipboardLastPushed && [self.clipboardLastPushed isEqualToString:text]) return; // RFB 写入回显
+        self.clipboardLastPushed = text;
+        [self pushClipboardToWeb:text];
+    } @catch (NSException *e) {
+        NSLog(@"[Console] handleClipboardChanged exception: %@ %@", e.name, e.reason);
+        // 重设基线，避免异常后每次都重复进入（changeCount 读取失败时强制刷新）
+        @try { self.clipboardLastCount = [UIPasteboard generalPasteboard].changeCount; }
+        @catch (NSException *ignored) { self.clipboardLastCount = -1; }
+    }
 }
 
 /**
  * 桥出剪贴板文本到 WebView：调用 window.__farmNativeClipboard(JSON 字符串)。
+ * 2026-08-15：JSON 序列化不转义 \u2028（行分隔符）/ \u2029（段分隔符）——直接嵌入 JS
+ * 字符串字面量在 iOS ≤15 的 JavaScriptCore 中是语法错误（视为字符串外的行终止符），
+ * evaluateJavaScript 失败 → 剪贴板同步静默失效（"复制后不同步"诱因之一）。
+ * 手动替换为 \uXXXX 转义序列，保证任意文本可安全注入。
  * @param text 控制端本机剪贴板文本
  */
 - (void)pushClipboardToWeb:(NSString *)text {
@@ -464,6 +489,8 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
     NSData *jsonData = [NSJSONSerialization dataWithJSONObject:text options:0 error:nil];
     if (!jsonData) return;
     NSString *json = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+    json = [json stringByReplacingOccurrencesOfString:@"\u2028" withString:@"\\u2028"];
+    json = [json stringByReplacingOccurrencesOfString:@"\u2029" withString:@"\\u2029"];
     NSString *js = [NSString stringWithFormat:@"window.__farmNativeClipboard && window.__farmNativeClipboard(%@);", json];
     [wv evaluateJavaScript:js completionHandler:^(id result, NSError *error) {
         if (error) NSLog(@"[Console] clipboard push JS error: %@", error.localizedDescription);
