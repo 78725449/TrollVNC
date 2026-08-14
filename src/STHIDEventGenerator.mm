@@ -246,10 +246,14 @@ NS_INLINE void _DTXCalcLinearPinchStartEndPoints(CGRect bounds, CGFloat pixelsSc
     if (page != kHIDPage_Telephony) {
         uint64_t keyCode = ((uint64_t)page << 32) | usage;
         NSNumber *nsKeyCode = @(keyCode);
-        if (isKeyDown) {
-            [_activeKeyCodes addObject:nsKeyCode];
-        } else {
-            [_activeKeyCodes removeObject:nsKeyCode];
+        // 2026-08-14 线程安全加固：type.paste 注入在后台队列执行，与 RFB 键盘事件注入（noVNC 线程）
+        // 并发读写 _activeKeyCodes，加锁避免遍历/清空时崩溃（releaseEveryKeys 需要）
+        @synchronized(self) {
+            if (isKeyDown) {
+                [_activeKeyCodes addObject:nsKeyCode];
+            } else {
+                [_activeKeyCodes removeObject:nsKeyCode];
+            }
         }
     }
     [self __sendIOHIDKeyboardEvent:page usage:usage isKeyDown:isKeyDown];
@@ -1620,13 +1624,19 @@ static inline uint32_t hidUsageCodeForCharacter(NSString *key) {
 }
 
 - (void)releaseEveryKeys {
-    for (NSNumber *nsKeyCode in _activeKeyCodes) {
+    // 2026-08-14 线程安全：快照后清空（与 _sendIOHIDKeyboardEvent 的加锁写入配套），
+    // 避免遍历时并发修改崩溃；keyUp 用 __send 直接注入（绕过 _activeKeyCodes 移除，快照已含全部）
+    NSArray *keys;
+    @synchronized(self) {
+        keys = [_activeKeyCodes allObjects];
+        [_activeKeyCodes removeAllObjects];
+    }
+    for (NSNumber *nsKeyCode in keys) {
         uint64_t keyCode = [nsKeyCode unsignedLongLongValue];
         uint32_t page = (keyCode >> 32);
         uint32_t usage = (keyCode & 0xFFFFFFFF);
         [self __sendIOHIDKeyboardEvent:page usage:usage isKeyDown:false];
     }
-    [_activeKeyCodes removeAllObjects];
 }
 
 - (void)hardwareLock {

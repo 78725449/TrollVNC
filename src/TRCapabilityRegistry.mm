@@ -555,32 +555,41 @@ static NSDictionary *TRSearchGatewaySync(void) {
             return @{@"ok":@YES};
         }];
     swipeCap.menuLevel = @"internal";
-    // 文本输入：params {text:"..."}（逐字符 keyPress，支持 ASCII）
-    [self _registerControl:@"type.text" title:@"文本输入" icon:@"⌨" route:TRCapRouteTouch
-        params:@[@{@"name":@"text",@"type":@"string",@"required":@YES}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSString *text = p[@"text"];
-            if (text.length == 0) { *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"text 为空"}]; return nil; }
-            for (NSUInteger i = 0; i < text.length; i++) {
-                unichar c = [text characterAtIndex:i];
-                if (c < 128) [hid keyPress:[NSString stringWithCharacters:&c length:1]];
-            }
-            return @{@"ok":@YES, @"count":@(text.length)};
-        }];
+    // 2026-08-14 移除 type.text 注册：HID keyPress 仅支持 ASCII（c<128），中文/emoji 静默丢弃；
+    // 前端 ACT_DEFS/BATCH_CAPS 均无调用入口，type.paste 是完整的替代方案（支持中文/emoji）
     // Batch 3：粘贴输入（任意文本，支持中文/emoji）
-    // 实现策略：先 setStringFromRemote 写入设备剪贴板，再模拟 Cmd+V 粘贴键序列
+    // 方案 B（2026-08-14）：粘贴输入与剪贴板同步解耦，text 参数可选：
+    //  - text 有值：先写设备剪贴板（幂等同步，兼容旧链路：同步+粘贴一步到位）
+    //  - text 为空：跳过写剪贴板，仅触发粘贴动作（文本已在"复制自动同步/协议通道 clipboardPasteFrom"进入设备剪贴板）
+    // 可靠前提：模拟 Cmd+V 前先 releaseEveryKeys 释放所有残留按键——noVNC 端 Ctrl+V 拦截只吞 V 键，
+    // Ctrl 的 down 仍会注入设备（残留修饰键会把 Cmd+V 变成 Ctrl+Command+V 组合被 iOS 拒绝，
+    // 即"文字已到剪贴板但不写入"根因），清理后保证粘贴组合干净。
     [self _registerControl:@"type.paste" title:@"粘贴输入" icon:@"📋" route:TRCapRouteTouch
-        params:@[@{@"name":@"text",@"type":@"string",@"required":@YES}]
+        params:@[@{@"name":@"text",@"type":@"string",@"required":@NO}]
         executor:^NSDictionary *(NSDictionary *p, NSError **e) {
             NSString *text = p[@"text"];
-            if (!text) { *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"text 缺失"}]; return nil; }
-            // 1. 写入设备剪贴板（复用 clipboard.set 逻辑）
-            [[ClipboardManager sharedManager] setStringFromRemote:text];
-            // 2. 模拟 Cmd+V 粘贴键序列（COMMAND 映射 LeftGUI，v 映射 KeyboardV）
-            [hid keyDown:@"COMMAND"];
-            [hid keyDown:@"v"];
-            [hid keyUp:@"v"];
-            [hid keyUp:@"COMMAND"];
+            if (text.length) {
+                [[ClipboardManager sharedManager] setStringFromRemote:text];
+            }
+            // 2026-08-14 修复粘贴不生效（对比"粘贴输入按钮"时代实测有效）：
+            // 历史实现为 COMMAND↓ → v↓ → COMMAND↑（v 不抬起），v 保持按下使 iOS 持续识别
+            // Cmd+V 组合键 → 粘贴成功；§2.3n 改为 v 立即抬起后，四个 IOHID 事件时间戳几乎相同
+            // （IOHIDEventCreateKeyboardEvent 用 mach_absolute_time 连续创建），iOS 判定为
+            // "同时按下/无效按键"，不识别 Cmd+V 粘贴组合键 → 文字进了剪贴板但粘不进输入框。
+            // 修复：模拟真实按键时序（事件间加间隔：Command 先按住 → v 保持 → 依次抬起），
+            // 保留 releaseEveryKeys 清 noVNC 注入的 Ctrl 残留（Ctrl+Command+V 组合被 iOS 拒绝）。
+            // 异步执行避免阻塞命令通道线程（隧道读循环）；ack 提前返回，注入在 ~300ms 内完成。
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
+                usleep(150000);                 // 等待 noVNC 注入的 Ctrl down 到达设备（网络延迟窗口）
+                [hid releaseEveryKeys];         // 清残留修饰键（LeftControl 等）
+                [hid keyDown:@"COMMAND"];       // Command 按下
+                usleep(120000);                 // Command 先按住 120ms
+                [hid keyDown:@"v"];             // v 按下
+                usleep(90000);                  // v 按住 90ms（组合键识别窗口）
+                [hid keyUp:@"v"];
+                usleep(40000);
+                [hid keyUp:@"COMMAND"];
+            });
             return @{@"ok":@YES, @"length":@(text.length)};
         }];
     // Batch 1：多点触控与手势（12 项）
@@ -799,14 +808,8 @@ static NSDictionary *TRSearchGatewaySync(void) {
         NSString *text = [[ClipboardManager sharedManager] currentString] ?: @"";
         return @{@"ok":@YES, @"text":text};
     }];
-    [self _registerControl:@"clipboard.set" title:@"设置剪贴板" icon:@"📋" route:TRCapRouteNative
-        params:@[@{@"name":@"text",@"type":@"string",@"required":@YES}]
-        executor:^NSDictionary *(NSDictionary *p, NSError **e) {
-            NSString *text = p[@"text"];
-            if (!text) { *e = [NSError errorWithDomain:@"TRCap" code:2 userInfo:@{NSLocalizedDescriptionKey:@"text 缺失"}]; return nil; }
-            [[ClipboardManager sharedManager] setStringFromRemote:text];
-            return @{@"ok":@YES};
-        }];
+    // 2026-08-14 移除 clipboard.set 注册：前端剪贴板同步已统一走 RFB 协议通道（clipboardPasteFrom → Extended Clipboard UTF-8），
+    // 不再走能力通道；type.paste executor 内部已包含 setStringFromRemote 调用（带 text 时写入剪贴板）
     [self _registerControl:@"screenshot" title:@"屏幕快照" icon:@"📷" route:TRCapRouteNative params:@[] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
         // 静默截图：调用 ScreenCapturer 单帧捕获 → UIImage → JPEG base64（不触发系统动画，不存相册）
         UIImage *img = [[ScreenCapturer sharedCapturer] captureSingleFrameImage];

@@ -4047,12 +4047,12 @@ static void setXCutTextUTF8(char *str, int len, rfbClientPtr cl) {
     TVLog(@"Clipboard: received client cut text (UTF-8) len=%d", len);
 
     NSData *data = [NSData dataWithBytes:str length:(NSUInteger)len];
+    // 2026-08-14 移除 Latin-1 降级：Extended Clipboard 的 Provide 数据保证 UTF-8，
+    // 解码失败直接丢弃并记录（不做静默降级为 Latin-1）
     NSString *s = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
     if (!s) {
-        // Fallback try Latin-1 if UTF-8 decode fails
-        s = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
-        if (!s)
-            s = @"";
+        TVLog(@"Clipboard: extended clipboard UTF-8 decode failed (len=%d)", len);
+        return;
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -4087,31 +4087,10 @@ static void sendClipboardToClients(NSString *_Nullable text) {
         return; // suppressed (likely local set)
     }
 
+    // 2026-08-14 移除 Latin-1 降级：统一走 Extended Clipboard UTF-8（设备端 enableExtendedClipboard 已启用），
+    // 不做 Latin-1 双轨兜底——中文/emoji 必须 UTF-8 无损传输
     char *utf8 = NULL;
     int utf8Len = 0;
-    char *latin1 = NULL;
-    int latin1Len = 0;
-
-    do {
-        if (!text) {
-            break;
-        }
-
-        // Prepare best-effort Latin-1 fallback
-        NSData *latin1Data = [text dataUsingEncoding:NSISOLatin1StringEncoding allowLossyConversion:YES];
-        latin1Len = (int)latin1Data.length;
-        if (!latin1Len)
-            break;
-
-        latin1 = (char *)malloc((size_t)latin1Len);
-        if (!latin1) {
-            latin1Len = 0;
-            break;
-        }
-
-        memcpy(latin1, [latin1Data bytes], (size_t)latin1Len);
-
-    } while (0);
 
     do {
         if (!text) {
@@ -4133,24 +4112,15 @@ static void sendClipboardToClients(NSString *_Nullable text) {
 
     } while (0);
 
-    if (utf8 || latin1) {
-        TVLog(@"Clipboard: sending to clients (utf8Len=%d, latin1Len=%d, clients=%d)", utf8Len, latin1Len,
-              gClientCount);
-    }
-
-    if (utf8 && latin1) {
-        rfbSendServerCutTextUTF8(gScreen, utf8, utf8Len, latin1, latin1Len);
-    } else if (latin1) {
-        rfbSendServerCutText(gScreen, latin1, latin1Len);
+    if (utf8) {
+        TVLog(@"Clipboard: sending to clients (utf8Len=%d, clients=%d)", utf8Len, gClientCount);
+        rfbSendServerCutTextUTF8(gScreen, utf8, utf8Len, NULL, 0);
     } else {
         TVLog(@"Clipboard: no valid clipboard data to send");
     }
 
     if (utf8)
         free(utf8);
-
-    if (latin1)
-        free(latin1);
 }
 
 #pragma mark - Server-Side Cursor
@@ -4510,8 +4480,14 @@ static void setupRfbCutTextHandlers(void) {
     if (gClipboardEnabled) {
         gScreen->setXCutText = setXCutTextLatin1;
         gScreen->setXCutTextUTF8 = setXCutTextUTF8;
-        TVLog(@"Clipboard: client->server handlers registered (enabled)");
+        // 2026-08-14 统一协议通道：启用 TightVNC Extended Clipboard（UTF-8 双向无损）。
+        // setXCutTextUTF8 回调已注册（承接客户端 Provide 解压后的 UTF-8 文本）；
+        // enableExtendedClipboard 让 libvncserver 协商 extended caps 伪编码（0xC0A1E5CE），
+        // noVNC 检测到后走 ExtendedClipboard Notify/Request/Provide（UTF-8 + deflate）→ 中文无损。
+        gScreen->enableExtendedClipboard = TRUE;
+        TVLog(@"Clipboard: client->server handlers registered (enabled, extended clipboard)");
     } else {
+        gScreen->enableExtendedClipboard = FALSE;
         TVLog(@"Clipboard: client->server handlers not registered (disabled)");
     }
 }

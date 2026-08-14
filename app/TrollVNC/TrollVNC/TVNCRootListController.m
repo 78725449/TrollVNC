@@ -77,6 +77,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 @property(nonatomic, strong) NSNetServiceBrowser *gatewayBrowser;
 @property(nonatomic, strong) NSMutableArray<NSNetService *> *gatewayServices;
 @property(nonatomic, assign) BOOL gatewaySearchShown;
+@property(nonatomic, assign) BOOL restartConfirmVisible; // restart 级配置变更后的重启确认框是否已展示（防重复弹窗）
 
 
 @end
@@ -180,15 +181,10 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     if ([self hasManagedConfiguration]) {
         return;
     }
-
-    UIBarButtonItem *applyItem = [[UIBarButtonItem alloc]
-        initWithTitle:NSLocalizedStringFromTableInBundle(@"Apply", @"Localizable", self.bundle, nil)
-                style:UIBarButtonItemStyleDone
-               target:self
-               action:@selector(applyChanges)];
-    applyItem.tintColor = _primaryColor;
-
-    self.navigationItem.rightBarButtonItem = applyItem;
+    // 右上角 Apply 按钮已移除（2026-08-14）：
+    // 配置变更按 reload 级别即时生效（网关组自动重注册 / hot 走控制端热重载），
+    // restart 级配置修改后由 setPreferenceValue 拦截自动弹确认框触发重启，
+    // 不再需要手动"应用"动作（对齐控制端 Web 面板 setConfig 自动重启行为）。
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -197,26 +193,60 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 
 #pragma mark - Actions
 
-- (void)applyChanges {
-    // Resign first responder status
-    [self.view endEditing:YES];
+// 覆写配置写入：restart 级 key 变更后防抖弹重启确认框（替代原 Apply 按钮）
+- (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
+    [super setPreferenceValue:value specifier:specifier];
 
-    // 端口固定不可调（5901/5801），仅校验绑定地址
-    NSString *bindHost = @"";
-    PSSpecifier *bindHostSpec = nil;
-    for (PSSpecifier *sp in _specifiers) {
-        NSString *key = [sp propertyForKey:@"key"];
-        if (!key)
-            continue;
-        if ([key isEqualToString:@"BindHost"]) {
-            bindHostSpec = sp;
-            break;
-        }
+    // Managed 配置下不干预（MDM 覆盖）
+    if ([self hasManagedConfiguration]) {
+        return;
     }
 
-    id bindHostVal = bindHostSpec ? [self readPreferenceValue:bindHostSpec] : nil;
-    if ([bindHostVal isKindOfClass:[NSString class]]) {
-        bindHost = (NSString *)bindHostVal;
+    NSString *key = [specifier propertyForKey:@"key"];
+    if (key && [[self _restartRequiredKeys] containsObject:key]) {
+        [self _scheduleRestartConfirm];
+    }
+}
+
+/**
+ * 需要重启服务才能生效的配置键（与 CONFIG_DEFS reload=restart 对齐）
+ * @return NSSet<NSString *> 键集合
+ */
+- (NSSet<NSString *> *)_restartRequiredKeys {
+    static NSSet<NSString *> *keys = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        keys = [NSSet setWithArray:@[
+            @"BindHost", @"FullPassword", @"ViewOnlyPassword",
+            @"TileSize", @"MaxRects", @"AsyncSwap",
+            @"HttpDir", @"SslCertFile", @"SslKeyFile",
+        ]];
+    });
+    return keys;
+}
+
+/// 防抖：连续修改多个 restart 配置时合并为一次确认（400ms 窗口）
+- (void)_scheduleRestartConfirm {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(_maybeConfirmRestart) object:nil];
+    [self performSelector:@selector(_maybeConfirmRestart) withObject:nil afterDelay:0.4];
+}
+
+- (void)_maybeConfirmRestart {
+    if (self.restartConfirmVisible) {
+        return;
+    }
+
+    // 端口固定不可调（5901/5801），仅校验绑定地址（沿用原 Apply 逻辑）
+    NSString *bindHost = @"";
+    for (PSSpecifier *sp in _specifiers) {
+        NSString *key = [sp propertyForKey:@"key"];
+        if ([key isEqualToString:@"BindHost"]) {
+            id val = [self readPreferenceValue:sp];
+            if ([val isKindOfClass:[NSString class]]) {
+                bindHost = (NSString *)val;
+            }
+            break;
+        }
     }
 
     if (!TVNCIsValidBindHostLiteral(bindHost)) {
@@ -230,31 +260,35 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
                                                                        message:msg
                                                                 preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:ok style:UIAlertActionStyleCancel handler:nil]];
-
         [self presentViewController:alert animated:YES completion:nil];
         return; // do not restart now
     }
 
+    self.restartConfirmVisible = YES;
+
     NSString *title = NSLocalizedStringFromTableInBundle(@"Apply Changes", @"Localizable", self.bundle, nil);
     NSString *message = NSLocalizedStringFromTableInBundle(@"Are you sure you want to restart the VNC service?",
                                                            @"Localizable", self.bundle, nil);
-
-    NSString *fullMessage = message;
     NSString *cancel = NSLocalizedStringFromTableInBundle(@"Cancel", @"Localizable", self.bundle, nil);
     NSString *restart = NSLocalizedStringFromTableInBundle(@"Restart", @"Localizable", self.bundle, nil);
 
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
-                                                                   message:fullMessage
+                                                                   message:message
                                                             preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:cancel style:UIAlertActionStyleCancel handler:nil]];
     __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:cancel style:UIAlertActionStyleCancel handler:^(UIAlertAction *_Nonnull action) {
+        __strong typeof(weakSelf) self = weakSelf;
+        self.restartConfirmVisible = NO;
+    }]];
     [alert addAction:[UIAlertAction actionWithTitle:restart
                                               style:UIAlertActionStyleDestructive
                                             handler:^(UIAlertAction *_Nonnull action) {
+                                                __strong typeof(weakSelf) self = weakSelf;
                                                 TVNCRestartVNCService();
-                                                [weakSelf.notificationGenerator
+                                                [self.notificationGenerator
                                                     notificationOccurred:UINotificationFeedbackTypeSuccess];
-                                                [weakSelf.view endEditing:YES];
+                                                [self.view endEditing:YES];
+                                                self.restartConfirmVisible = NO;
                                             }]];
 
     [self presentViewController:alert animated:YES completion:nil];
@@ -490,12 +524,17 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
         @"The self-signed CA certificate and private key have been successfully generated. You need to trust this "
         @"certificate in your client browser or operating system. Restart the service to apply the changes.",
         @"Localizable", self.bundle, nil);
-    NSString *ok = NSLocalizedStringFromTableInBundle(@"OK", @"Localizable", self.bundle, nil);
+    NSString *restart = NSLocalizedStringFromTableInBundle(@"Restart", @"Localizable", self.bundle, nil);
 
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
                                                                    message:message
                                                             preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:ok style:UIAlertActionStyleCancel handler:nil]];
+    // Apply 按钮已移除：生成证书后直接提供"重启服务"入口使 SslCertFile/SslKeyFile 生效
+    [alert addAction:[UIAlertAction actionWithTitle:restart
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(UIAlertAction *_Nonnull action) {
+                                                TVNCRestartVNCService();
+                                            }]];
     [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedStringFromTableInBundle(@"Export Certificate…",
                                                                                        @"Localizable", self.bundle, nil)
                                               style:UIAlertActionStyleDefault
@@ -532,6 +571,9 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     [[NSUserDefaults standardUserDefaults] synchronize];
 
     [self reloadSpecifiers];
+
+    // Apply 按钮已移除：重置后触发重启确认，使默认值在服务端全局变量中生效
+    [self _scheduleRestartConfirm];
 }
 
 #pragma mark - UITableViewDataSource & UITableViewDelegate
