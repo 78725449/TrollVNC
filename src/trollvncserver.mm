@@ -4084,6 +4084,70 @@ static void setXCutTextUTF8(char *str, int len, rfbClientPtr cl) {
     });
 }
 
+// 2026-08-14 设备→控制剪贴板发送（协议修复）：
+// 旧版 libvncserver 的 rfbSendServerCutTextUTF8 以 framebufferUpdate rect（encoding=0x10000001）发送
+// Extended Clipboard，noVNC 不识该编码 → _handleDataRect 直接 _fail 断连
+// （"Failed while connected: Unsupported encoding (encoding: 268435457)"）。
+// 改为按 TigerVNC / libvncserver master 同款协议发送「负长度 ServerCutText Provide」：
+//   [type=3][pad×3][-(4+zlibLen) BE][flags=0x10000001 BE][zlib( [utf8Len BE] + utf8 )]
+// noVNC _handleServerCutText 原生解析（Provide → inflate → decodeUTF8 → 'clipboard' 事件），无需改动前端。
+//
+// @param utf8     UTF-8 编码的剪贴板文本（无 \0 结尾，按 utf8Len 精确读取）
+// @param utf8Len  UTF-8 文本字节数
+static void sendExtendedClipboardProvideToClients(const char *utf8, int utf8Len) {
+    if (!utf8 || utf8Len <= 0) {
+        return;
+    }
+
+    // 1) 组装压缩前载荷：[utf8Len(4BE)] + utf8 原文（与 libvncserver rfbSendExtendedServerCutTextData 同构）
+    uLongf rawLen = (uLongf)utf8Len + 4;
+    std::vector<uint8_t> raw(rawLen);
+    uint32_t sizeBE = htonl((uint32_t)utf8Len);
+    memcpy(raw.data(), &sizeBE, 4);
+    memcpy(raw.data() + 4, utf8, (size_t)utf8Len);
+
+    // 2) zlib 压缩（compress + Z_DEFAULT_COMPRESSION，与 libvncserver 一致）
+    uLongf zlibLen = compressBound(rawLen);
+    std::vector<uint8_t> zlibData(zlibLen);
+    if (compress(zlibData.data(), &zlibLen, raw.data(), rawLen) != Z_OK) {
+        TVLog(@"Clipboard: zlib compress failed (utf8Len=%d)", utf8Len);
+        return;
+    }
+
+    // 3) 组装负长度 ServerCutText 消息
+    const int total = 12 + (int)zlibLen;
+    std::vector<uint8_t> msg((size_t)total);
+    msg[0] = 3;                        // rfbServerCutText (0x03)
+    msg[1] = msg[2] = msg[3] = 0;      // padding
+    uint32_t negLen = htonl((uint32_t)(-(4 + (int)zlibLen)));   // 负长度 = -(4 字节 flags + zlib 流)
+    uint32_t flags = htonl((uint32_t)(rfbExtendedClipboard_Provide | rfbExtendedClipboard_Text)); // 0x10000001
+    memcpy(msg.data() + 4, &negLen, 4);
+    memcpy(msg.data() + 8, &flags, 4);
+    memcpy(msg.data() + 12, zlibData.data(), zlibLen);
+
+    // 4) 逐客户端发送（仅 enableExtendedClipboard 客户端；写互斥由 sendMutex 保护，
+    //    与 libvncserver rfbSendServerCutTextUTF8 的 LOCK(sendMutex) 模式一致；失败显式关闭连接）
+    rfbClientIteratorPtr it = rfbGetClientIterator(gScreen);
+    rfbClientPtr cl;
+    int sent = 0;
+    while ((cl = rfbClientIteratorNext(it)) != NULL) {
+        if (!cl->enableExtendedClipboard) {
+            continue;
+        }
+        pthread_mutex_lock(&cl->sendMutex);
+        if (rfbWriteExact(cl, (const char *)msg.data(), total) < 0) {
+            TVLog(@"Clipboard: write to client failed, closing");
+            rfbCloseClient(cl);
+        } else {
+            sent++;
+        }
+        pthread_mutex_unlock(&cl->sendMutex);
+    }
+    rfbReleaseClientIterator(it);
+
+    TVLog(@"Clipboard: extended provide sent (utf8Len=%d zlib=%d clients=%d)", utf8Len, (int)zlibLen, sent);
+}
+
 static void sendClipboardToClients(NSString *_Nullable text) {
     if (!gScreen) {
         TVLog(@"Clipboard: screen not initialized; skipping send");
@@ -4132,7 +4196,9 @@ static void sendClipboardToClients(NSString *_Nullable text) {
 
     if (utf8) {
         TVLog(@"Clipboard: sending to clients (utf8Len=%d, clients=%d)", utf8Len, gClientCount);
-        rfbSendServerCutTextUTF8(gScreen, utf8, utf8Len, NULL, 0);
+        // 2026-08-14 不再调用旧版 libvncserver 的 rfbSendServerCutTextUTF8：
+        // 其 rect 编码 0x10000001 会导致 noVNC "Unsupported encoding" 断连；改走标准负长度 ServerCutText。
+        sendExtendedClipboardProvideToClients(utf8, utf8Len);
     } else {
         TVLog(@"Clipboard: no valid clipboard data to send");
     }
