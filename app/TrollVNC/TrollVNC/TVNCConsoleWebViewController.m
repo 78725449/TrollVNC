@@ -39,6 +39,7 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
 @property(nonatomic, strong) NSTimer *configPollTimer;           // 网关配置检测定时器（未配置时轮询）
 @property(nonatomic, copy, nullable) NSString *loadedURL;        // 当前已加载的 URL（网关变更时重载）
 @property(nonatomic, assign) BOOL cleanedUp;                     // 资源是否已释放
+@property(nonatomic, assign) BOOL consoleNeedsInitialLoad;              // 首屏待加载标记（viewDidLayoutSubviews 后触发）
 // 剪贴板监听（控制端 → 被控端自动同步，2026-08-14）
 @property(nonatomic, assign) int clipboardNotifyToken;           // Darwin 剪贴板通知 token（0=未注册）
 @property(nonatomic, assign) NSInteger clipboardLastCount;       // 上次观察到的 UIPasteboard changeCount
@@ -140,9 +141,12 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
     }
 
     // 步骤 5：首屏加载（未配置网关时引导，配置后自动加载）
-    if (![self loadConsoleIfNeeded]) {
-        [self showConfigPrompt];
-    }
+    // 2026-08-15 根因修复：不再在 viewDidLoad 立即加载——此时 AutoLayout 约束虽已激活，
+    // 但 webView frame 需到首次布局（viewDidLayoutSubviews）才被约束更新为最终尺寸。
+    // viewDidLoad 中加载会让 WKWebView 以初始 frame（主屏 bounds）建立布局视口，若后续
+    // 约束将 frame 更新为实际尺寸（含 TabBar 扣除），H5 视口与 webView 尺寸不一致 →
+    // 点击卡片时画布贴顶、系统重排后跳底。改由 viewDidLayoutSubviews 布局完成后加载。
+    self.consoleNeedsInitialLoad = YES;
 
     // 步骤 6：本机剪贴板监听（控制端 → 被控端自动同步，2026-08-14）。
     // 常开：控制端复制即自动桥出给 Web 层经 RFB 协议通道同步到受控设备；
@@ -160,9 +164,28 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
  */
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    [self loadConsoleIfNeeded];
+    // 2026-08-15：首次进入时首屏加载由 viewDidLayoutSubviews 负责（此时 webView frame 才
+    // 被约束更新为最终尺寸，确保 H5 布局视口正确）；首次布局完成后此处才参与重载。
+    if (!self.consoleNeedsInitialLoad) {
+        [self loadConsoleIfNeeded];
+    }
     // 2026-08-15：状态栏样式沿 VC 链转发，此处显式刷新确保浅色文字生效
     [self setNeedsStatusBarAppearanceUpdate];
+}
+
+/**
+ * 首次布局完成（2026-08-15 根因修复）：AutoLayout 约束在此刻将 webView frame 更新为
+ * 最终尺寸（含 TabBar 扣除）。此时才加载 H5——确保 WKWebView 以正确布局视口建立页面，
+ * 否则首帧视口尺寸错误导致点击卡片时画布贴顶、系统重排后跳底。
+ */
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    if (self.consoleNeedsInitialLoad) {
+        self.consoleNeedsInitialLoad = NO;
+        if (![self loadConsoleIfNeeded]) {
+            [self showConfigPrompt];
+        }
+    }
 }
 
 /**
@@ -185,7 +208,10 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
     // writeText 会被拒（NotAllowedError，手机 Safari 与 WKWebView 同受限，电脑 Chrome 无此限制），
     // 故容器模式改走原生写 UIPasteboard（无手势/安全上下文限制）。需在 dealloc/cleanup 移除 handler 防循环引用。
     [config.userContentController addScriptMessageHandler:self name:@"farmBridge"];
-    self.webView = [[WKWebView alloc] initWithFrame:self.view.bounds configuration:config];
+    // 2026-08-15 根因修复：初始 frame 用主屏 bounds（而非 self.view.bounds——纯代码 VC 在
+    // viewDidLoad 时 view 尚未布局，bounds 为 CGRectZero）。WKWebView 以 0×0 frame 创建会让
+    // H5 首帧视口尺寸错误（识别到"很小的一点区域"）→ 点击卡片时画布贴顶；布局完成后自动拉伸。
+    self.webView = [[WKWebView alloc] initWithFrame:[UIScreen mainScreen].bounds configuration:config];
     self.webView.translatesAutoresizingMaskIntoConstraints = NO;
     self.webView.navigationDelegate = self;
     self.webView.backgroundColor = [UIColor systemBackgroundColor];
