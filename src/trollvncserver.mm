@@ -35,6 +35,13 @@
 #import <netinet/tcp.h>
 #import <pthread.h>
 #import <rfb/keysym.h>
+// libvncserver 预编译库启用 LIBZ（rfbconfig.h 声明），rfb.h 不引入 rfbconfig.h，
+// enableExtendedClipboard/setXCutTextUTF8 位于 #ifdef LIBVNCSERVER_HAVE_LIBZ 内。
+// 此处源码级兜底定义（Makefile -D 对 .mm 的传递在不同 theos 版本/方案下不稳定），
+// 确保各构建方案（default/rootless/roothide/bootstrap）都能访问 ExtendedClipboard 字段。
+#ifndef LIBVNCSERVER_HAVE_LIBZ
+#define LIBVNCSERVER_HAVE_LIBZ 1
+#endif
 #import <rfb/rfb.h>
 #import <string>
 #import <sys/socket.h>
