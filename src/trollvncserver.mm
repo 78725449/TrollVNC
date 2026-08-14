@@ -3943,6 +3943,13 @@ static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
     if (!cl->viewOnly && gViewOnly)
         cl->viewOnly = TRUE;
 
+    // 2026-08-14 统一协议通道：enableExtendedClipboard 为 per-client 字段（_rfbClientRec），
+    // 需对每个新客户端显式置位才协商 extended caps 伪编码（0xC0A1E5CE），
+    // noVNC 检测到后走 ExtendedClipboard Notify/Request/Provide（UTF-8 + deflate）→ 中文双向无损。
+    if (gClipboardEnabled) {
+        cl->enableExtendedClipboard = TRUE;
+    }
+
     // Allocate per-client state bag
     TVClientState *st = (TVClientState *)calloc(1, sizeof(TVClientState));
     if (st) {
@@ -4489,12 +4496,11 @@ static void setupRfbCutTextHandlers(void) {
         gScreen->setXCutTextUTF8 = setXCutTextUTF8;
         // 2026-08-14 统一协议通道：启用 TightVNC Extended Clipboard（UTF-8 双向无损）。
         // setXCutTextUTF8 回调已注册（承接客户端 Provide 解压后的 UTF-8 文本）；
-        // enableExtendedClipboard 让 libvncserver 协商 extended caps 伪编码（0xC0A1E5CE），
+        // enableExtendedClipboard 为 per-client 字段（_rfbClientRec），需在 newClientHook
+        // 对每个新客户端置 TRUE 才协商 extended caps 伪编码（0xC0A1E5CE），
         // noVNC 检测到后走 ExtendedClipboard Notify/Request/Provide（UTF-8 + deflate）→ 中文无损。
-        gScreen->enableExtendedClipboard = TRUE;
         TVLog(@"Clipboard: client->server handlers registered (enabled, extended clipboard)");
     } else {
-        gScreen->enableExtendedClipboard = FALSE;
         TVLog(@"Clipboard: client->server handlers not registered (disabled)");
     }
 }
