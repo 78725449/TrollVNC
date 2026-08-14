@@ -263,7 +263,7 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
       if (rfb._cursor && rfb._cursor._canvas) rfb._cursor._hideCursor();
     };
     var cursorShow = function () {
-      if (rfb._cursor) rfb._cursor._refreshCursor();
+      rfb._refreshCursor(); // _refreshCursor 是 RFB 方法（内部调 _cursor.change 渲染服务端光标），非 Cursor 方法
     };
     var cursorPoke = function () {
       cursorShow();
