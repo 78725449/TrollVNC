@@ -143,28 +143,28 @@
     #fab .wifi { width: 26px; height: 26px; }
   }
 
-  /* ===== 剪贴板手动输入浮层（HTTP 环境降级方案） ===== */
-  #clipOverlay {
+  /* ===== 剪贴板浮层（HTTP 环境方案）：粘贴输入浮层 #clipOverlay / 设备复制推送浮层 #copyOverlay ===== */
+  #clipOverlay, #copyOverlay {
     position: fixed; inset: 0; z-index: 20;
     background: rgba(0, 0, 0, .6);
     display: none;
     align-items: center; justify-content: center;
     padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
   }
-  #clipOverlay.show { display: flex; }
-  #clipModal {
+  #clipOverlay.show, #copyOverlay.show { display: flex; }
+  #clipModal, #copyModal {
     background: #1c1c1e; border: 1px solid #3a3a3c;
     border-radius: 14px; padding: 16px;
     width: 100%; max-width: 360px;
     box-shadow: 0 8px 32px rgba(0, 0, 0, .5);
   }
-  #clipModal h3 {
+  #clipModal h3, #copyModal h3 {
     margin: 0 0 4px; font: 600 16px/24px system-ui, sans-serif; color: #eee;
   }
-  #clipModal p {
+  #clipModal p, #copyModal p {
     margin: 0 0 12px; font: 12px/18px system-ui, sans-serif; color: #999;
   }
-  #clipText {
+  #clipText, #copyText {
     width: 100%; min-height: 96px;
     background: #2c2c2e; border: 1px solid #3a3a3c;
     border-radius: 10px; color: #eee;
@@ -172,16 +172,17 @@
     padding: 10px; resize: vertical;
     box-sizing: border-box; -webkit-appearance: none;
   }
-  #clipText:focus { outline: 2px solid var(--brand, #7C5CFF); }
+  #clipText:focus, #copyText:focus { outline: 2px solid var(--brand, #7C5CFF); }
+  #copyText { min-height: 120px; resize: none; }  /* 只读展示：不可编辑、不可缩放 */
   .clip-btns { display: flex; gap: 8px; margin-top: 12px; }
   .clip-btns button {
     flex: 1; min-height: 44px;
     border-radius: 10px; border: 1px solid #3a3a3c;
     font: 500 15px system-ui, sans-serif; padding: 8px;
   }
-  #clipCancel { background: #2c2c2e; color: #eee; }
-  #clipSend { background: #7C5CFF; color: #fff; border-color: #7C5CFF; }
-  #clipSend:active { background: #5B3FE0; }
+  #clipCancel, #copyClose { background: #2c2c2e; color: #eee; }
+  #clipSend, #copySend { background: #7C5CFF; color: #fff; border-color: #7C5CFF; }
+  #clipSend:active, #copySend:active { background: #5B3FE0; }
 </style>
 </head>
 <body>
@@ -214,15 +215,28 @@
   <!-- 按钮由 renderKeys 按 BAR_KEYS 常量渲染（末尾追加「收起菜单」close 按钮） -->
 </div>
 
-<!-- 剪贴板手动输入浮层（HTTP 环境降级：Clipboard API 被拒绝时使用） -->
+<!-- 粘贴输入浮层（HTTP 环境：点击「粘贴」按钮弹出，粘贴文本后回车/确认 → 原子注入设备聚焦输入框） -->
 <div id="clipOverlay">
   <div id="clipModal">
-    <h3>📋 粘贴到手机</h3>
-    <p>浏览器拒绝自动读取剪贴板，请长按下方输入框手动粘贴内容后发送。</p>
-    <textarea id="clipText" placeholder="在此粘贴要发送到手机的文字…" autocomplete="off"></textarea>
+    <h3>📋 粘贴到设备</h3>
+    <p>请先在设备画面上点击目标输入框使其聚焦，再在此处粘贴文本（Ctrl+V / 长按），确认后发送。</p>
+    <textarea id="clipText" placeholder="在此粘贴要发送到设备的文字…" autocomplete="off"></textarea>
     <div class="clip-btns">
       <button id="clipCancel">取消</button>
-      <button id="clipSend">发送</button>
+      <button id="clipSend">确认粘贴</button>
+    </div>
+  </div>
+</div>
+
+<!-- 复制浮层（设备→本端剪贴板推送，2026-08-15）：HTTP 明文无法写系统剪贴板，降级为显示文本 + 手动复制按钮 -->
+<div id="copyOverlay">
+  <div id="copyModal">
+    <h3>📋 设备剪贴板</h3>
+    <p>设备已复制以下内容。HTTP 环境无法自动写入系统剪贴板，请点击「复制」手动复制。</p>
+    <textarea id="copyText" readonly></textarea>
+    <div class="clip-btns">
+      <button id="copyClose">关闭</button>
+      <button id="copySend">复制</button>
     </div>
   </div>
 </div>
@@ -251,56 +265,162 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
   var statusText = document.getElementById('statusText');
   var isConnected = false;   // RFB 是否已建立连接（驱动信号按钮延迟轮询）
   var sigTimer = null;       // 延迟轮询定时器（每 3s 同源 fetch 测 RTT）
-  var rfb = new RFB(screen, url, {});
-  rfb.scaleViewport = true;
-  rfb.resizeSession = false;
-  // 光标策略（2026-08-14 与网关前端 app.js 对齐）：
-  // - 手机触控版（isTouch）：无常驻光标——showDotCursor=false，服务端光标开启时触屏点击/移动显示
-  //   服务端圆点、空闲 1.5s 自动隐藏；服务端光标关闭时无光标
-  // - PC 版：保持 noVNC 默认 showDotCursor=true（服务端光标优先，dot 白点黑边兜底）
-  if (isTouch) {
-    rfb.showDotCursor = false;
-    var cursorTimer = null;
-    var CURSOR_IDLE_MS = 1500;
-    var cursorHide = function () {
-      if (rfb._cursor && rfb._cursor._canvas) rfb._cursor._hideCursor();
-    };
-    // 苹果风格触控光标（2026-08-14）：iOS 系统触摸指示器样式——半透明灰圆，
-    // 触屏点击/移动时显示、空闲 1.5s 自动隐藏。不显示服务端光标图像（白点黑边不合苹果风格）。
-    var APPLE_CURSOR_SIZE = 24, APPLE_CURSOR_R = 9;
-    var appleCursorRgba = (function () {
-      var S = APPLE_CURSOR_SIZE, cx = (S - 1) / 2, cy = (S - 1) / 2, R = APPLE_CURSOR_R;
-      var rgba = new Uint8Array(S * S * 4);
-      for (var y = 0; y < S; y++) {
-        for (var x = 0; x < S; x++) {
-          var d = Math.hypot(x - cx, y - cy);
-          var i = (y * S + x) * 4;
-          if (d <= R) {
-            rgba[i] = 128; rgba[i + 1] = 128; rgba[i + 2] = 128; // 深灰（2026-08-14 加深）
-            rgba[i + 3] = Math.round(217 * (1.0 - 0.6 * (d / R))); // 中心≈0.85 边缘渐隐
+  // rfb 提升为可重建引用（2026-08-15）：后台挂起 WS 断开后切回前台自动重连（对齐控制台 focus 机制）
+  var rfb = null;
+  var needsReconnect = false;   // 非主动断开标记（异常断开后需重建）
+  var reconnectAttempts = 0;    // 重建次数（防设备真离线无限刷屏）
+  var RECONNECT_MAX = 5;
+
+  /**
+   * 初始化 RFB 连接（创建 + 光标策略 + 操作栏跟随 + 全部事件绑定）。
+   * 首次加载与 recreateRfb（断线重连）均调用；重复调用前须先断开旧连接。
+   * @returns {void}
+   */
+  function initRfb() {
+    rfb = new RFB(screen, url, {});
+    rfb.scaleViewport = true;
+    rfb.resizeSession = false;
+    // 光标策略（2026-08-14 与网关前端 app.js 对齐）：
+    // - 手机触控版（isTouch）：无常驻光标——showDotCursor=false，服务端光标开启时触屏点击/移动显示
+    //   服务端圆点、空闲 1.5s 自动隐藏；服务端光标关闭时无光标
+    // - PC 版：保持 noVNC 默认 showDotCursor=true（服务端光标优先，dot 白点黑边兜底）
+    if (isTouch) {
+      rfb.showDotCursor = false;
+      var cursorTimer = null;
+      var CURSOR_IDLE_MS = 1500;
+      var cursorHide = function () {
+        if (rfb._cursor && rfb._cursor._canvas) rfb._cursor._hideCursor();
+      };
+      // 苹果风格触控光标（2026-08-14）：iOS 系统触摸指示器样式——半透明灰圆，
+      // 触屏点击/移动时显示、空闲 1.5s 自动隐藏。不显示服务端光标图像（白点黑边不合苹果风格）。
+      var APPLE_CURSOR_SIZE = 24, APPLE_CURSOR_R = 9;
+      var appleCursorRgba = (function () {
+        var S = APPLE_CURSOR_SIZE, cx = (S - 1) / 2, cy = (S - 1) / 2, R = APPLE_CURSOR_R;
+        var rgba = new Uint8Array(S * S * 4);
+        for (var y = 0; y < S; y++) {
+          for (var x = 0; x < S; x++) {
+            var d = Math.hypot(x - cx, y - cy);
+            var i = (y * S + x) * 4;
+            if (d <= R) {
+              rgba[i] = 128; rgba[i + 1] = 128; rgba[i + 2] = 128; // 深灰（2026-08-14 加深）
+              rgba[i + 3] = Math.round(217 * (1.0 - 0.6 * (d / R))); // 中心≈0.85 边缘渐隐
+            }
           }
         }
+        return rgba;
+      })();
+      var cursorShow = function () {
+        rfb._cursor.change(appleCursorRgba, Math.round((APPLE_CURSOR_SIZE - 1) / 2),
+                           Math.round((APPLE_CURSOR_SIZE - 1) / 2), APPLE_CURSOR_SIZE, APPLE_CURSOR_SIZE);
+      };
+      var cursorPoke = function () {
+        cursorShow();
+        clearTimeout(cursorTimer);
+        cursorTimer = setTimeout(cursorHide, CURSOR_IDLE_MS);
+      };
+      var touchOpt = { capture: true, passive: true };
+      screen.addEventListener('touchstart', cursorPoke, touchOpt);
+      screen.addEventListener('touchmove', cursorPoke, touchOpt);
+      screen.addEventListener('mousemove', cursorPoke, touchOpt);
+      screen.addEventListener('mousedown', cursorPoke, touchOpt);
+      rfb.addEventListener('disconnect', function () { clearTimeout(cursorTimer); });
+    } else {
+      rfb.showDotCursor = true;
+    }
+
+    // 画布尺寸变化（首帧到达 / scaleViewport 缩放 / 窗口尺寸变化）时同步操作栏位置
+    var barCanvas = screen.querySelector('canvas');
+    if (barCanvas && 'ResizeObserver' in window) {
+      new ResizeObserver(function () { syncBarPosition(); }).observe(barCanvas);
+    }
+    syncBarPosition();
+
+    rfb.addEventListener('connect', function () {
+      isConnected = true;
+      startSigPoll();
+      setStatus('已连接，等待画面…', true);
+      // 键盘默认收起态（无高亮；用户点「键盘」键才弹出控制端软键盘）
+      kbdSoft = false;
+      updateKbdBtns();
+      // 检测是否真的收到画面帧（区分"连上但黑帧"与"连不上"）
+      var gotFrame = false;
+      function fbSize() {
+        var d = rfb._display;
+        if (!d) return 0;
+        return d._fbWidth || d._fbHeight || (d.get_width ? d.get_width() : 0) || (d.get_height ? d.get_height() : 0);
       }
-      return rgba;
-    })();
-    var cursorShow = function () {
-      rfb._cursor.change(appleCursorRgba, Math.round((APPLE_CURSOR_SIZE - 1) / 2),
-                         Math.round((APPLE_CURSOR_SIZE - 1) / 2), APPLE_CURSOR_SIZE, APPLE_CURSOR_SIZE);
-    };
-    var cursorPoke = function () {
-      cursorShow();
-      clearTimeout(cursorTimer);
-      cursorTimer = setTimeout(cursorHide, CURSOR_IDLE_MS);
-    };
-    var touchOpt = { capture: true, passive: true };
-    screen.addEventListener('touchstart', cursorPoke, touchOpt);
-    screen.addEventListener('touchmove', cursorPoke, touchOpt);
-    screen.addEventListener('mousemove', cursorPoke, touchOpt);
-    screen.addEventListener('mousedown', cursorPoke, touchOpt);
-    rfb.addEventListener('disconnect', function () { clearTimeout(cursorTimer); });
-  } else {
-    rfb.showDotCursor = true;
+      var fc = setInterval(function () {
+        if (fbSize() > 0) {
+          gotFrame = true;
+          clearInterval(fc);
+          // 连接成功且收到首帧：隐藏中央状态浮层，进入画面
+          hideStatus();
+        }
+      }, 800);
+      setTimeout(function () {
+        clearInterval(fc);
+        if (!gotFrame) setStatus('已连接但未收到画面（锁屏黑帧 / 抓屏异常 / 编码不支持）', false);
+      }, 5000);
+    });
+    rfb.addEventListener('disconnect', function (e) {
+      isConnected = false;
+      stopSigPoll();
+      setFabSignal(null, '设备未连接（拖动调整位置，点击展开操作）');
+      // 断开：键盘收起态复位（无高亮）
+      kbdSoft = false; updateKbdBtns();
+      // 2026-08-15：非主动断开（1006 后台挂起等）标记待重连；主动断开（1000/1001）不重连
+      var code = (e && e.detail && e.detail.code) ? e.detail.code : null;
+      if (code !== 1000 && code !== 1001) needsReconnect = true;
+      var msg = (e && e.detail && e.detail.message) ? '：' + e.detail.message : '';
+      setStatus('已断开' + msg + '（目标 ' + url + '）', false);
+    });
+    rfb.addEventListener('error', function () {
+      isConnected = false;
+      stopSigPoll();
+      setFabSignal(null, '连接失败（拖动调整位置，点击展开操作）');
+      kbdSoft = false; updateKbdBtns();
+      needsReconnect = true;
+      setStatus('连接失败 ' + url, false);
+    });
+    rfb.addEventListener('credentialsrequired', function () {
+      var p = window.prompt('请输入 VNC 密码：');
+      if (p) rfb.sendCredentials({ password: p });
+    });
+    // 设备→本端剪贴板推送（2026-08-15）：5801 noVNC 支持负长度 ServerCutText → 'clipboard' 事件；
+    // HTTP 明文无法写系统剪贴板，降级为复制浮层（文本 + 「复制」按钮）
+    rfb.addEventListener('clipboard', function (e) {
+      var text = e && e.detail && e.detail.text;
+      if (!text) return;
+      showCopyModal(text);
+    });
+    // 断开/失败：释放软键盘（Keyboard 内部 window blur 已兜底，这里显式清理避免残留）
+    rfb.addEventListener('disconnect', function () { try { touchKb.ungrab(); } catch (e) {} });
+    rfb.addEventListener('error', function () { try { touchKb.ungrab(); } catch (e) {} });
   }
+
+  /**
+   * 断线重建 RFB（5801 直连无网关会话概念，直接重连 5901 即可）。
+   * 先断开旧连接再 initRfb（新连接获取全新握手），并复位重连标记。
+   * @returns {void}
+   */
+  function recreateRfb() {
+    try { if (rfb) rfb.disconnect(); } catch (e) {}
+    needsReconnect = false;
+    reconnectAttempts++;
+    initRfb();
+    setStatus('连接中…', true);
+  }
+
+  // 2026-08-15：后台挂起 WS 断开（1006）→ 切回前台立即重建连接（对齐控制台 focus 自动重连）
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState !== 'visible') return;
+    if (!rfb) return;
+    if (needsReconnect && reconnectAttempts < RECONNECT_MAX) {
+      recreateRfb();
+    }
+  });
+
+  initRfb();
 
   // ===== 按键常量 + 统一渲染（07 §4.4：一份数据，PC #bar 与手机 #panel 共用） =====
 
@@ -332,7 +452,7 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.5-4.5"/></svg>' },
     { op: 'kb',       label: '键盘',   icon: '⌨️',
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6.5" width="19" height="11" rx="2"/><path d="M6 11h1M10 11h1M14 11h1M18 11h1M6 14.5h1M10 14.5h1M14 14.5h1M18 14.5h1"/></svg>' },
-    { op: 'clip',     label: '剪贴板', icon: '📋',
+    { op: 'paste',    label: '粘贴',   icon: '📋',
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2h6v3H9z"/><rect x="4" y="4" width="16" height="18" rx="2"/><path d="M8 11h8M8 15h8M8 19h5"/></svg>' },
     { op: 'full',     label: '全屏',   icon: '⤢',
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/></svg>' },
@@ -429,61 +549,8 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
     b.style.height = Math.round(r.height) + 'px';
   }
 
-  // 画布尺寸变化（首帧到达 / scaleViewport 缩放 / 窗口尺寸变化）时同步操作栏位置
-  var barCanvas = screen.querySelector('canvas');
-  if (barCanvas && 'ResizeObserver' in window) {
-    new ResizeObserver(function () { syncBarPosition(); }).observe(barCanvas);
-  }
+  // 窗口尺寸变化时同步操作栏位置（页面级监听，仅注册一次；画布级观察在 initRfb 内随重建刷新）
   window.addEventListener('resize', syncBarPosition);
-  syncBarPosition();
-
-  rfb.addEventListener('connect', function () {
-    isConnected = true;
-    startSigPoll();
-    setStatus('已连接，等待画面…', true);
-    // 键盘默认收起态（无高亮；用户点「键盘」键才弹出控制端软键盘）
-    kbdSoft = false;
-    updateKbdBtns();
-    // 检测是否真的收到画面帧（区分"连上但黑帧"与"连不上"）
-    var gotFrame = false;
-    function fbSize() {
-      var d = rfb._display;
-      if (!d) return 0;
-      return d._fbWidth || d._fbHeight || (d.get_width ? d.get_width() : 0) || (d.get_height ? d.get_height() : 0);
-    }
-    var fc = setInterval(function () {
-      if (fbSize() > 0) {
-        gotFrame = true;
-        clearInterval(fc);
-        // 连接成功且收到首帧：隐藏中央状态浮层，进入画面
-        hideStatus();
-      }
-    }, 800);
-    setTimeout(function () {
-      clearInterval(fc);
-      if (!gotFrame) setStatus('已连接但未收到画面（锁屏黑帧 / 抓屏异常 / 编码不支持）', false);
-    }, 5000);
-  });
-  rfb.addEventListener('disconnect', function (e) {
-    isConnected = false;
-    stopSigPoll();
-    setFabSignal(null, '设备未连接（拖动调整位置，点击展开操作）');
-    // 断开：键盘收起态复位（无高亮）
-    kbdSoft = false; updateKbdBtns();
-    var msg = (e && e.detail && e.detail.message) ? '：' + e.detail.message : '';
-    setStatus('已断开' + msg + '（目标 ' + url + '）', false);
-  });
-  rfb.addEventListener('error', function () {
-    isConnected = false;
-    stopSigPoll();
-    setFabSignal(null, '连接失败（拖动调整位置，点击展开操作）');
-    kbdSoft = false; updateKbdBtns();
-    setStatus('连接失败 ' + url, false);
-  });
-  rfb.addEventListener('credentialsrequired', function () {
-    var p = window.prompt('请输入 VNC 密码：');
-    if (p) rfb.sendCredentials({ password: p });
-  });
 
   // ===== 操作执行器（PC 栏与手机面板共用） =====
 
@@ -566,9 +633,9 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
         // 「键盘」输入源切换（2026-08-14 协议 keysym：控制端 ⇄ 被控设备键盘，详见 toggleKbd）
         toggleKbd();
         break;
-      case 'clip':
-        // 优先用 Clipboard API（安全上下文下生效），失败则降级到手动输入浮层
-        tryClipboardPaste();
+      case 'paste':
+        // 2026-08-15：粘贴输入——弹浮层，粘贴文本后回车/确认 → pasteToDevice 原子注入（模拟 Cmd+V）
+        showClipModal();
         break;
       case 'full':
         if (document.fullscreenElement) document.exitFullscreen();
@@ -656,34 +723,42 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
       kbdSoft = false;
       updateKbdBtns();
     });
-    // 断开/失败：释放按键（Keyboard 内部 window blur 已兜底，这里显式清理避免残留）
-    rfb.addEventListener('disconnect', function () { try { touchKb.ungrab(); } catch (e) {} });
-    rfb.addEventListener('error', function () { try { touchKb.ungrab(); } catch (e) {} });
   }
 
-  // ===== 剪贴板降级方案：Clipboard API 失败时弹出手动输入浮层 =====
+  // ===== 粘贴输入（2026-08-15）：与控制台 type.paste 同机制 =====
+  // 点击「粘贴」按钮 → 弹浮层 → 粘贴文本 → 回车/确认 → pasteToDevice（写剪贴板 + 模拟 Cmd+V）。
+  // 真正完成"输入"的是模拟的 Cmd+V 系统粘贴组合键（iOS 无程序化写输入框 API），
+  // 写剪贴板只是数据准备。识别码：XK_Meta_L=0xffe7 → LEFTCOMMAND（std 映射），'v'=0x76。
 
   /**
-   * 尝试读取本机剪贴板并粘贴到远端；失败或为空时降级到手动输入浮层
+   * 原子粘贴输入：写设备剪贴板 + 清残留修饰键 + 模拟 Cmd+V 键序列。
+   * 注入时序对齐设备端 type.paste executor（TRCapabilityRegistry.mm），
+   * 保持按键按住间隔供 iOS 识别组合键（Command 先按住 → v → 依次抬起）。
+   * @param {string} text 要粘贴到设备聚焦输入框的文本
    * @returns {void}
    */
-  function tryClipboardPaste() {
-    if (navigator.clipboard && navigator.clipboard.readText) {
-      navigator.clipboard.readText().then(function (t) {
-        if (t) {
-          try { rfb.clipboardPasteFrom(t); } catch (e) {}
-        } else {
-          // 剪贴板为空，降级到手动输入
-          showClipModal();
-        }
-      }).catch(function () {
-        // Clipboard API 被拒绝（HTTP 环境常见），降级到手动输入
-        showClipModal();
-      });
-    } else {
-      // 浏览器不支持 Clipboard API，直接降级
-      showClipModal();
-    }
+  function pasteToDevice(text) {
+    if (!text || !rfb) return;
+    // ① 写设备剪贴板（数据准备，RFB ClientCutText → 设备 setStringFromRemote）
+    try { rfb.clipboardPasteFrom(text); } catch (e) {}
+    // ② 150ms 后释放残留修饰键（自定义 keysym 0x1008ff82 → 设备端 releaseEveryKeys）
+    setTimeout(function () {
+      try { rfb.sendKey(0x1008ff82, null, true); } catch (e) {}
+      try { rfb.sendKey(0x1008ff82, null, false); } catch (e) {}
+    }, 150);
+    // ③ 250ms 后模拟 Cmd+V：Command(0xffe7) 按住 → v(0x76) 按下 → 依次抬起
+    setTimeout(function () {
+      try { rfb.sendKey(0xffe7, 'MetaLeft', true); } catch (e) {}
+      setTimeout(function () {
+        try { rfb.sendKey(0x76, 'KeyV', true); } catch (e) {}
+        setTimeout(function () {
+          try { rfb.sendKey(0x76, 'KeyV', false); } catch (e) {}
+          setTimeout(function () {
+            try { rfb.sendKey(0xffe7, 'MetaLeft', false); } catch (e) {}
+          }, 40);
+        }, 90);
+      }, 120);
+    }, 250);
   }
 
   var clipOverlay = document.getElementById('clipOverlay');
@@ -692,7 +767,7 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
   var clipCancel = document.getElementById('clipCancel');
 
   /**
-   * 显示剪贴板手动输入浮层，用户粘贴文本后点击发送
+   * 显示粘贴输入浮层（textaera 清空 + 自动聚焦，用户粘贴文本后回车/确认发送）
    * @returns {void}
    */
   function showClipModal() {
@@ -705,7 +780,7 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
   }
 
   /**
-   * 关闭剪贴板浮层并清除内容
+   * 关闭粘贴浮层并清除内容
    * @returns {void}
    */
   function closeClipModal() {
@@ -713,13 +788,23 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
     clipText.value = '';
   }
 
-  // 发送按钮：将 textarea 内容粘贴到远端并关闭浮层
+  // 确认粘贴按钮：pasteToDevice 原子注入（写剪贴板 + 模拟 Cmd+V），非仅写入剪贴板
   clipSend.addEventListener('click', function () {
     var t = clipText.value;
-    if (t) {
-      try { rfb.clipboardPasteFrom(t); } catch (e) {}
-    }
+    if (!t) return;
     closeClipModal();
+    pasteToDevice(t);
+  });
+
+  // 回车（Enter）触发粘贴；Shift+Enter 保留换行（textarea 多行输入不误触）
+  clipText.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      var t = clipText.value;
+      if (!t) return;
+      closeClipModal();
+      pasteToDevice(t);
+    }
   });
 
   // 取消按钮：关闭浮层
@@ -728,6 +813,69 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
   // 点击遮罩区域关闭浮层
   clipOverlay.addEventListener('click', function (e) {
     if (e.target === clipOverlay) closeClipModal();
+  });
+
+  // ===== 复制浮层（设备→本端剪贴板推送，2026-08-15） =====
+  // HTTP 明文无法写系统剪贴板（writeText 被拒），降级为浮层显示文本 + 「复制」按钮手动复制。
+
+  var copyOverlay = document.getElementById('copyOverlay');
+  var copyText = document.getElementById('copyText');
+  var copySend = document.getElementById('copySend');
+  var copyClose = document.getElementById('copyClose');
+  var statusFlashTimer = null;
+
+  /**
+   * 显示设备剪贴板浮层（来源：RFB clipboard 事件）
+   * @param {string} text 设备剪贴板文本
+   * @returns {void}
+   */
+  function showCopyModal(text) {
+    copyText.value = text;
+    copyOverlay.classList.add('show');
+    setTimeout(function () { copyText.focus(); }, 100);
+  }
+
+  /**
+   * 关闭复制浮层并清除内容
+   * @returns {void}
+   */
+  function closeCopyModal() {
+    copyOverlay.classList.remove('show');
+    copyText.value = '';
+  }
+
+  /**
+   * 短时中央提示（复用状态浮层，2s 自动隐藏）
+   * @param {string} text 提示文案
+   * @returns {void}
+   */
+  function flashStatus(text) {
+    setStatus(text, false);
+    if (statusFlashTimer) clearTimeout(statusFlashTimer);
+    statusFlashTimer = setTimeout(hideStatus, 2000);
+  }
+
+  // 「复制」按钮（用户手势内）：选中文本 + execCommand('copy')（http 下 Chrome 桌面可用；
+  // 失败/不支持时提示手动选择复制）
+  copySend.addEventListener('click', function () {
+    var t = copyText.value;
+    if (!t) return;
+    var ok = false;
+    try {
+      copyText.removeAttribute('readonly');
+      copyText.focus();
+      copyText.select();
+      copyText.setSelectionRange(0, t.length);
+      ok = document.execCommand('copy');
+    } catch (e) { ok = false; }
+    try { copyText.setAttribute('readonly', 'readonly'); } catch (e) {}
+    if (ok) flashStatus('已复制到本机剪贴板');
+    else flashStatus('复制失败，请手动选择文本复制');
+  });
+
+  copyClose.addEventListener('click', closeCopyModal);
+  copyOverlay.addEventListener('click', function (e) {
+    if (e.target === copyOverlay) closeCopyModal();
   });
 
   /**
