@@ -2709,6 +2709,21 @@ static void kbdAddEvent(rfbBool down, rfbKeySym keySym, rfbClientPtr cl) {
     case 0x1008ff82UL: // 自定义 keysym：释放所有按键
         if (down) [gen releaseEveryKeys];
         return;
+    // 2026-08-14 协议通道键盘输入源互斥（前端交互走 RFB keysym，能力 keyboard.set 保留供 AI/脚本）：
+    // 注入外接硬件键盘连接/断开事件（HID attach hack）——iOS 检测到外接键盘连接时若系统设置
+    // 「连接实体键盘时自动隐藏软键盘」（默认开）强制隐藏软键盘，即 iOS 上唯一"显式隐藏"（非 toggle）手段。
+    case 0x1008ff83UL: // 自定义 keysym：XF86KeyboardHide → attach（隐藏被控设备软键盘）
+        if (down) [gen setHardwareKeyboardAttached:YES];
+        return;
+    case 0x1008ff84UL: // 自定义 keysym：XF86KeyboardShow → detach 恢复 + 延时 150ms 后 toggle 弹被控设备键盘（设备端原子，消除跨通道时序）
+        if (down) {
+            [gen setHardwareKeyboardAttached:NO];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
+                           dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
+                [gen toggleOnScreenKeyboard];
+            });
+        }
+        return;
     default:
         break;
     }
