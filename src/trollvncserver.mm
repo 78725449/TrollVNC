@@ -110,6 +110,8 @@ static BOOL gWheelNaturalDir = NO;        // natural scroll direction (invert de
 static int gModMapScheme = 0;
 static BOOL gAutoAssistEnabled = NO;
 static BOOL gCursorEnabled = NO;
+// 前置声明：ServerCursor 配置 set 时（L3154）需即时重建/清除服务端光标（定义在 L4512）
+static void setupRfbServerSideCursor(void);
 static BOOL gKeyEventLogging = NO;
 static BOOL gOrientationSyncEnabled = YES;
 
@@ -3149,7 +3151,9 @@ int tvReloadConfigForKey(const char *key) {
     } else if ([k isEqualToString:@"OrientationSync"]) {
         gOrientationSyncEnabled = [p boolForKey:@"OrientationSync"];
     } else if ([k isEqualToString:@"ServerCursor"]) {
+        // 2026-08-14：改配置后即时重建/清除服务端光标（原实现只改全局变量，运行中开关不生效）
         gCursorEnabled = [p boolForKey:@"ServerCursor"];
+        setupRfbServerSideCursor();
     } else if ([k isEqualToString:@"DeferWindowSec"]) {
         double v = [p doubleForKey:@"DeferWindowSec"];
         if (v < 0.0) v = 0.0;
@@ -4140,30 +4144,32 @@ static void sendClipboardToClients(NSString *_Nullable text) {
 #pragma mark - Server-Side Cursor
 
 NS_INLINE void setupXCursor(rfbScreenInfoPtr screen) {
-    int width = 13, height = 11;
+    // 2026-08-14：X 形改为圆点（用户要求"要圆点不要 x"）。服务端光标改为 11×11 实心圆，
+    // noVNC 客户端收到后显示圆点（服务端光标优先），与 showDotCursor 的 dot 视觉一致。
+    int width = 11, height = 11;
 
-    const char cursor[] = "             "
-                          " xx       xx "
-                          "  xx     xx  "
-                          "   xx   xx   "
-                          "    xx xx    "
-                          "     xxx     "
-                          "    xx xx    "
-                          "   xx   xx   "
-                          "  xx     xx  "
-                          " xx       xx "
-                          "             ";
-    const char mask[] = "xxxx     xxxx"
-                        "xxxx     xxxx"
-                        " xxxx   xxxx "
-                        "  xxxx xxxx  "
-                        "   xxxxxxx   "
-                        "    xxxxx    "
-                        "   xxxxxxx   "
-                        "  xxxx xxxx  "
-                        " xxxx   xxxx "
-                        "xxxx     xxxx"
-                        "xxxx     xxxx";
+    const char cursor[] = "           "
+                          "    xxx    "
+                          "   xxxxx   "
+                          "  xxxxxxx  "
+                          "  xxxxxxx  "
+                          "  xxxxxxx  "
+                          "  xxxxxxx  "
+                          "  xxxxxxx  "
+                          "   xxxxx   "
+                          "    xxx    "
+                          "           ";
+    const char mask[] = "           "
+                        "    xxx    "
+                        "   xxxxx   "
+                        "  xxxxxxx  "
+                        "  xxxxxxx  "
+                        "  xxxxxxx  "
+                        "  xxxxxxx  "
+                        "  xxxxxxx  "
+                        "   xxxxx   "
+                        "    xxx    "
+                        "           ";
 
     rfbCursorPtr c = rfbMakeXCursor(width, height, (char *)cursor, (char *)mask);
     if (!c)
@@ -4511,6 +4517,10 @@ static void setupRfbServerSideCursor(void) {
         setupAlphaCursor(gScreen, 0);
         TVLog(@"Cursor: XCursor + alpha mode=2 enabled");
     } else {
+        // 2026-08-14：关闭必须清除已注册的服务端光标（原实现只打日志，残留 X 持续发送）。
+        // rfbSetCursor(NULL) 置 screen->cursor=NULL + cursorWasChanged，新连接不再发服务端光标
+        // （noVNC 回落显示 dot 圆点）；已建立连接保留旧光标，重连后生效。
+        rfbSetCursor(gScreen, NULL);
         TVLog(@"Cursor: disabled (default; enable with -U on)");
     }
 }

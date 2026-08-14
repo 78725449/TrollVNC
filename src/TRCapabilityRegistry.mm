@@ -407,7 +407,7 @@ static NSDictionary *TRSearchGatewaySync(void) {
 /** 注册 HID 硬件注入能力（Home/电源/音量/亮度/键盘等） */
 - (void)_registerHIDCapabilities {
     STHIDEventGenerator *hid = [STHIDEventGenerator sharedGenerator];
-    [self _registerControl:@"home"      title:@"Home 键"  icon:@"🏠" route:TRCapRouteHID params:@[] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
+    [self _registerControl:@"home"      title:@"Home"      icon:@"🏠" route:TRCapRouteHID params:@[] executor:^NSDictionary *(NSDictionary *p, NSError **e) {
         [hid menuPress]; return @{@"ok":@YES};
     }];
     [self _registerControl:@"power"     title:@"电源"     icon:@"⏻"  route:TRCapRouteHID params:@[] executor:^NSDictionary *(NSDictionary *p, NSError **e) {

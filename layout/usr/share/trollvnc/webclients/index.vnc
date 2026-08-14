@@ -62,6 +62,8 @@
     border: 1px solid #333; background: #222; color: #eee;
     border-radius: 10px; font: 500 13px system-ui, sans-serif;
     padding: 4px 10px;
+    display: flex; align-items: center; justify-content: flex-start;
+    gap: 8px;
   }
   #bar button:active { background: #3a3a3a; }
   @media (min-width: 900px) and (hover: hover) and (pointer: fine) {
@@ -98,14 +100,14 @@
     #fab { display: none; }
   }
 
-  /* ===== 操作面板（点击 FAB 展开） ===== */
+  /* ===== 操作面板（点击 FAB 展开）——白色卡片风格（与网关 opsMenu 对齐） ===== */
   #panel {
     position: fixed;
     display: none;
     flex-direction: column;
     gap: 6px;
-    background: rgba(20, 20, 20, .96);
-    border: 1px solid #333;
+    background: #fff;
+    border: 1px solid rgba(0, 0, 0, .12);
     padding: 8px;
     border-radius: 14px;
     z-index: 11;
@@ -113,18 +115,18 @@
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     min-width: 152px;
-    box-shadow: 0 6px 20px rgba(0, 0, 0, .5);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, .28);
   }
   #panel.show { display: flex; }
   #panel button {
     min-height: 44px; min-width: 140px;
-    border: 1px solid #333; background: #222; color: #eee;
+    border: 1px solid rgba(0, 0, 0, .08); background: #f5f6f8; color: #1c1c1e;
     border-radius: 10px; font: 500 14px system-ui, sans-serif;
     padding: 8px 12px;
     display: flex; align-items: center; justify-content: flex-start;
     gap: 8px;
   }
-  #panel button:active { background: #3a3a3a; }
+  #panel button:active { background: #e9eaee; }
   /* 面板/PC 栏 SF Symbols 图标尺寸（stroke=currentColor 跟随文字颜色） */
   #panel button svg, #bar button svg { width: 20px; height: 20px; flex: 0 0 auto; }
   /* 「隐藏键盘」开关激活态（默认=隐藏被控设备键盘）：红色警示背景 */
@@ -263,7 +265,7 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
   var BAR_KEYS = [
     { op: 'power',    label: '电源',   icon: '⏻',
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v8"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>' },
-    { op: 'home',     label: 'Home 键', icon: '🏠',
+    { op: 'home',     label: 'Home', icon: '🏠',
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V20h14V9.5"/><path d="M9.5 20v-5.5h5V20"/></svg>' },
     { op: 'volup',    label: '音量 +', icon: '🔊',
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h3l5 4V5L7 9H4z"/><path d="M15.5 8.5a4.5 4.5 0 0 1 0 7"/><path d="M19 4v6M16 7h6"/></svg>' },
@@ -275,8 +277,8 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>' },
     { op: 'bridn',    label: '亮度 −', icon: '🌙',
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg>' },
-    { op: 'snapshot', label: 'Home+Power截屏', icon: '📸',
-      svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h2.5L8 5.5h8L17.5 8H20a1.5 1.5 0 0 1 1.5 1.5V18A1.5 1.5 0 0 1 20 19.5H4A1.5 1.5 0 0 1 2.5 18V9.5A1.5 1.5 0 0 1 4 8z"/><circle cx="12" cy="13.5" r="3.5"/></svg>' },
+    { op: 'snapshot', label: '截屏', icon: '✂️',
+      svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 5H5V1"/><path d="M23 19H19V23"/><path d="M5 19h14V5H5z" fill="currentColor" fill-opacity=".15" stroke="currentColor"/></svg>' },
     { op: 'spotlight', label: '搜索',  icon: '🔍',
       svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.5-4.5"/></svg>' },
     { op: 'kb',       label: '键盘',   icon: '⌨️',
@@ -313,8 +315,13 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
         b.appendChild(s2);
         if (k.op === 'disc') { b.style.color = '#ff6b6b'; b.style.borderColor = '#5a2a2a'; }
       } else {
-        // PC 栏：纯文本（与原始 #bar 结构一致）
-        b.textContent = k.label;
+        // PC 栏：图标 + 文字（2026-08-14：与面板一致显示图标，原为纯文本）
+        var s1 = document.createElement('span');
+        s1.innerHTML = k.svg || k.icon;
+        b.appendChild(s1);
+        var s2 = document.createElement('span');
+        s2.textContent = k.label;
+        b.appendChild(s2);
       }
       if (k.op === 'kb') kbdBtns.push(b);   // 键盘键按钮引用（输入源切换高亮用）
       c.appendChild(b);
@@ -691,15 +698,7 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
    */
   function attachKeyPress(btn, tap, hold) {
     var pressTimer = null;
-    var closeTimer = null;   // 面板收起延迟定时器（保留双击窗口）
     var holdFired = false;
-
-    // 延迟收起面板：tap 后留 300ms 双击窗口（第二次点击仍能命中按钮）；
-    // 每次触发先清旧 timer 再设新，避免多次点击堆积多个定时器。
-    function scheduleClose() {
-      if (closeTimer) clearTimeout(closeTimer);
-      closeTimer = setTimeout(function () { closeTimer = null; closePanelIfInside(btn); }, 300);
-    }
 
     btn.addEventListener('pointerdown', function (e) {
       try { e.preventDefault(); } catch (err) {}   // 阻止 iOS 长按系统菜单/文本选择
@@ -712,36 +711,24 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
       if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
       if (holdFired) return;   // 长按已触发，抬起不再补发单击
       tap();
-      scheduleClose();
     });
     btn.addEventListener('pointercancel', function () {
       if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
-      if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }   // 手势取消：取消挂起的面板收起
     });
     // 键盘兜底：Tab+Enter/Space 触发 tap（home/power 改 pointer 事件后原生 click 不触发）
     btn.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
         tap();
-        scheduleClose();
       }
     });
-  }
-
-  /**
-   * 若按钮位于已展开的面板内则收起面板（PC 栏按钮无面板，忽略）。
-   * @param {HTMLElement} btn - 触发操作的按钮
-   * @returns {void}
-   */
-  function closePanelIfInside(btn) {
-    if (panel.classList.contains('show') && panel.contains(btn)) panel.classList.remove('show');
   }
 
   /**
    * 按住连发按键（音量/亮度/静音）的 down/up 分离式按压（2026-08-14 方案 A 升级）：
    * 按下即发送 keysym down、抬起发送 up、按住期间保持 down——iOS 对按住不松的音量/亮度键
    * 自动连发（物理按键行为），替代原 tap 式（down+60ms+up 一次性），对齐网关控制台按压语义。
-   * 触控类按键无双击/长按语义，pointerup 后即收起所在面板。
+   * 触控类按键无双击/长按语义；面板不因点击按钮收起（与网关控制台一致）。
    * @param {HTMLElement} btn  - 目标按钮
    * @param {number} ks       - X11 keysym（如 0x1008ff13=音量+）
    * @param {string} code     - 键码名（如 'AudioVolumeUp'）
@@ -754,7 +741,6 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
     });
     btn.addEventListener('pointerup', function () {
       try { rfb.sendKey(ks, code, false); } catch (e) {}
-      closePanelIfInside(btn);
     });
     btn.addEventListener('pointercancel', function () {
       try { rfb.sendKey(ks, code, false); } catch (e) {}
@@ -776,19 +762,19 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
   // 统一绑定 data-op 按钮（PC 栏 + 手机面板）。
   // home/power 走 attachKeyPress 按压识别（单击/双击/长按），跳过 click 统一绑定避免双触发；
   // 音量/亮度/静音走 attachKeyPressDownUp 按住连发（down/up 分离式），同样跳过 click 防双触发；
-  // 其余按钮保持原 click → dispatchOp + 面板收起逻辑。
+  // 其余按钮保持 click → dispatchOp。面板不因点击按钮自动收起（与网关控制台一致），仅 FAB/点外部收起。
   document.querySelectorAll('[data-op]').forEach(function (btn) {
     var op = btn.getAttribute('data-op');
     if (op === 'home') {
       attachKeyPress(btn,
-        function () { tapKey(0xff50, 'Home'); },                        // 面板收起由 attachKeyPress 延迟处理（双击窗口）
-        function () { tapKeyHold(0xff50, 'Home', 800); closePanelIfInside(btn); });
+        function () { tapKey(0xff50, 'Home'); },
+        function () { tapKeyHold(0xff50, 'Home', 800); });
       return;
     }
     if (op === 'power') {
       attachKeyPress(btn,
-        function () { pointer(2); },                                    // 面板收起由 attachKeyPress 延迟处理（双击窗口）
-        function () { pointerHold(800); closePanelIfInside(btn); });
+        function () { pointer(2); },
+        function () { pointerHold(800); });
       return;
     }
     var dk = DOWNUP_KEYS[op];
@@ -798,7 +784,6 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
     }
     btn.addEventListener('click', function () {
       dispatchOp(op);
-      closePanelIfInside(btn);
     });
   });
 
@@ -876,8 +861,9 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
   }
 
   /**
-   * 计算面板弹出位置（优先 FAB 下方、空间不足则上方；始终避开 FAB 区域）。
-   * 按所选方向的可视空间裁剪面板 max-height，超高内容滚动显示，保证不覆盖悬浮按钮。
+   * 计算面板弹出位置（2026-08-14：改为水平展开）：
+   * 按 FAB 所在半屏决定方向——左半屏向右展开、右半屏向左展开（该侧空间不足自动换侧）；
+   * 水平方向完全避开 FAB 区域，垂直与 FAB 顶部对齐并按视口裁剪 max-height，保证不覆盖悬浮按钮。
    * @returns {{left:number, top:number}} 面板左上角坐标（px）
    */
   function computePanelPos() {
@@ -888,22 +874,22 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
     panel.style.maxHeight = '';
     var pw = panel.offsetWidth || 168;
     var ph = panel.offsetHeight || 360;
-    // 可用空间（避开 FAB）：下方空间 / 上方空间，取较大者且不小于 120px
-    var below = vh - fr.bottom - gap - pad;
-    var above = fr.top - gap - pad;
-    var placeBelow = below >= 120 && below >= above;
-    var maxH = placeBelow ? below : above;
-    if (maxH < 120) maxH = Math.min(ph, 120); // 极小空间下限，避免面板过小
+    var maxH = Math.max(80, Math.min(ph, vh - pad * 2));
     panel.style.maxHeight = maxH + 'px';
     var mh = Math.min(ph, maxH);
-    // 垂直：FAB 下方或上方，约束在视口内
-    var top = placeBelow ? fr.bottom + gap : fr.top - gap - mh;
-    if (top < pad) top = pad;
-    if (top + mh > vh - pad) top = vh - mh - pad;
-    // 水平：与 FAB 左对齐，越界右对齐
-    var left = fr.left;
-    if (left + pw > vw - pad) left = vw - pw - pad;
+    // 水平：FAB 在左半屏 → 右侧展开；右半屏 → 左侧展开；空间不足自动换侧，钳制在视口内
+    var fabCenter = fr.left + fr.width / 2;
+    var spaceRight = vw - (fr.right + gap) - pad;
+    var spaceLeft = fr.left - gap - pad;
+    var left;
+    if (fabCenter < vw / 2) left = spaceRight >= pw ? fr.right + gap : fr.left - gap - pw;
+    else left = spaceLeft >= pw ? fr.left - gap - pw : fr.right + gap;
     if (left < pad) left = pad;
+    if (left + pw > vw - pad) left = vw - pw - pad;
+    // 垂直：与 FAB 顶部对齐，约束在视口内（水平已避开 FAB，垂直重叠不遮按钮）
+    var top = fr.top;
+    if (top + mh > vh - pad) top = vh - mh - pad;
+    if (top < pad) top = pad;
     return { left: left, top: top };
   }
 
@@ -1021,12 +1007,13 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
       var op = btn.getAttribute('data-op');
       var meta = m.CAP_META[op];
       if (!meta) return;
-      // PC 栏按钮：纯文本
-      if (btn.closest('#bar')) {
-        btn.textContent = meta.label;
-      }
       // 面板按钮：保留图标 + 更新文字 span
       if (btn.closest('#panel')) {
+        var spans = btn.querySelectorAll('span');
+        if (spans.length >= 2) spans[1].textContent = meta.label;
+      }
+      // PC 栏按钮：保留图标 + 更新文字 span（2026-08-14：bar 已显示图标，原为纯文本覆盖）
+      if (btn.closest('#bar')) {
         var spans = btn.querySelectorAll('span');
         if (spans.length >= 2) spans[1].textContent = meta.label;
       }
