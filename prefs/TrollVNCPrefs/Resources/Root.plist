@@ -67,9 +67,9 @@
 			<key>key</key>
 			<string>BindHost</string>
 			<key>label</key>
-			<string>Bind Address</string>
+			<string>绑定地址</string>
 			<key>placeholder</key>
-			<string>Leave empty for all interfaces</string>
+			<string>留空则绑定所有网卡</string>
 			<key>noAutoCorrect</key>
 			<true/>
 		</dict>
@@ -81,7 +81,7 @@
 			<key>key</key>
 			<string>BonjourEnabled</string>
 			<key>label</key>
-			<string>Enable Auto-Discovery</string>
+			<string>自动发现（Bonjour）</string>
 			<key>default</key>
 			<true/>
 		</dict>
@@ -101,9 +101,9 @@
 			<key>key</key>
 			<string>FullPassword</string>
 			<key>label</key>
-			<string>Full-access Password</string>
+			<string>完全访问密码</string>
 			<key>placeholder</key>
-			<string>8 characters max.</string>
+			<string>最多 8 位</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -113,9 +113,9 @@
 			<key>key</key>
 			<string>ViewOnlyPassword</string>
 			<key>label</key>
-			<string>View-only Password</string>
+			<string>只读密码</string>
 			<key>placeholder</key>
-			<string>8 characters max.</string>
+			<string>最多 8 位</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -125,7 +125,7 @@
 			<key>key</key>
 			<string>ViewOnly</string>
 			<key>label</key>
-			<string>View-only</string>
+			<string>只读模式</string>
 			<key>default</key>
 			<false/>
 		</dict>
@@ -137,7 +137,7 @@
 			<key>key</key>
 			<string>ClipboardEnabled</string>
 			<key>label</key>
-			<string>Clipboard Sync</string>
+			<string>剪贴板同步</string>
 			<key>default</key>
 			<true/>
 		</dict>
@@ -146,6 +146,8 @@
 			<string>PSGroupCell</string>
 			<key>label</key>
 			<string>画面与性能</string>
+			<key>footerText</key>
+			<string>画面采集与传输：缩放比例、帧率、方向同步与偏移、服务器光标、卡片墙缩略图间隔。</string>
 		</dict>
 		<dict>
 			<key>cellClass</key>
@@ -173,9 +175,9 @@
 			<key>key</key>
 			<string>FrameRateSpec</string>
 			<key>label</key>
-			<string>Frame Rate</string>
+			<string>帧率</string>
 			<key>placeholder</key>
-			<string>e.g. 60 or 30-60 or 30:60:120</string>
+			<string>如 60 或 30-60 或 30:60:120</string>
 			<key>noAutoCorrect</key>
 			<true/>
 		</dict>
@@ -187,7 +189,7 @@
 			<key>key</key>
 			<string>OrientationSync</string>
 			<key>label</key>
-			<string>Sync Interface Orientation</string>
+			<string>同步界面方向</string>
 			<key>default</key>
 			<true/>
 		</dict>
@@ -199,7 +201,7 @@
 			<key>key</key>
 			<string>OrientationPadFix</string>
 			<key>label</key>
-			<string>Orientation Offset</string>
+			<string>方向偏移</string>
 			<key>detail</key>
 			<string>TVNCListItemsController</string>
 			<key>default</key>
@@ -226,7 +228,7 @@
 				<integer>3</integer>
 			</array>
 			<key>staticTextMessage</key>
-			<string>Apply a fixed rotation offset to the captured display. Useful for iPad models with non-standard default orientations.</string>
+			<string>对采集画面施加固定旋转偏移，适用于默认方向非标准的机型。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -236,7 +238,7 @@
 			<key>key</key>
 			<string>ServerCursor</string>
 			<key>label</key>
-			<string>Server-Side Cursor</string>
+			<string>服务器端光标</string>
 			<key>default</key>
 			<false/>
 		</dict>
@@ -264,7 +266,7 @@
 			<key>label</key>
 			<string>进阶（画面）</string>
 			<key>footerText</key>
-			<string>一般无需修改。</string>
+			<string>一般无需修改：窗口延迟(秒)、最大在途帧、拼块尺寸(px)、全屏阈值(%)、最大矩形数、非阻塞交换。</string>
 		</dict>
 		<dict>
 			<key>cellClass</key>
@@ -364,7 +366,7 @@
 			<key>key</key>
 			<string>AsyncSwap</string>
 			<key>label</key>
-			<string>Non-blocking Swap</string>
+			<string>非阻塞交换</string>
 			<key>default</key>
 			<false/>
 		</dict>
@@ -373,6 +375,8 @@
 			<string>PSGroupCell</string>
 			<key>label</key>
 			<string>输入</string>
+			<key>footerText</key>
+			<string>输入映射与滚轮行为：自然滚动、修饰键映射、辅助触控、滚轮步长与调节。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -382,7 +386,7 @@
 			<key>key</key>
 			<string>NaturalScroll</string>
 			<key>label</key>
-			<string>Natural Scroll Direction</string>
+			<string>自然滚动方向</string>
 			<key>default</key>
 			<true/>
 		</dict>
@@ -394,7 +398,7 @@
 			<key>key</key>
 			<string>ModifierMap</string>
 			<key>label</key>
-			<string>Modifier Mapping</string>
+			<string>修饰键映射</string>
 			<key>detail</key>
 			<string>TVNCListItemsController</string>
 			<key>default</key>
@@ -415,7 +419,7 @@
 				<string>altcmd</string>
 			</array>
 			<key>staticTextMessage</key>
-			<string>Standard: Alt as Option, Super as Command. On macOS clients, Alt as Command (altcmd) is recommended.</string>
+			<string>标准：Alt=Option、Super=Command；macOS 客户端建议选择「Alt→Cmd」。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -425,7 +429,7 @@
 			<key>key</key>
 			<string>AutoAssistEnabled</string>
 			<key>label</key>
-			<string>Assistive Touch Auto-Activation</string>
+			<string>辅助触控自动激活</string>
 			<key>default</key>
 			<false/>
 		</dict>
@@ -455,7 +459,7 @@
 			<key>key</key>
 			<string>WheelTuning</string>
 			<key>label</key>
-			<string>Wheel Tuning</string>
+			<string>滚轮调节</string>
 			<key>placeholder</key>
 			<string>step=48,coalesce=0.03,...</string>
 			<key>noAutoCorrect</key>
@@ -467,7 +471,7 @@
 			<key>label</key>
 			<string>高级</string>
 			<key>footerText</key>
-			<string>内网自用一般保持默认。</string>
+			<string>内网自用一般保持默认：保活间隔、HTTP 文档目录、SSL 证书/私钥、生成自签证书、键盘事件日志。</string>
 		</dict>
 		<dict>
 			<key>cellClass</key>
@@ -495,7 +499,7 @@
 			<key>key</key>
 			<string>HttpDir</string>
 			<key>label</key>
-			<string>HTTP Document Root</string>
+			<string>HTTP 文档目录</string>
 			<key>placeholder</key>
 			<string>/absolute/path</string>
 			<key>noAutoCorrect</key>
@@ -509,7 +513,7 @@
 			<key>key</key>
 			<string>SslCertFile</string>
 			<key>label</key>
-			<string>SSL Certificate File</string>
+			<string>SSL 证书文件</string>
 			<key>placeholder</key>
 			<string>/path/to/cert.pem</string>
 			<key>noAutoCorrect</key>
@@ -523,7 +527,7 @@
 			<key>key</key>
 			<string>SslKeyFile</string>
 			<key>label</key>
-			<string>SSL Private Key File</string>
+			<string>SSL 私钥文件</string>
 			<key>placeholder</key>
 			<string>/path/to/key.pem</string>
 			<key>noAutoCorrect</key>
@@ -533,7 +537,7 @@
 			<key>cell</key>
 			<string>PSButtonCell</string>
 			<key>label</key>
-			<string>Generate CA…</string>
+			<string>生成证书…</string>
 			<key>action</key>
 			<string>generateKeys</string>
 		</dict>
@@ -545,7 +549,7 @@
 			<key>key</key>
 			<string>KeyLogging</string>
 			<key>label</key>
-			<string>Log Keyboard Events</string>
+			<string>记录键盘事件</string>
 			<key>default</key>
 			<false/>
 		</dict>
@@ -554,12 +558,14 @@
 			<string>PSGroupCell</string>
 			<key>label</key>
 			<string>关于与诊断</string>
+			<key>footerText</key>
+			<string>诊断与恢复：查看运行日志、恢复默认设置。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSButtonCell</string>
 			<key>label</key>
-			<string>View Logs</string>
+			<string>查看日志</string>
 			<key>action</key>
 			<string>viewLogs</string>
 		</dict>
@@ -567,7 +573,7 @@
 			<key>cell</key>
 			<string>PSButtonCell</string>
 			<key>label</key>
-			<string>Reset to Defaults</string>
+			<string>重置默认设置</string>
 			<key>action</key>
 			<string>resetDefaults</string>
 			<key>isDestructive</key>
