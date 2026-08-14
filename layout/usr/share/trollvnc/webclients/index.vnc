@@ -16,14 +16,19 @@
 <style>
   /* 安全区域变量：JS 通过 getComputedStyle 读取，用于 FAB 拖动边界约束 */
   :root {
+    /* 2026-08-15：页面背景跟随系统主题——画面边界随系统明暗变化（浅色/深色） */
+    --bg: #000;
     --safe-top: env(safe-area-inset-top);
     --safe-right: env(safe-area-inset-right);
     --safe-bottom: env(safe-area-inset-bottom);
     --safe-left: env(safe-area-inset-left);
   }
-  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #eef1f6; }
+  }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
   body { display: flex; flex-direction: column; }
-  #screen { flex: 1; position: relative; min-height: 0; background: #000; }
+  #screen { flex: 1; position: relative; min-height: 0; background: var(--bg); }
   /* 不设置 #screen canvas 定位规则：交给 noVNC 内部 flex + margin:auto 自动居中（黑边留白） */
   /* 中央状态浮层：连接中加载动画 / 已连接等待 / 已断开 / 连接失败（原左上角提示移至画布中心） */
   #status {
