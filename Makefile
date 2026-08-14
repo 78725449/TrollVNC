@@ -39,6 +39,9 @@ endif
 trollvncserver_CCFLAGS += -std=c++20
 
 trollvncserver_CFLAGS += -DPACKAGE_VERSION=\"$(PACKAGE_VERSION)\"
+# libvncserver 预编译库启用 LIBZ（rfbconfig.h 声明宏），trollvncserver.mm 需同宏才能访问
+# ExtendedClipboard 字段（setXCutTextUTF8/enableExtendedClipboard 在 #ifdef LIBVNCSERVER_HAVE_LIBZ 内）
+trollvncserver_CFLAGS += -DLIBVNCSERVER_HAVE_LIBZ
 ifeq ($(THEOS_PACKAGE_SCHEME),)
 trollvncserver_CFLAGS += -DTHEOS_PACKAGE_SCHEME=\"legacy\"
 else
