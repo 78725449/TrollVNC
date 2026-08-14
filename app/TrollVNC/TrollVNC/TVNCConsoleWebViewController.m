@@ -114,6 +114,12 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
     }
 
     // 步骤 4：约束（关键）
+    // 2026-08-15 容器保持全屏（webView 顶到状态栏，与 5801 直连页一致的触屏网页全屏适配，
+    // 本意：不使用 IPA 原生顶栏，整个控制页由 H5 网页接管）。
+    // 顶部安全区由 H5 内 env(safe-area-inset-top) 自行避让（viewport-fit=cover 下有效）；
+    // WKWebView 首帧 safe-area inset 未就绪（=0）随后注入真实值会造成 header 高度跳变，
+    // 该"尺寸信号"由前端聚焦画布绝对居中（.focus-stage canvas translate(-50%,-50%)）
+    // 免疫——画布位置与容器测量时序解耦，尺寸信号不再影响画面位置（见 web/style.css）。
     @try {
         [NSLayoutConstraint activateConstraints:@[
             [self.webView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
@@ -191,12 +197,18 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
 }
 
 /**
- * 状态栏文字样式（2026-08-15）：控制 Tab 隐藏顶部导航栏后 webView 顶到状态栏，
- * H5 为深色背景（#0f1420），状态栏文字须用浅色否则不可读。
- * UINavigationController/UITabBarController 会沿 VC 链转发本方法（取 topViewController）。
- * @return 浅色状态栏文字
+ * 状态栏文字样式（2026-08-15 规范化改造）：webView 全屏顶到状态栏（无原生顶栏），
+ * 状态栏区域由 H5 背景色接管（--bg 跟随系统主题：深色模式深底/浅色模式浅底），
+ * 文字颜色须与 H5 背景同主题匹配——深色模式浅色文字，浅色模式深色文字。
+ * 通过 traitCollection.userInterfaceStyle 动态返回，系统主题切换自动生效。
+ * @return 状态栏文字样式（深色模式浅色 / 浅色模式深色）
  */
 - (UIStatusBarStyle)preferredStatusBarStyle {
+    if (@available(iOS 13.0, *)) {
+        return self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark
+            ? UIStatusBarStyleLightContent
+            : UIStatusBarStyleDarkContent;
+    }
     return UIStatusBarStyleLightContent;
 }
 

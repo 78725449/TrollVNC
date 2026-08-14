@@ -12,7 +12,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <link rel="icon" href="data:," />
-<title>SuperPhone</title>
+<title>控制台</title>
 <style>
   /* 安全区域变量：JS 通过 getComputedStyle 读取，用于 FAB 拖动边界约束 */
   :root {
