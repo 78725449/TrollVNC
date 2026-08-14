@@ -146,6 +146,7 @@ enum {
     kIOHIDEventFieldKeyboardUsagePage = IOHIDEventFieldBase(kIOHIDEventTypeKeyboard),
     kIOHIDEventFieldKeyboardUsage,
     kIOHIDEventFieldKeyboardDown,
+    kIOHIDEventFieldKeyboardAttached,   // 外接硬件键盘连接标志（2026-08-14：显式隐藏软键盘 hack）
     kIOHIDEventFieldKeyboardRepeat
 };
 

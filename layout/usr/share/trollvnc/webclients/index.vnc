@@ -129,9 +129,13 @@
   #panel button:active { background: #e9eaee; }
   /* 面板/PC 栏 SF Symbols 图标尺寸（stroke=currentColor 跟随文字颜色） */
   #panel button svg, #bar button svg { width: 20px; height: 20px; flex: 0 0 auto; }
-  /* 「隐藏键盘」开关激活态（默认=隐藏被控设备键盘）：红色警示背景 */
-  #panel button.kbd-hidden, #bar button.kbd-hidden {
-    background: #ff3b30; color: #fff; border-color: #ff3b30;
+  /* 「键盘」输入源两态（2026-08-14 切换：控制端 ⇄ 被控设备键盘）：
+     蓝色=控制端输入源（默认）、绿色=被控设备键盘；无键盘=控制端未聚焦（系统天然状态，不占态） */
+  #panel button.kbd-control, #bar button.kbd-control {
+    background: #2196f3; color: #fff; border-color: #2196f3;
+  }
+  #panel button.kbd-device, #bar button.kbd-device {
+    background: #4caf50; color: #fff; border-color: #4caf50;
   }
   @media (min-width: 900px) and (hover: hover) and (pointer: fine) {
     #panel { display: none !important; }
@@ -236,10 +240,15 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
   var port = $PORT;
   var wsProto = location.protocol === 'https:' ? 'wss://' : 'ws://';
   var url = wsProto + host + ':' + port + '/websockify';
-  // 键盘按钮（2026-08-14 统一两端：「隐藏键盘」开关，语义针对被控设备）
-  // 默认=隐藏键盘（红色背景，被控设备键盘不显示，控制端输入可用）；点击=显示（恢复正常背景，发 XF86Keyboard）；再点=隐藏（再发一次收起）
-  var kbdHidden = true;        // true=隐藏被控设备键盘（默认，红色） | false=显示被控设备键盘
-  var kbdBtns = [];            // 键盘键按钮引用（PC 栏 + 面板，状态切换时更新红/正常背景）
+  // 键盘按钮（2026-08-14 输入源切换：控制端 ⇄ 被控设备键盘）
+  // 「键盘」键 = 输入源切换（调起控制端键盘则隐藏被控设备键盘，反之亦然，严格互斥）。
+  // 键盘只由「焦点」调起（系统本质），不存在独立的"无键盘"状态——控制端未聚焦即无键盘：
+  //   控制端（默认，蓝）→ 未聚焦点击=聚焦 kbInput 弹控制端软键盘；已聚焦点击=收起软键盘 + XF86Keyboard 弹被控设备键盘；
+  //   被控设备键盘（绿）→ 配对收起被控键盘（deviceKbdShown 仅对控制端发起过的显示做配对）+ 聚焦弹控制端软键盘。
+  var kbdHidden = true;        // true=控制端输入态（被控设备键盘隐藏）| false=被控设备键盘态
+  var kbdSoft = false;         // 控制端软键盘当前是否显示（kbdHidden=true 且已聚焦 kbInput）
+  var deviceKbdShown = false;  // 控制端是否已发出「显示被控键盘」toggle（配对收起用，防误弹）
+  var kbdBtns = [];            // 键盘键按钮引用（PC 栏 + 面板，状态切换时更新蓝/绿背景）
   // 触屏能力检测：仅用于"自动弹控制端软键盘"（PC 无系统软键盘）；按钮开关行为本身无判定
   var isTouch = 'ontouchstart' in window || (navigator.maxTouchPoints || 0) > 0;
 
@@ -438,9 +447,9 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
     isConnected = true;
     startSigPoll();
     setStatus('已连接，等待画面…', true);
-    // 键盘默认隐藏被控设备键盘（红色背景；触屏自动弹控制端软键盘作输入源）
-    kbdHidden = true;
-    if (isTouch) focusKbInput();
+    // 键盘默认控制端输入态（红色背景；触屏自动弹控制端软键盘作输入源）
+    kbdHidden = true; kbdSoft = false; deviceKbdShown = false;
+    if (isTouch) { focusKbInput(); kbdSoft = true; }
     updateKbdBtns();
     // 检测是否真的收到画面帧（区分"连上但黑帧"与"连不上"）
     var gotFrame = false;
@@ -466,8 +475,8 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
     isConnected = false;
     stopSigPoll();
     setFabSignal(null, '设备未连接（拖动调整位置，点击展开操作）');
-    // 断开：键盘复位为默认隐藏态（清除红色背景）
-    kbdHidden = true; updateKbdBtns();
+    // 断开：键盘复位为默认无键盘态（清除红色背景）
+    kbdHidden = true; kbdSoft = false; deviceKbdShown = false; updateKbdBtns();
     var msg = (e && e.detail && e.detail.message) ? '：' + e.detail.message : '';
     setStatus('已断开' + msg + '（目标 ' + url + '）', false);
   });
@@ -475,7 +484,7 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
     isConnected = false;
     stopSigPoll();
     setFabSignal(null, '连接失败（拖动调整位置，点击展开操作）');
-    kbdHidden = true; updateKbdBtns();
+    kbdHidden = true; kbdSoft = false; deviceKbdShown = false; updateKbdBtns();
     setStatus('连接失败 ' + url, false);
   });
   rfb.addEventListener('credentialsrequired', function () {
@@ -561,7 +570,7 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
         // 截屏（Home+Power）：设备端仅 down 时执行 snapshotPress，tapKey 发 down+up 一次
         tapKey(0x1008ff80, 'CustomSnapshot'); break;
       case 'kb':
-        // 「隐藏键盘」开关（2026-08-14 统一两端）：默认隐藏被控设备键盘（红色），点击显示（XF86Keyboard），再点隐藏
+        // 「键盘」输入源切换（2026-08-14 三态：无键盘 → 控制端软键盘 → 被控设备键盘，详见 toggleKbd）
         toggleKbd();
         break;
       case 'clip':
@@ -582,18 +591,20 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
   // ===== 键盘按钮（2026-08-14 统一两端：「隐藏键盘」开关，语义针对被控设备） =====
 
   /**
-   * 更新键盘键按钮的背景与提示（PC 栏 + 面板同步）：
-   * 隐藏键盘（默认）= 红色警示背景；显示键盘 = 恢复正常背景
+   * 更新键盘键按钮的背景与提示（PC 栏 + 面板同步），按当前输入源两态：
+   * 控制端输入源（默认）= 蓝色（kbd-control）；被控设备键盘 = 绿色（kbd-device）。
+   * 无键盘 = 控制端未聚焦（系统天然状态），不单独占态。
    * @returns {void}
    */
   function updateKbdBtns() {
     kbdBtns.forEach(function (b) {
+      b.classList.remove('kbd-hidden', 'kbd-control', 'kbd-device');
       if (kbdHidden) {
-        b.classList.add('kbd-hidden');
-        b.title = '隐藏键盘（被控设备键盘已隐藏，点击显示）';
+        b.classList.add('kbd-control');
+        b.title = kbdSoft ? '控制端键盘（点击切换到被控设备键盘）' : '控制端键盘（点击弹出键盘输入）';
       } else {
-        b.classList.remove('kbd-hidden');
-        b.title = '键盘已显示（被控设备键盘已显示，点击隐藏）';
+        b.classList.add('kbd-device');
+        b.title = '被控设备键盘（点击切回控制端键盘）';
       }
     });
   }
@@ -612,31 +623,52 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
   }
 
   /**
-   * 收起控制端软键盘
+   * 收起控制端软键盘（blur 触发系统收起）。
+   * iOS Safari 对隐藏 input 直接 blur() 常不收起系统软键盘（焦点行为差异、收起异步），
+   * 是"控制端软键盘残留 + 被控键盘弹出 = 两个键盘同时显示"的根因之一。
+   * 组合手段确保收起：activeElement.blur + readonly 切换（iOS 经典 trick，延时恢复 readonly）。
    * @returns {void}
    */
   function blurKbInput() {
     var kbi = document.getElementById('kbInput');
-    if (kbi) { try { kbi.blur(); } catch (e) {} }
+    if (!kbi) return;
+    try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (e) {}
+    try {
+      kbi.setAttribute('readonly', 'readonly');
+      kbi.blur();
+    } catch (e) {}
+    setTimeout(function () { try { kbi.removeAttribute('readonly'); } catch (e) {} }, 120);
   }
 
   /**
-   * 键盘键点击：「隐藏键盘」开关（语义针对被控设备）。
-   * 隐藏（默认，红）→ 显示：发 XF86Keyboard 弹出被控设备键盘，收起控制端软键盘，背景恢复正常；
-   * 显示 → 隐藏：再发 XF86Keyboard 收起被控设备键盘（设备端 toggleOnScreenKeyboard 切换），触屏重弹控制端软键盘，背景恢复红色。
+   * 键盘键点击 = 输入源切换（2026-08-14 两态：控制端 ⇄ 被控设备键盘）。
+   * 严格互斥：显示控制端键盘则收起被控键盘；显示被控键盘则收起控制端软键盘。
+   * 键盘由焦点调起（系统本质），控制端态未聚焦时点击即聚焦弹软键盘。
+   * - 控制端（未聚焦）→ 聚焦 kbInput 弹控制端软键盘（按键经 RFB 直发被控设备）；
+   * - 控制端（已聚焦）→ 被控：可靠收起控制端软键盘（iOS readonly+blur，防双键盘）+ XF86Keyboard 弹被控设备键盘；
+   * - 被控 → 控制端：配对收起被控键盘（deviceKbdShown 仅对控制端发起过的显示做配对，防误弹）+ 聚焦弹控制端软键盘。
+   * 已知限制：iOS 系统键盘无法查询/显式设置状态（ALKeyboardLayout 仅 toggle），
+   * 进入设备前设备端已弹着键盘时首次切换可能状态反转，再点一次即恢复（toggle 奇偶性）。
    * @returns {void}
    */
   function toggleKbd() {
     if (kbdHidden) {
-      // 隐藏 → 显示被控设备键盘
-      kbdHidden = false;
-      blurKbInput();
-      tapKey(0x1008ff2e, 'XF86Keyboard');
+      if (!kbdSoft) {
+        // 无键盘 → 控制端软键盘
+        kbdSoft = true;
+        focusKbInput();
+      } else {
+        // 控制端软键盘 → 被控设备键盘
+        kbdHidden = false; kbdSoft = false;
+        blurKbInput();
+        tapKey(0x1008ff2e, 'XF86Keyboard');
+        deviceKbdShown = true;
+      }
     } else {
-      // 显示 → 隐藏被控设备键盘（再发一次 XF86Keyboard 收起）
-      kbdHidden = true;
-      tapKey(0x1008ff2e, 'XF86Keyboard');
-      if (isTouch) focusKbInput();
+      // 被控设备键盘 → 控制端软键盘
+      kbdHidden = true; kbdSoft = true;
+      if (deviceKbdShown) { tapKey(0x1008ff2e, 'XF86Keyboard'); deviceKbdShown = false; }
+      focusKbInput();
     }
     updateKbdBtns();
   }
@@ -652,9 +684,12 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
       try { rfb.sendKey(keysym, code, down); } catch (e) {}
     };
     touchKb.grab();
-    // 控制端软键盘被系统收起（点击别处/滚动）：隐藏键盘（默认）无需额外复位；显示态兜底收起
+    // 控制端软键盘被系统收起（点击别处/滚动/切后台）：复位 kbdSoft 与按钮状态；
+    // 被控键盘显示态软键盘不应保持（兜底收起）
     kbInput.addEventListener('blur', function () {
-      if (!kbdHidden) blurKbInput();   // 被控键盘显示态软键盘不应保持（兜底）
+      kbdSoft = false;
+      updateKbdBtns();
+      if (!kbdHidden) blurKbInput();
     });
     // 断开/失败：释放按键（Keyboard 内部 window blur 已兜底，这里显式清理避免残留）
     rfb.addEventListener('disconnect', function () { try { touchKb.ungrab(); } catch (e) {} });

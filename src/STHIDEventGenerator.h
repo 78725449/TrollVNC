@@ -235,6 +235,11 @@ __used NS_INLINE void STAccurateSleep(NSTimeInterval seconds) {
 // sync 0.05
 - (void)toggleOnScreenKeyboard;
 
+// 外接硬件键盘连接/断开（2026-08-14 HID attach hack）：iOS 检测到外接键盘连接时
+// 若系统设置「连接实体键盘时自动隐藏软键盘」（默认开）会强制隐藏当前软键盘——
+// iOS 上唯一"显式隐藏软键盘"（非 toggle）手段，供控制端键盘输入源互斥使用。
+- (void)setHardwareKeyboardAttached:(BOOL)attached;
+
 // sync 0.05
 - (void)toggleSpotlight;
 
