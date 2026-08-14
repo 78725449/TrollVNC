@@ -38,12 +38,15 @@
     self.tabBar.backgroundColor = [UIColor systemBackgroundColor];
 
     // Tab 1 连接：TVNCConnectViewController（首页，保持不变）
+    // 2026-08-15：同步隐藏顶部导航栏（页面顶部已按 safeAreaLayoutGuide 布局，
+    // 无 push 依赖，隐藏后自动顶到状态栏下方；底部 TabBar 保留用于切换）
     TVNCConnectViewController *connect = [[TVNCConnectViewController alloc] init];
     UINavigationController *connectNav = [[UINavigationController alloc] initWithRootViewController:connect];
     connectNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"连接"
                                                           image:[UIImage systemImageNamed:@"wifi"]
                                                   selectedImage:[UIImage systemImageNamed:@"wifi"]
                                                             ];
+    [connectNav setNavigationBarHidden:YES animated:NO];
     [self styleNav:connectNav tint:tint];
 
     // Tab 2 控制：TVNCConsoleWebViewController（Web 容器化 Phase 13：WKWebView 加载网关 H5 手机控制台，
@@ -60,12 +63,16 @@
     [self styleNav:controllerNav tint:tint];
 
     // Tab 3 设置：TVNCRootListController（配置，降为次要入口，PSRootController 包装）
+    // 2026-08-15：根页隐藏顶部导航栏（顶部干净）；delegate = 设置页自身——
+    // 子菜单 push 进入时临时显示导航栏（返回按钮），退回根页再隐藏
     TVNCRootListController *settings = [[TVNCRootListController alloc] init];
     UINavigationController *settingsNav = [[UINavigationController alloc] initWithRootViewController:settings];
     settingsNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"设置"
                                                            image:[UIImage systemImageNamed:@"gearshape"]
                                                    selectedImage:[UIImage systemImageNamed:@"gearshape.fill"]
                                                              ];
+    [settingsNav setNavigationBarHidden:YES animated:NO];
+    settingsNav.delegate = settings;
 
     self.viewControllers = @[ connectNav, controllerNav, settingsNav ];
 }

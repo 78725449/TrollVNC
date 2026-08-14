@@ -19,7 +19,13 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface TVNCRootListController : PSListController
+/**
+ * 设置根页（Tab 3）。
+ * 2026-08-15：根页隐藏顶部导航栏（顶部干净）；作为 settingsNav 的
+ * UINavigationControllerDelegate，子菜单 push 进入时临时显示导航栏（承载返回按钮），
+ * 退回根页再次隐藏。底部 TabBar 保留。
+ */
+@interface TVNCRootListController : PSListController <UINavigationControllerDelegate>
 
 @end
 

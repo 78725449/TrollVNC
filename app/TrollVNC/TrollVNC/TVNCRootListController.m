@@ -191,6 +191,23 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     [super viewWillAppear:animated];
 }
 
+#pragma mark - UINavigationControllerDelegate（2026-08-15：根页隐藏导航栏，子页临时显示）
+
+/**
+ * 导航控制器即将显示某个 VC 时按层级切换导航栏显隐：
+ * 根页（self）隐藏（顶部干净、顶到状态栏）；push 进入的子设置页显示（承载返回按钮），
+ * 退回根页再次隐藏。仅影响「设置」Tab 的导航控制器。
+ * @param navigationController 设置页所在导航控制器
+ * @param viewController 即将显示的控制器
+ * @param animated 是否动画
+ */
+- (void)navigationController:(UINavigationController *)navigationController
+      willShowViewController:(UIViewController *)viewController
+                    animated:(BOOL)animated {
+    BOOL isRoot = (viewController == self);
+    [navigationController setNavigationBarHidden:!isRoot animated:animated];
+}
+
 #pragma mark - Actions
 
 // 覆写配置写入：restart 级 key 变更后防抖弹重启确认框（替代原 Apply 按钮）
