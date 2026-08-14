@@ -165,10 +165,22 @@ export default class GestureHandler {
 
         switch (this._tracked.length) {
             case 1:
-                this._startLongpressTimeout();
+                // [farm patch 2026-08-14] 触控直通：单指按下即发送左键按下，不等待 1s 长按识别。
+                // noVNC 原实现按下后最长等 1s 才传达（长按路径）、点击要到松手才合成按下+抬起
+                // （按住时长≈0）、拖动要移动超阈值后才按下（起点偏移）——按下丢失 + 延迟 + 阈值定死，
+                // 与 PC 鼠标「按下即传、按多久传多久、长按由被控设备识别」不一致。
+                // 直通后：长按=按住不动（被控设备识别）、拖动=按下+移动、点击=快速按下+抬起，
+                // 触控能力与电脑端鼠标完全一致。
+                this._state = GH_DRAG;
+                this._pushEvent('gesturestart');
                 break;
 
             case 2:
+                // [farm patch 2026-08-14] 第二指落下：第一指已直通按下（DRAG 状态）则先发送释放，
+                // 避免双指滚动（twodrag）/缩放（pinch）期间左键残留按住；随后进入双指手势判定。
+                if (this._state === GH_DRAG) {
+                    this._pushEvent('gestureend');
+                }
                 this._state &= ~(GH_ONETAP | GH_DRAG | GH_LONGPRESS);
                 this._stopLongpressTimeout();
                 break;
