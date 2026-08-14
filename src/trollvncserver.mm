@@ -4144,32 +4144,39 @@ static void sendClipboardToClients(NSString *_Nullable text) {
 #pragma mark - Server-Side Cursor
 
 NS_INLINE void setupXCursor(rfbScreenInfoPtr screen) {
-    // 2026-08-14：X 形改为圆点（用户要求"要圆点不要 x"）。服务端光标改为 11×11 实心圆，
-    // noVNC 客户端收到后显示圆点（服务端光标优先），与 showDotCursor 的 dot 视觉一致。
-    int width = 11, height = 11;
+    // 2026-08-14：苹果风格圆点光标（白色填充 + 黑色描边，透明外圈）。
+    // 与前端 noVNC dot 光标（server/index.js 7×7 白点黑边）视觉一致，
+    // 深色/浅色画面下均清晰可见；13×13 较 7×7 在真机触控场景更易辨识。
+    int width = 13, height = 13;
 
-    const char cursor[] = "           "
-                          "    xxx    "
-                          "   xxxxx   "
-                          "  xxxxxxx  "
-                          "  xxxxxxx  "
-                          "  xxxxxxx  "
-                          "  xxxxxxx  "
-                          "  xxxxxxx  "
-                          "   xxxxx   "
-                          "    xxx    "
-                          "           ";
-    const char mask[] = "           "
-                        "    xxx    "
-                        "   xxxxx   "
-                        "  xxxxxxx  "
-                        "  xxxxxxx  "
-                        "  xxxxxxx  "
-                        "  xxxxxxx  "
-                        "  xxxxxxx  "
-                        "   xxxxx   "
-                        "    xxx    "
-                        "           ";
+    // mask：半径 6.5 的圆（不透明区域）
+    const char mask[] = "    xxxxx    "
+                        "  xxxxxxxxx  "
+                        " xxxxxxxxxxx "
+                        " xxxxxxxxxxx "
+                        "xxxxxxxxxxxxx"
+                        "xxxxxxxxxxxxx"
+                        "xxxxxxxxxxxxx"
+                        "xxxxxxxxxxxxx"
+                        "xxxxxxxxxxxxx"
+                        " xxxxxxxxxxx "
+                        " xxxxxxxxxxx "
+                        "  xxxxxxxxx  "
+                        "    xxxxx    ";
+    // cursor：'x'=黑色像素（描边环），' '=白色像素（填充），mask 之外透明
+    const char cursor[] = "    xxxxx    "
+                          "  xxxxxxxxx  "
+                          " xxx     xxx "
+                          " xx       xx "
+                          "xx         xx"
+                          "xx         xx"
+                          "xx         xx"
+                          "xx         xx"
+                          "xx         xx"
+                          " xx       xx "
+                          " xxx     xxx "
+                          "  xxxxxxxxx  "
+                          "    xxxxx    ";
 
     rfbCursorPtr c = rfbMakeXCursor(width, height, (char *)cursor, (char *)mask);
     if (!c)
