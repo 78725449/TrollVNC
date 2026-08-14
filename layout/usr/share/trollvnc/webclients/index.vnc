@@ -251,7 +251,34 @@ import Keyboard from './novnc/core/input/keyboard.js';   // 软键盘 keydown/ke
   var rfb = new RFB(screen, url, {});
   rfb.scaleViewport = true;
   rfb.resizeSession = false;
-  rfb.showDotCursor = true;
+  // 光标策略（2026-08-14 与网关前端 app.js 对齐）：
+  // - 手机触控版（isTouch）：无常驻光标——showDotCursor=false，服务端光标开启时触屏点击/移动显示
+  //   服务端圆点、空闲 1.5s 自动隐藏；服务端光标关闭时无光标
+  // - PC 版：保持 noVNC 默认 showDotCursor=true（服务端光标优先，dot 白点黑边兜底）
+  if (isTouch) {
+    rfb.showDotCursor = false;
+    var cursorTimer = null;
+    var CURSOR_IDLE_MS = 1500;
+    var cursorHide = function () {
+      if (rfb._cursor && rfb._cursor._canvas) rfb._cursor._hideCursor();
+    };
+    var cursorShow = function () {
+      if (rfb._cursor) rfb._cursor._refreshCursor();
+    };
+    var cursorPoke = function () {
+      cursorShow();
+      clearTimeout(cursorTimer);
+      cursorTimer = setTimeout(cursorHide, CURSOR_IDLE_MS);
+    };
+    var touchOpt = { capture: true, passive: true };
+    screen.addEventListener('touchstart', cursorPoke, touchOpt);
+    screen.addEventListener('touchmove', cursorPoke, touchOpt);
+    screen.addEventListener('mousemove', cursorPoke, touchOpt);
+    screen.addEventListener('mousedown', cursorPoke, touchOpt);
+    rfb.addEventListener('disconnect', function () { clearTimeout(cursorTimer); });
+  } else {
+    rfb.showDotCursor = true;
+  }
 
   // ===== 按键常量 + 统一渲染（07 §4.4：一份数据，PC #bar 与手机 #panel 共用） =====
 
