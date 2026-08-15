@@ -270,6 +270,19 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
             // 捕获后仅记录（桥调用失败由 JS 侧降级 writeText），不让 App 闪退。
             NSLog(@"[Console] writeClipboard exception: %@ %@", e.name, e.reason);
         }
+    } else if ([type isEqualToString:@"setTabBarHidden"]) {
+        // 2026-08-15：控制页聚焦时隐藏/恢复底部 TabBar——点开卡片后画面占满整个屏幕
+        //（与 web/app.js enterFocus/exitFocus 配对）。tabBar.hidden 在现代 iOS（11+）下
+        // 会触发 tabBarController 重新布局，child view（含 webView）自动扩展到底部。
+        @try {
+            NSNumber *hidden = message.body[@"hidden"];
+            if (hidden && self.tabBarController) {
+                self.tabBarController.tabBar.hidden = hidden.boolValue;
+                NSLog(@"[Console] tabBar hidden=%@", hidden.boolValue ? @"YES" : @"NO");
+            }
+        } @catch (NSException *e) {
+            NSLog(@"[Console] setTabBarHidden exception: %@ %@", e.name, e.reason);
+        }
     }
 }
 
