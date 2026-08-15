@@ -496,37 +496,13 @@ export default class RFB extends EventTargetMixin {
     clipboardPasteFrom(text) {
         if (this._rfbConnectionState !== 'connected' || this._viewOnly) { return; }
 
-        if (this._clipboardServerCapabilitiesFormats[extendedClipboardFormatText] &&
-            this._clipboardServerCapabilitiesActions[extendedClipboardActionNotify]) {
-
-            this._clipboardText = text;
-            RFB.messages.extendedClipboardNotify(this._sock, [extendedClipboardFormatText]);
-        } else {
-            let length, i;
-            let data;
-
-            length = 0;
-            // eslint-disable-next-line no-unused-vars
-            for (let codePoint of text) {
-                length++;
-            }
-
-            data = new Uint8Array(length);
-
-            i = 0;
-            for (let codePoint of text) {
-                let code = codePoint.codePointAt(0);
-
-                /* Only ISO 8859-1 is supported */
-                if (code > 0xff) {
-                    code = 0x3f; // '?'
-                }
-
-                data[i++] = code;
-            }
-
-            RFB.messages.clientCutText(this._sock, data);
-        }
+        // 2026-08-15 修复"控制端复制 → 被控端粘贴不成功"：设备端 libvncserver 0.9.15
+        // （rfbProcessClientCutText）只处理扩展剪贴板的 Caps/Request/Peek/Provide 四种动作，
+        // Notify 被静默丢弃 → 服务器从不回 Request → 文本永远到不了设备。
+        // 改为直接发送无请求的 Provide（UTF-8 + deflate），服务端 Provide 分支解压后调用
+        // setXCutTextUTF8 → 设备剪贴板立即更新（载荷尾部 \0 由设备端 setXCutTextUTF8 剔除）。
+        this._clipboardText = text;
+        RFB.messages.extendedClipboardProvide(this._sock, [extendedClipboardFormatText], [text]);
     }
 
     getImageData() {

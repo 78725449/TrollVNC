@@ -4064,6 +4064,14 @@ static void setXCutTextUTF8(char *str, int len, rfbClientPtr cl) {
 
     TVLog(@"Clipboard: received client cut text (UTF-8) len=%d", len);
 
+    // 2026-08-15：noVNC 的 extendedClipboardProvide 载荷为 [sizeBE(4)] + utf8 + "\0"，
+    // size 包含尾部 NUL；libvncserver 按 size 原样回调 setXCutTextUTF8。剔除尾部 \0，
+    // 避免设备剪贴板残留空字节（与设备→控制端 sendExtendedClipboardProvideToClients 的
+    // 无 \0 载荷保持对称）。
+    if (len > 0 && str[len - 1] == '\0') {
+        len--;
+    }
+
     NSData *data = [NSData dataWithBytes:str length:(NSUInteger)len];
     // 2026-08-14 移除 Latin-1 降级：Extended Clipboard 的 Provide 数据保证 UTF-8，
     // 解码失败直接丢弃并记录（不做静默降级为 Latin-1）

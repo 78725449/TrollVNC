@@ -45,8 +45,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// Set clipboard string (UTF-8). Internally tries to avoid self-triggered callback loops.
 - (void)setString:(NSString *)text;
 
-/// Set clipboard string originating from a remote VNC client. This avoids echo by
-/// skipping the immediate local callback and the subsequent system notification once.
+/// Set clipboard string originating from a remote VNC client. Avoids echo by
+/// changeCount-anchored + text-comparison detection of the self-induced system
+/// notification (no count-based suppression, so a real user copy is never swallowed).
 - (void)setStringFromRemote:(NSString *)text;
 
 /// Clipboard change callback (executed on the main thread; text is nil when no plain text).
