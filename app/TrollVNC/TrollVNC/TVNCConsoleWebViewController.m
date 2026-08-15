@@ -43,7 +43,7 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
 // 剪贴板监听（控制端 → 被控端自动同步，2026-08-14）
 @property(nonatomic, assign) int clipboardNotifyToken;           // Darwin 剪贴板通知 token（0=未注册）
 @property(nonatomic, assign) NSInteger clipboardLastCount;       // 上次观察到的 UIPasteboard changeCount
-@property(nonatomic, copy, nullable) NSString *clipboardLastPushed; // 上次桥出文本（防 RFB 写入回显循环）
+@property(nonatomic, assign) NSInteger clipboardEchoCount;       // 预期回显的 changeCount（被控端同步写入触发的一次，命中即吞；-1=无待吞）
 
 /**
  * 构造 H5 控制台 URL（读 NSUserDefaults 网关配置 + 本机 DeviceUUID）。
@@ -261,8 +261,8 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
             NSString *text = message.body[@"text"];
             if (![text isKindOfClass:[NSString class]] || !text.length) return;
             UIPasteboard *pb = [UIPasteboard generalPasteboard];
-            self.clipboardLastCount = pb.changeCount;   // 写入前基线：写入触发的 Darwin 通知视为回显
-            self.clipboardLastPushed = text;            // 回显抑制：同文本不再推回 Web（防 RFB 循环）
+            self.clipboardLastCount = pb.changeCount;     // 写入前基线：写入触发的 Darwin 通知会推进 count
+            self.clipboardEchoCount = pb.changeCount + 1; // changeCount 锚点：仅吞本次写入触发的那一次通知（防回环）
             pb.string = text;
             NSLog(@"[Console] native writeClipboard (%lu chars)", (unsigned long)text.length);
         } @catch (NSException *e) {
@@ -463,7 +463,7 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
 - (void)startClipboardMonitoring {
     if (self.clipboardNotifyToken != 0) return;
     self.clipboardLastCount = [UIPasteboard generalPasteboard].changeCount;
-    self.clipboardLastPushed = nil;
+    self.clipboardEchoCount = -1;   // 无待吞回显
     __weak __typeof(self) weakSelf = self;
     int token = 0;
     uint32_t status = notify_register_dispatch(kConsolePasteboardDarwinNotification.UTF8String, &token,
@@ -506,10 +506,11 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
 }
 
 /**
- * 剪贴板变化处理：changeCount 去重 → 读文本 → 回显抑制 → 桥出到 Web 层。
- * 回显抑制关键：控制端收到被控端剪贴板（RFB 'clipboard' 事件 → JS writeText 写本机剪贴板）
- * 同样触发 Darwin 通知；若推送同文本回 Web 会触发 clipboardPasteFrom 回发 → 死循环。
- * 用 clipboardLastPushed 记录上次桥出文本，同文本直接跳过（配合 Web 层 farmLastClipText 双保险）。
+ * 剪贴板变化处理：changeCount 去重 → 一次性回显抑制 → 桥出到 Web 层。
+ * 回显抑制（2026-08-15 基建）：控制端收到被控端剪贴板（RFB 'clipboard' 事件 → writeClipboard 写本机剪贴板）
+ * 同样触发 Darwin 通知；若推送回 Web 会触发 clipboardPasteFrom 回发 → 死循环。
+ * 用 changeCount 锚点（clipboardEchoCount）只吞"被控端同步写入"触发的那一次通知，
+ * 用户后续复制（含相同文本）每次放行——不再用文本记忆（原 clipboardLastPushed 会误伤相同文本）。
  * 2026-08-15：UIPasteboard 访问整体 @try 包裹——iOS 16+ 在权限弹窗未决/前台过渡期读取
  * 会抛 NSException（原实现无保护直接闪退）；异常时重设 changeCount 基线防重复触发。
  */
@@ -519,10 +520,15 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
         NSInteger count = pb.changeCount;
         if (count == self.clipboardLastCount) return; // 重复/无变化通知
         self.clipboardLastCount = count;
+        // 2026-08-15 一次性回显抑制（changeCount 锚点）：仅吞"被控端同步写入"触发的那一次通知，
+        // 用户后续复制（含相同文本）count 越过锚点，每次放行——替代原 clipboardLastPushed 文本记忆
+        //（后者会误伤"连续复制相同文本"：第二次起被当作回显跳过）。
+        if (self.clipboardEchoCount == count) {
+            self.clipboardEchoCount = -1;
+            return;
+        }
         NSString *text = pb.string;
         if (!text.length) return;
-        if (self.clipboardLastPushed && [self.clipboardLastPushed isEqualToString:text]) return; // RFB 写入回显
-        self.clipboardLastPushed = text;
         [self pushClipboardToWeb:text];
     } @catch (NSException *e) {
         NSLog(@"[Console] handleClipboardChanged exception: %@ %@", e.name, e.reason);
