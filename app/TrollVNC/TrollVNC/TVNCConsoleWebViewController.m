@@ -219,6 +219,12 @@ static NSString *const kConsolePasteboardDarwinNotification = @"com.apple.pasteb
     // 2026-08-15：禁用 UIScrollView 橡皮筋回弹（iOS bounce 会把页面顶部/底部拉出背景，
     // 与 H5 内部固定布局冲突；H5 内部滚动（设备墙）不受影响）
     self.webView.scrollView.bounces = NO;
+    // 2026-08-15：禁用自动内容偏移调整——WKWebView 全屏顶到状态栏（覆盖安全区）时，
+    // UIScrollView 默认按 safe-area 自动调 contentInset，页面可视区域被系统推挤偏移，
+    // 触发画布"贴顶/贴底"类漂移；.never 保证页面以真实视口尺寸布局，锚定不受系统调整影响。
+    if (@available(iOS 11.0, *)) {
+        self.webView.scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+    }
     [self.view addSubview:self.webView];
 }
 
